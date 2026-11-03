@@ -1,0 +1,5 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../VideoFactory.VideoProduction.Application/VideoFactory.VideoProduction.Application.csproj" />
+  </ItemGroup>
+</Project>

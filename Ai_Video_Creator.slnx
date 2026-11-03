@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VideoFactory.Bot/VideoFactory.Bot.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/VideoProduction/">
+    <Project Path="src/Modules/VideoProduction/VideoFactory.VideoProduction.Application/VideoFactory.VideoProduction.Application.csproj" />
+    <Project Path="src/Modules/VideoProduction/VideoFactory.VideoProduction.Domain/VideoFactory.VideoProduction.Domain.csproj" />
+    <Project Path="src/Modules/VideoProduction/VideoFactory.VideoProduction.Infrastructure/VideoFactory.VideoProduction.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/Modules/" />
+  <Folder Name="/tests/Modules/VideoProduction/">
+    <Project Path="tests/Modules/VideoProduction/VideoFactory.VideoProduction.IntegrationTests/VideoFactory.VideoProduction.IntegrationTests.csproj" />
+    <Project Path="tests/Modules/VideoProduction/VideoFactory.VideoProduction.UnitTests/VideoFactory.VideoProduction.UnitTests.csproj" />
+  </Folder>
+</Solution>

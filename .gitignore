@@ -1,0 +1,45 @@
+# Visual Studio and .NET
+.vs/
+**/bin/
+**/obj/
+*.user
+*.suo
+TestResults/
+coverage/
+
+# Node and Remotion
+node_modules/
+dist/
+.cache/
+.remotion/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local agent discovery junction
+.agents/skills/
+
+# Runtime data and generated media
+data/
+artifacts/
+renders/
+previews/
+final/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.Development.local.json
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
