@@ -8,7 +8,9 @@
     <Project Path="src/Modules/VideoProduction/VideoFactory.VideoProduction.Domain/VideoFactory.VideoProduction.Domain.csproj" />
     <Project Path="src/Modules/VideoProduction/VideoFactory.VideoProduction.Infrastructure/VideoFactory.VideoProduction.Infrastructure.csproj" />
   </Folder>
-  <Folder Name="/tests/" />
+  <Folder Name="/tests/">
+    <Project Path="tests/VideoFactory.Bot.Tests/VideoFactory.Bot.Tests.csproj" />
+  </Folder>
   <Folder Name="/tests/Modules/" />
   <Folder Name="/tests/Modules/VideoProduction/">
     <Project Path="tests/Modules/VideoProduction/VideoFactory.VideoProduction.IntegrationTests/VideoFactory.VideoProduction.IntegrationTests.csproj" />

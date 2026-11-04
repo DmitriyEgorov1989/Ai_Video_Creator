@@ -169,6 +169,57 @@ data/
 
 GitHub-доска с 20 этапами и чек-листами: [AI Video Factory MVP](https://github.com/users/DmitriyEgorov1989/projects/2).
 
+## Конфигурация и диагностика
+
+Host читает настройки из `appsettings.json`, `appsettings.{Environment}.json`, User Secrets, environment variables и аргументов командной строки. Более поздний источник переопределяет более ранний. В репозитории находятся только безопасные значения по умолчанию; токены и API-ключи туда добавлять нельзя.
+
+Для локальной разработки задайте обязательные Telegram-настройки через User Secrets:
+
+```powershell
+dotnet user-secrets set "Telegram:BotToken" "<token>" --project src/VideoFactory.Bot
+dotnet user-secrets set "Telegram:AllowedUserId" "123456789" --project src/VideoFactory.Bot
+```
+
+AI API пока не используется. Его настройки можно заранее сохранить тем же способом, но секция должна быть либо полностью пустой, либо содержать `Provider`, `ApiKey` и `Model`:
+
+```powershell
+dotnet user-secrets set "AiApi:Provider" "<provider>" --project src/VideoFactory.Bot
+dotnet user-secrets set "AiApi:ApiKey" "<key>" --project src/VideoFactory.Bot
+dotnet user-secrets set "AiApi:Model" "<model>" --project src/VideoFactory.Bot
+```
+
+Для environment variables вложенные ключи разделяются двойным подчёркиванием:
+
+```powershell
+$env:Telegram__BotToken = "<token>"
+$env:Telegram__AllowedUserId = "123456789"
+$env:FFmpeg__FfmpegPath = "C:\Tools\ffmpeg\bin\ffmpeg.exe"
+```
+
+`Paths:WorkspaceRoot` задаёт базовый каталог для относительных путей к локальным workers и render-host. Значение `../..` в `src/VideoFactory.Bot/appsettings.json` указывает на корень solution при запуске через `dotnet run --project`.
+
+Проверить окружение без запуска долгоживущего Host можно командой:
+
+```powershell
+dotnet run --project src/VideoFactory.Bot -- diagnose
+```
+
+Диагностика проверяет конфигурацию и наличие файлов или executable, но пока не запускает их и не проверяет версии. До реализации следующих этапов ожидаемо отсутствуют Whisper worker и собранный Node render-host.
+
+| Exit code | Значение |
+|---:|---|
+| `0` | Диагностика успешна или Host штатно остановлен |
+| `1` | Диагностика обнаружила отсутствующую обязательную зависимость |
+| `2` | Некорректная команда или обязательная конфигурация |
+
+Обычный запуск выполняет startup validation и затем ожидает остановки через `Ctrl+C`:
+
+```powershell
+dotnet run --project src/VideoFactory.Bot
+```
+
+Telegram polling будет добавлен отдельным этапом и сейчас не запускается.
+
 ## Локальные agent skills
 
 После clone или перемещения проекта из корня solution выполните:

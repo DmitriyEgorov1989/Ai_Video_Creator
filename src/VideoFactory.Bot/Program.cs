@@ -1,6 +1,3 @@
-using Microsoft.Extensions.Hosting;
+using VideoFactory.Bot;
 
-HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
-
-using IHost host = builder.Build();
-await host.RunAsync();
+return await VideoFactoryHost.RunAsync(args);
