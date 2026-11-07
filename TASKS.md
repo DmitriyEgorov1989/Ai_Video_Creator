@@ -4,6 +4,55 @@
 
 Задачи выполняются сверху вниз. Пункт отмечается выполненным только после указанной для этапа проверки.
 
+## Текущий приоритет: первый видимый результат
+
+После реализации доменной модели backlog пересмотрен в пользу короткого сквозного сценария:
+
+```text
+reference video + source video + title
+  -> measured reference facts
+  -> DeepSeek Flash style proposal
+  -> one validated edit plan
+  -> one verified vertical MP4 in Telegram
+  -> feedback
+  -> verified rerender
+  -> approved style revision
+```
+
+Ограничения первого результата:
+
+- один разрешённый Telegram user ID;
+- reference и source до 60 секунд;
+- один вертикальный MP4 до 30 секунд;
+- DeepSeek получает ограниченную выборку кадров, а не исходное видео целиком;
+- звук берётся только из source;
+- подтверждённые правки сохраняются отдельно для каждого style;
+- обучение означает память immutable style revisions, а не fine-tuning модели.
+
+Текущий scope и acceptance criteria этапов 4–20 зафиксированы в GitHub issues:
+
+| Этап | Первый результат |
+|---|---|
+| [4](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/4) | Контракты edit plan, render и style profile |
+| [5](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/5) | SQLite и storage для jobs, styles и revisions |
+| [6](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/6) | Последовательная восстанавливаемая очередь |
+| [7](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/7) | Безопасный process runner |
+| [8](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/8) | Telegram flow reference → source → MP4 → feedback |
+| [9](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/9) | FFmpeg-подготовка двух входных видео |
+| [10](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/10) | Измеримые признаки style reference |
+| [11](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/11) | DeepSeek Vision и интерпретация feedback |
+| [12](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/12) | Один deterministic edit plan |
+| [13](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/13) | Один Remotion template |
+| [14](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/14) | Один управляемый render и rerender |
+| [15](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/15) | Синхронный нормализованный звук source |
+| [16](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/16) | Полный технический QA MP4 |
+| [17](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/17) | Доставка MP4 и приём feedback |
+| [18](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/18) | Память подтверждённых правок для каждого style |
+| [19](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/19) | Надёжность первого сценария |
+| [20](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/20) | Сквозная приёмка initial render и rerender |
+
+Подробные списки ниже сохраняют расширенный roadmap. Если они расходятся с linked issue до завершения первого результата, scope и критерий готовности GitHub issue имеют приоритет. Whisper, несколько вариантов, similarity, музыкальная библиотека, ZIP, Director mode и сложные темы Remotion не должны блокировать первый MP4.
+
 ## 1. Создание solution и проектов
 
 1. [x] Выбрать и зафиксировать актуальную LTS-версию .NET в `global.json`.
