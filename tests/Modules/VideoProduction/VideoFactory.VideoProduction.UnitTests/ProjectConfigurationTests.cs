@@ -27,4 +27,21 @@ public sealed class ProjectConfigurationTests
 
         Assert.Empty(productDependencies);
     }
+
+    [Fact]
+    public void DomainDoesNotReferenceExternalAdapters()
+    {
+        Assembly domain = Assembly.Load("VideoFactory.VideoProduction.Domain");
+        string[] forbiddenDependencies =
+        [
+            "Telegram.Bot",
+            "Microsoft.Data.Sqlite",
+            "Microsoft.EntityFrameworkCore",
+            "Microsoft.Extensions.Hosting"
+        ];
+
+        Assert.DoesNotContain(
+            domain.GetReferencedAssemblies(),
+            reference => forbiddenDependencies.Contains(reference.Name, StringComparer.Ordinal));
+    }
 }
