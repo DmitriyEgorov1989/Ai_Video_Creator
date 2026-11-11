@@ -1,45 +1,146 @@
 namespace VideoFactory.VideoProduction.Domain.Jobs;
 
+/// <summary>
+/// Определяет текущее состояние производственного задания.
+/// </summary>
 public enum JobStatus
 {
+    /// <summary>
+    /// Задание ожидает начала обработки.
+    /// </summary>
     Queued,
+
+    /// <summary>
+    /// Задание обрабатывается.
+    /// </summary>
     Running,
+
+    /// <summary>
+    /// Обработка приостановлена до подтверждения пользователя.
+    /// </summary>
     AwaitingConfirmation,
+
+    /// <summary>
+    /// Задание успешно завершено.
+    /// </summary>
     Completed,
+
+    /// <summary>
+    /// Обработка задания завершилась ошибкой.
+    /// </summary>
     Failed,
+
+    /// <summary>
+    /// Обработка задания отменена.
+    /// </summary>
     Cancelled
 }
 
+/// <summary>
+/// Определяет этап производственного конвейера.
+/// </summary>
 public enum ProductionStage
 {
+    /// <summary>
+    /// Подготовка исходных материалов.
+    /// </summary>
     Preparation,
+
+    /// <summary>
+    /// Анализ подготовленного видео.
+    /// </summary>
     Analysis,
+
+    /// <summary>
+    /// Подготовка и согласование творческого брифа.
+    /// </summary>
     Briefing,
+
+    /// <summary>
+    /// Формирование монтажных планов.
+    /// </summary>
     Planning,
+
+    /// <summary>
+    /// Подготовка и согласование предварительного просмотра.
+    /// </summary>
     Preview,
+
+    /// <summary>
+    /// Рендеринг итоговых видео.
+    /// </summary>
     Rendering,
+
+    /// <summary>
+    /// Проверка готовых видео.
+    /// </summary>
     Verification,
+
+    /// <summary>
+    /// Упаковка готовых результатов.
+    /// </summary>
     Packaging,
+
+    /// <summary>
+    /// Доставка результатов пользователю.
+    /// </summary>
     Delivery
 }
 
+/// <summary>
+/// Определяет вид пользовательского подтверждения, необходимого для продолжения обработки.
+/// </summary>
 public enum ConfirmationKind
 {
+    /// <summary>
+    /// Требуется выбрать итоговый режим производства.
+    /// </summary>
     Mode,
+
+    /// <summary>
+    /// Требуется утвердить творческий бриф.
+    /// </summary>
     Brief,
+
+    /// <summary>
+    /// Требуется разрешить финальный рендеринг.
+    /// </summary>
     FinalRender
 }
 
+/// <summary>
+/// Представляет неизменяемое состояние прохождения задания по производственному конвейеру.
+/// </summary>
 public sealed class JobProgress
 {
+    /// <summary>
+    /// Получает текущее состояние задания.
+    /// </summary>
+    /// <value>Состояние обработки задания.</value>
     public JobStatus Status { get; }
 
+    /// <summary>
+    /// Получает текущий этап производственного конвейера.
+    /// </summary>
+    /// <value>Этап, на котором находится задание.</value>
     public ProductionStage Stage { get; }
 
+    /// <summary>
+    /// Получает первоначально запрошенный режим производства.
+    /// </summary>
+    /// <value>Режим из запроса на производство.</value>
     public ProductionMode RequestedMode { get; }
 
+    /// <summary>
+    /// Получает режим, фактически используемый производственным конвейером.
+    /// </summary>
+    /// <value>Режим <see cref="ProductionMode.Fast" /> или <see cref="ProductionMode.Director" />; <see langword="null" />, пока автоматический режим не разрешён.</value>
     public ProductionMode? EffectiveMode { get; }
 
+    /// <summary>
+    /// Получает ожидаемый вид пользовательского подтверждения.
+    /// </summary>
+    /// <value>Вид подтверждения или <see langword="null" />, если задание не ожидает подтверждения.</value>
     public ConfirmationKind? PendingConfirmation { get; }
 
     private JobProgress(
@@ -56,6 +157,11 @@ public sealed class JobProgress
         PendingConfirmation = pendingConfirmation;
     }
 
+    /// <summary>
+    /// Создаёт начальное состояние задания в очереди на подготовку.
+    /// </summary>
+    /// <param name="requestedMode">Запрошенный режим производства.</param>
+    /// <returns>Начальное состояние задания.</returns>
     public static JobProgress Create(ProductionMode requestedMode)
     {
         if (!Enum.IsDefined(requestedMode))
@@ -67,18 +173,30 @@ public sealed class JobProgress
         return new(JobStatus.Queued, ProductionStage.Preparation, requestedMode, effectiveMode, null);
     }
 
+    /// <summary>
+    /// Начинает подготовку задания, находящегося в очереди.
+    /// </summary>
+    /// <returns>Новое состояние выполняемой подготовки.</returns>
     public JobProgress Start()
     {
         Require(JobStatus.Queued, ProductionStage.Preparation);
         return Next(JobStatus.Running, ProductionStage.Preparation);
     }
 
+    /// <summary>
+    /// Завершает подготовку и переводит задание к анализу.
+    /// </summary>
+    /// <returns>Новое состояние выполняемого анализа.</returns>
     public JobProgress CompletePreparation()
     {
         RequireRunning(ProductionStage.Preparation);
         return Next(JobStatus.Running, ProductionStage.Analysis);
     }
 
+    /// <summary>
+    /// Завершает анализ и выбирает следующий этап согласно запрошенному режиму.
+    /// </summary>
+    /// <returns>Новое состояние следующего этапа или ожидания выбора режима.</returns>
     public JobProgress CompleteAnalysis()
     {
         RequireRunning(ProductionStage.Analysis);
@@ -96,6 +214,11 @@ public sealed class JobProgress
         };
     }
 
+    /// <summary>
+    /// Подтверждает итоговый режим для задания, созданного в автоматическом режиме.
+    /// </summary>
+    /// <param name="mode">Итоговый режим <see cref="ProductionMode.Fast" /> или <see cref="ProductionMode.Director" />.</param>
+    /// <returns>Новое состояние на первом этапе выбранного режима.</returns>
     public JobProgress ConfirmMode(ProductionMode mode)
     {
         RequireConfirmation(ConfirmationKind.Mode);
@@ -111,6 +234,10 @@ public sealed class JobProgress
         return Next(JobStatus.Running, nextStage, mode, null);
     }
 
+    /// <summary>
+    /// Завершает подготовку брифа и приостанавливает задание до его утверждения.
+    /// </summary>
+    /// <returns>Новое состояние ожидания подтверждения брифа.</returns>
     public JobProgress CompleteBriefing()
     {
         RequireDirectorStage(ProductionStage.Briefing);
@@ -121,12 +248,20 @@ public sealed class JobProgress
             ConfirmationKind.Brief);
     }
 
+    /// <summary>
+    /// Утверждает подготовленный бриф и переводит задание к планированию.
+    /// </summary>
+    /// <returns>Новое состояние выполняемого планирования.</returns>
     public JobProgress ApproveBrief()
     {
         RequireConfirmation(ConfirmationKind.Brief);
         return Next(JobStatus.Running, ProductionStage.Planning);
     }
 
+    /// <summary>
+    /// Завершает планирование и выбирает следующий этап согласно итоговому режиму.
+    /// </summary>
+    /// <returns>Новое состояние рендеринга или предварительного просмотра.</returns>
     public JobProgress CompletePlanning()
     {
         RequireRunning(ProductionStage.Planning);
@@ -138,6 +273,10 @@ public sealed class JobProgress
         };
     }
 
+    /// <summary>
+    /// Завершает предварительный просмотр и приостанавливает задание до разрешения финального рендеринга.
+    /// </summary>
+    /// <returns>Новое состояние ожидания подтверждения финального рендеринга.</returns>
     public JobProgress CompletePreview()
     {
         RequireDirectorStage(ProductionStage.Preview);
@@ -148,36 +287,64 @@ public sealed class JobProgress
             ConfirmationKind.FinalRender);
     }
 
+    /// <summary>
+    /// Разрешает финальный рендеринг после предварительного просмотра.
+    /// </summary>
+    /// <returns>Новое состояние выполняемого рендеринга.</returns>
     public JobProgress ApproveFinalRender()
     {
         RequireConfirmation(ConfirmationKind.FinalRender);
         return Next(JobStatus.Running, ProductionStage.Rendering);
     }
 
+    /// <summary>
+    /// Завершает рендеринг и переводит задание к проверке результатов.
+    /// </summary>
+    /// <returns>Новое состояние выполняемой проверки.</returns>
     public JobProgress CompleteRendering() => AdvanceRunning(
         ProductionStage.Rendering,
         ProductionStage.Verification);
 
+    /// <summary>
+    /// Завершает проверку и переводит задание к упаковке результатов.
+    /// </summary>
+    /// <returns>Новое состояние выполняемой упаковки.</returns>
     public JobProgress CompleteVerification() => AdvanceRunning(
         ProductionStage.Verification,
         ProductionStage.Packaging);
 
+    /// <summary>
+    /// Завершает упаковку и переводит задание к доставке результатов.
+    /// </summary>
+    /// <returns>Новое состояние выполняемой доставки.</returns>
     public JobProgress CompletePackaging() => AdvanceRunning(
         ProductionStage.Packaging,
         ProductionStage.Delivery);
 
+    /// <summary>
+    /// Подтверждает доставку результатов и успешно завершает задание.
+    /// </summary>
+    /// <returns>Новое завершённое состояние задания.</returns>
     public JobProgress ConfirmDelivery()
     {
         RequireRunning(ProductionStage.Delivery);
         return Next(JobStatus.Completed, ProductionStage.Delivery);
     }
 
+    /// <summary>
+    /// Завершает ошибкой задание, находящееся в незавершённом состоянии.
+    /// </summary>
+    /// <returns>Новое состояние задания с ошибкой.</returns>
     public JobProgress Fail()
     {
         RequireNonTerminal();
         return Next(JobStatus.Failed, Stage, EffectiveMode, null);
     }
 
+    /// <summary>
+    /// Отменяет задание, находящееся в незавершённом состоянии.
+    /// </summary>
+    /// <returns>Новое отменённое состояние задания.</returns>
     public JobProgress Cancel()
     {
         RequireNonTerminal();

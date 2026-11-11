@@ -89,18 +89,6 @@
       "content_mode": "project-authored"
     },
     {
-      "name": "polymarket-integration",
-      "source_id": "project-local",
-      "source_path": ".harness/skills/polymarket-integration",
-      "content_mode": "project-authored"
-    },
-    {
-      "name": "polymarketlab-feature",
-      "source_id": "project-local",
-      "source_path": ".harness/skills/polymarketlab-feature",
-      "content_mode": "project-authored"
-    },
-    {
       "name": "research",
       "source_id": "mattpocock-via-harness",
       "source_path": "skills/vendor/mattpocock/engineering/research",
@@ -154,9 +142,7 @@
     ".harness/skills/handoff/agents/openai.yaml": "deb645c801764579994bd23d1954aa991ef1d0d55bf30043d47ada631fcff5f4",
     ".harness/skills/handoff/SKILL.md": "65e80725923677f128b1d3cf23397b4bf0cc8659cd408aaee5ab285d01aa54af",
     ".harness/skills/orchestrate-project/SKILL.md": "ef1238d3f60c22c70eda05fec8f764c028df2587eec7c584a7e2bfcc1775a822",
-    ".harness/skills/polymarket-integration/SKILL.md": "a0991f2da5abebc02e899162e1b718050bc8d6e32c6513a2e8c6c19ff012c6f0",
-    ".harness/skills/polymarketlab-feature/SKILL.md": "895d0c12301d2e5259ae5c9957e7d02a42c91ffc7106e9d427fe4bdc3a4b7d0d",
-    ".harness/skills/REGISTRY.md": "d2b8c3dafd6cdb636de0bd113271d730da582efc214729f26992655536b78685",
+    ".harness/skills/REGISTRY.md": "d3c756545b271fa0a90a03411f13958b31703f396bea0094c771e5cd8a370290",
     ".harness/skills/research/agents/openai.yaml": "9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d",
     ".harness/skills/research/SKILL.md": "af378829f015775a3bcd65ff466826722e99359017ae6bae227ca4c9bd14049c",
     ".harness/skills/systematic-debugging/condition-based-waiting.md": "e89fec8400d6cd50f43407cec9fab50976ba4d55d0ec2eb51c0bd68036b54c26",

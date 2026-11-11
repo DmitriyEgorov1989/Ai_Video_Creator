@@ -103,8 +103,6 @@ $expectedSkills = @(
     "domain-modeling",
     "handoff",
     "orchestrate-project",
-    "polymarket-integration",
-    "polymarketlab-feature",
     "research",
     "systematic-debugging",
     "tdd",

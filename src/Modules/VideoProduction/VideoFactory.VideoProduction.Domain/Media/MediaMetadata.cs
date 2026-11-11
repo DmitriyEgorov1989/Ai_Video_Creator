@@ -4,16 +4,56 @@ using VideoFactory.VideoProduction.Domain.Timeline;
 
 namespace VideoFactory.VideoProduction.Domain.Media;
 
+/// <summary>
+/// Описывает видеопоток медиафайла.
+/// </summary>
 public sealed record VideoStreamMetadata
 {
+    /// <summary>
+    /// Получает индекс потока в контейнере.
+    /// </summary>
     public int StreamIndex { get; }
+
+    /// <summary>
+    /// Получает имя видеокодека.
+    /// </summary>
     public string Codec { get; }
+
+    /// <summary>
+    /// Получает ширину кадра в пикселях.
+    /// </summary>
     public int Width { get; }
+
+    /// <summary>
+    /// Получает высоту кадра в пикселях.
+    /// </summary>
     public int Height { get; }
+
+    /// <summary>
+    /// Получает среднюю частоту кадров или <see langword="null"/>, если она не определена.
+    /// </summary>
     public FrameRate? AverageFrameRate { get; }
+
+    /// <summary>
+    /// Получает признак переменной частоты кадров или <see langword="null"/>, если режим частоты кадров не определён.
+    /// </summary>
     public bool? IsVariableFrameRate { get; }
+
+    /// <summary>
+    /// Получает поворот кадра в градусах или <see langword="null"/>, если метаданные поворота отсутствуют.
+    /// </summary>
     public int? RotationDegrees { get; }
 
+    /// <summary>
+    /// Создаёт описание видеопотока.
+    /// </summary>
+    /// <param name="streamIndex">Неотрицательный индекс потока в контейнере.</param>
+    /// <param name="codec">Непустое имя видеокодека.</param>
+    /// <param name="width">Ширина кадра в пикселях.</param>
+    /// <param name="height">Высота кадра в пикселях.</param>
+    /// <param name="averageFrameRate">Средняя частота кадров или <see langword="null"/>, если она не определена.</param>
+    /// <param name="isVariableFrameRate">Признак переменной частоты кадров или <see langword="null"/>, если режим не определён.</param>
+    /// <param name="rotationDegrees">Поворот кадра в градусах или <see langword="null"/>, если метаданные поворота отсутствуют.</param>
     public VideoStreamMetadata(
         int streamIndex,
         string codec,
@@ -39,13 +79,38 @@ public sealed record VideoStreamMetadata
     }
 }
 
+/// <summary>
+/// Описывает аудиопоток медиафайла.
+/// </summary>
 public sealed record AudioStreamMetadata
 {
+    /// <summary>
+    /// Получает индекс потока в контейнере.
+    /// </summary>
     public int StreamIndex { get; }
+
+    /// <summary>
+    /// Получает имя аудиокодека.
+    /// </summary>
     public string Codec { get; }
+
+    /// <summary>
+    /// Получает частоту дискретизации в герцах.
+    /// </summary>
     public int SampleRate { get; }
+
+    /// <summary>
+    /// Получает количество аудиоканалов.
+    /// </summary>
     public int Channels { get; }
 
+    /// <summary>
+    /// Создаёт описание аудиопотока.
+    /// </summary>
+    /// <param name="streamIndex">Неотрицательный индекс потока в контейнере.</param>
+    /// <param name="codec">Непустое имя аудиокодека.</param>
+    /// <param name="sampleRate">Частота дискретизации в герцах.</param>
+    /// <param name="channels">Количество аудиоканалов.</param>
     public AudioStreamMetadata(int streamIndex, string codec, int sampleRate, int channels)
     {
         if (streamIndex < 0) throw new ArgumentOutOfRangeException(nameof(streamIndex));
@@ -60,13 +125,38 @@ public sealed record AudioStreamMetadata
     }
 }
 
+/// <summary>
+/// Содержит проверенные метаданные медиафайла и его потоков.
+/// </summary>
 public sealed record MediaMetadata
 {
+    /// <summary>
+    /// Получает имя медиа-контейнера.
+    /// </summary>
     public string Container { get; }
+
+    /// <summary>
+    /// Получает длительность медиафайла в микросекундах.
+    /// </summary>
     public long DurationMicroseconds { get; }
+
+    /// <summary>
+    /// Получает инициализированную коллекцию видеопотоков; коллекция может быть пустой.
+    /// </summary>
     public ImmutableArray<VideoStreamMetadata> VideoStreams { get; }
+
+    /// <summary>
+    /// Получает инициализированную коллекцию аудиопотоков; коллекция может быть пустой.
+    /// </summary>
     public ImmutableArray<AudioStreamMetadata> AudioStreams { get; }
 
+    /// <summary>
+    /// Создаёт метаданные медиафайла с уникальными индексами потоков.
+    /// </summary>
+    /// <param name="container">Непустое имя медиа-контейнера.</param>
+    /// <param name="durationMicroseconds">Положительная длительность медиафайла в микросекундах.</param>
+    /// <param name="videoStreams">Инициализированная коллекция видеопотоков; может быть пустой.</param>
+    /// <param name="audioStreams">Инициализированная коллекция аудиопотоков; может быть пустой.</param>
     public MediaMetadata(
         string container,
         long durationMicroseconds,
@@ -101,11 +191,26 @@ public sealed record MediaMetadata
     }
 }
 
+/// <summary>
+/// Связывает медиа-артефакт с его проверенными метаданными.
+/// </summary>
 public sealed record MediaAsset
 {
+    /// <summary>
+    /// Получает идентификатор медиа-артефакта.
+    /// </summary>
     public ArtifactId Id { get; }
+
+    /// <summary>
+    /// Получает метаданные медиа-артефакта; значение никогда не равно <see langword="null"/>.
+    /// </summary>
     public MediaMetadata Metadata { get; }
 
+    /// <summary>
+    /// Создаёт медиа-ресурс с указанными метаданными.
+    /// </summary>
+    /// <param name="id">Непустой идентификатор артефакта.</param>
+    /// <param name="metadata">Метаданные артефакта; не могут быть <see langword="null"/>.</param>
     public MediaAsset(ArtifactId id, MediaMetadata metadata)
     {
         if (id.IsEmpty) throw new ArgumentException("Artifact ID cannot be empty.", nameof(id));

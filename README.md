@@ -163,6 +163,30 @@ data/
 
 Каталог `data` является рабочим локальным хранилищем и не должен попадать в систему контроля версий.
 
+## Локальная проверка
+
+Восстановление зависимостей, сборка и запуск всех тестов solution:
+
+```powershell
+dotnet restore .\Ai_Video_Creator.slnx
+dotnet build .\Ai_Video_Creator.slnx --no-restore
+dotnet test .\Ai_Video_Creator.slnx --no-build
+```
+
+Узкий запуск тестов модуля `VideoProduction`:
+
+```powershell
+dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.UnitTests\VideoFactory.VideoProduction.UnitTests.csproj
+dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.IntegrationTests\VideoFactory.VideoProduction.IntegrationTests.csproj
+```
+
+Проверка agent harness и форматирования diff:
+
+```powershell
+.\.harness\health.ps1
+git diff --check
+```
+
 ## Очерёдность разработки
 
 Подробный последовательный backlog, начиная с создания .NET-проектов, находится в [`TASKS.md`](TASKS.md).

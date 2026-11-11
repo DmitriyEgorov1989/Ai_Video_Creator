@@ -2,56 +2,34 @@
 
 Основной язык и runtime проекта: **C# / .NET**. Вся бизнес-логика, состояние заданий, очередь, интеграции и управление конвейером реализуются на .NET. Node.js используется только как render-host для Remotion, Python — только для специализированных AI/CV-инструментов, если у них нет подходящей .NET-реализации.
 
-Задачи выполняются сверху вниз. Пункт отмечается выполненным только после указанной для этапа проверки.
+Задачи выполняются сверху вниз. Отметка `[x]` означает только выполнение пункта и указанной для него проверки. Она не заменяет критерии завершения из `AGENTS.md`, включая релевантные тесты, сборку, `git diff --check` и сквозную проверку для заявляемого рабочего сценария.
 
-## Текущий приоритет: первый видимый результат
+## Текущий приоритет: сквозной сценарий MVP
 
-После реализации доменной модели backlog пересмотрен в пользу короткого сквозного сценария:
+Backlog следует фактическому входному и выходному контракту MVP:
 
 ```text
-reference video + source video + title
-  -> measured reference facts
-  -> DeepSeek Flash style proposal
-  -> one validated edit plan
-  -> one verified vertical MP4 in Telegram
-  -> feedback
-  -> verified rerender
-  -> approved style revision
+one source video + user comment
+  -> analysis
+  -> 1-10 distinct validated edit plans
+  -> sequential Remotion render
+  -> verified vertical MP4 files
+  -> ZIP
+  -> Telegram delivery
 ```
 
-Ограничения первого результата:
+Границы сценария:
 
 - один разрешённый Telegram user ID;
-- reference и source до 60 секунд;
-- один вертикальный MP4 до 30 секунд;
-- DeepSeek получает ограниченную выборку кадров, а не исходное видео целиком;
-- звук берётся только из source;
-- подтверждённые правки сохраняются отдельно для каждого style;
-- обучение означает память immutable style revisions, а не fine-tuning модели.
+- обязательны одно исходное видео и непустой комментарий пользователя; отдельное reference-видео и обязательный title не входят во входной контракт;
+- количество вариантов задаётся в диапазоне от 1 до 10;
+- варианты должны различаться по нескольким контролируемым признакам, а слишком похожие планы отклоняются до рендера;
+- каждый итоговый MP4 проходит проверку существования, metadata и полного decode;
+- ZIP формируется только из MP4, успешно прошедших QA, и доставляется через Telegram;
+- конкретный LLM-провайдер не является частью доменного контракта и подключается через заменяемый адаптер;
+- анализ роликов-референсов, память style revisions и обучение по обратной связи отложены за границы MVP.
 
-Текущий scope и acceptance criteria этапов 4–20 зафиксированы в GitHub issues:
-
-| Этап | Первый результат |
-|---|---|
-| [4](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/4) | Контракты edit plan, render и style profile |
-| [5](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/5) | SQLite и storage для jobs, styles и revisions |
-| [6](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/6) | Последовательная восстанавливаемая очередь |
-| [7](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/7) | Безопасный process runner |
-| [8](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/8) | Telegram flow reference → source → MP4 → feedback |
-| [9](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/9) | FFmpeg-подготовка двух входных видео |
-| [10](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/10) | Измеримые признаки style reference |
-| [11](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/11) | DeepSeek Vision и интерпретация feedback |
-| [12](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/12) | Один deterministic edit plan |
-| [13](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/13) | Один Remotion template |
-| [14](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/14) | Один управляемый render и rerender |
-| [15](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/15) | Синхронный нормализованный звук source |
-| [16](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/16) | Полный технический QA MP4 |
-| [17](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/17) | Доставка MP4 и приём feedback |
-| [18](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/18) | Память подтверждённых правок для каждого style |
-| [19](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/19) | Надёжность первого сценария |
-| [20](https://github.com/DmitriyEgorov1989/Ai_Video_Creator/issues/20) | Сквозная приёмка initial render и rerender |
-
-Подробные списки ниже сохраняют расширенный roadmap. Если они расходятся с linked issue до завершения первого результата, scope и критерий готовности GitHub issue имеют приоритет. Whisper, несколько вариантов, similarity, музыкальная библиотека, ZIP, Director mode и сложные темы Remotion не должны блокировать первый MP4.
+Разделы ниже являются последовательным roadmap этого сценария. Наличие отмеченных подготовительных этапов не означает готовность видеоконвейера: она подтверждается только сквозной приёмкой по критериям `AGENTS.md`.
 
 ## 1. Создание solution и проектов
 
