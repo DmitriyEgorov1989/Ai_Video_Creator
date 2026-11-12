@@ -8,6 +8,7 @@ namespace VideoFactory.VideoProduction.Infrastructure.Storage;
 public sealed class SqliteMigrationRunner
 {
     private const int InitialSchemaVersion = 1;
+    private const int HeartbeatSchemaVersion = 2;
     private readonly string connectionString;
 
     /// <summary>
@@ -56,6 +57,21 @@ public sealed class SqliteMigrationRunner
                 connection,
                 transaction,
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (1, $appliedAt);",
+                cancellationToken,
+                ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, HeartbeatSchemaVersion, cancellationToken))
+        {
+            await ExecuteAsync(
+                connection,
+                transaction,
+                HeartbeatSchemaSql,
+                cancellationToken);
+            await ExecuteAsync(
+                connection,
+                transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (2, $appliedAt);",
                 cancellationToken,
                 ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
@@ -185,5 +201,13 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_events_job_created
             ON events (job_id, created_at);
+        """;
+
+    private const string HeartbeatSchemaSql = """
+        ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT NULL;
+        ALTER TABLE jobs ADD COLUMN lease_owner TEXT NULL;
+
+        CREATE INDEX ix_jobs_work_status_heartbeat
+            ON jobs (status, heartbeat_at, created_at);
         """;
 }

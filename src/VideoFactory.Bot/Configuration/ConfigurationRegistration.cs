@@ -40,6 +40,17 @@ public static class ConfigurationRegistration
             .Validate(options => options.MaxInputDurationSeconds > 0,
                 "Limits:MaxInputDurationSeconds must be greater than zero.");
 
+        OptionsBuilder<WorkerOptions> worker = services.AddOptions<WorkerOptions>()
+            .Bind(configuration.GetSection(WorkerOptions.SectionName))
+            .Validate(options => options.HeartbeatIntervalSeconds > 0,
+                "Worker:HeartbeatIntervalSeconds must be greater than zero.")
+            .Validate(options => options.LeaseTimeoutSeconds >= options.HeartbeatIntervalSeconds * 3,
+                "Worker:LeaseTimeoutSeconds must be at least three heartbeat intervals.")
+            .Validate(options => options.MaxStageAttempts > 0,
+                "Worker:MaxStageAttempts must be greater than zero.")
+            .Validate(options => options.PollIntervalSeconds > 0,
+                "Worker:PollIntervalSeconds must be greater than zero.");
+
         OptionsBuilder<FfmpegOptions> ffmpeg = services.AddOptions<FfmpegOptions>()
             .Bind(configuration.GetSection(FfmpegOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.FfmpegPath),
@@ -72,6 +83,7 @@ public static class ConfigurationRegistration
             paths.ValidateOnStart();
             storage.ValidateOnStart();
             limits.ValidateOnStart();
+            worker.ValidateOnStart();
             ffmpeg.ValidateOnStart();
             whisper.ValidateOnStart();
             remotion.ValidateOnStart();

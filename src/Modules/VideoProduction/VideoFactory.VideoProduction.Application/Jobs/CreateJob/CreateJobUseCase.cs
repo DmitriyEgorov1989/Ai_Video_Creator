@@ -1,5 +1,6 @@
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Application.Jobs.Queue;
 
 namespace VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 
@@ -9,15 +10,17 @@ namespace VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 public sealed class CreateJobUseCase
 {
     private readonly IJobCreationStore store;
+    private readonly IJobSignal? signal;
 
     /// <summary>
     /// Создаёт сценарий создания задания.
     /// </summary>
     /// <param name="store">Persistence seam атомарного создания задания.</param>
-    public CreateJobUseCase(IJobCreationStore store)
+    public CreateJobUseCase(IJobCreationStore store, IJobSignal? signal = null)
     {
         ArgumentNullException.ThrowIfNull(store);
         this.store = store;
+        this.signal = signal;
     }
 
     /// <summary>
@@ -62,6 +65,11 @@ public sealed class CreateJobUseCase
             null);
 
         JobCreationStoreResult stored = await store.CreateAsync(record, cancellationToken);
+
+        if (stored is JobCreationStoreResult.Created newlyCreated && signal is not null)
+        {
+            await signal.PublishAsync(newlyCreated.Record.JobId, cancellationToken);
+        }
 
         return stored switch
         {

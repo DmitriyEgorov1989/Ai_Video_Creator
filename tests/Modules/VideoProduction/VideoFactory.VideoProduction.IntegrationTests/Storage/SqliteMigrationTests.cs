@@ -33,7 +33,7 @@ public sealed class SqliteMigrationTests
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                Assert.Equal(1, migrationCount);
+                Assert.Equal(2, migrationCount);
 
                 await using SqliteCommand journalModeCommand = connection.CreateCommand();
                 journalModeCommand.CommandText = "PRAGMA journal_mode;";

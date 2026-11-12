@@ -2,6 +2,12 @@ using Microsoft.Extensions.Options;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Diagnostics;
 using VideoFactory.Bot.Logging;
+using VideoFactory.Bot.Workers;
+using VideoFactory.VideoProduction.Application.Jobs.Queue;
+using VideoFactory.VideoProduction.Application.Jobs.State;
+using VideoFactory.VideoProduction.Application.Pipeline;
+using VideoFactory.VideoProduction.Application.Stages;
+using VideoFactory.VideoProduction.Infrastructure.Queue;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.Bot;
@@ -27,6 +33,16 @@ public static class VideoFactoryHost
         builder.Services.AddVideoFactoryConfiguration(
             builder.Configuration,
             validateOnStart: !diagnosticMode);
+        builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
+        builder.Services.AddSingleton<IJobWorkQueue>(services =>
+            new SqliteJobWorkQueue(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IJobStateStore>(services =>
+            new SqliteJobStateStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IStageAttemptStore>(services =>
+            new SqliteStageAttemptStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IJobStageExecutor, UnavailableJobStageExecutor>();
+        builder.Services.AddSingleton<SequentialJobProcessor>();
+        builder.Services.AddHostedService<SequentialJobWorker>();
         builder.Services.AddSingleton(serviceProvider =>
         {
             IHostEnvironment environment = serviceProvider.GetRequiredService<IHostEnvironment>();
@@ -71,6 +87,7 @@ public static class VideoFactoryHost
         _ = services.GetRequiredService<IOptions<PathsOptions>>().Value;
         _ = services.GetRequiredService<IOptions<StorageOptions>>().Value;
         _ = services.GetRequiredService<IOptions<LimitsOptions>>().Value;
+        _ = services.GetRequiredService<IOptions<WorkerOptions>>().Value;
         _ = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
         _ = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
         _ = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
@@ -91,6 +108,17 @@ public static class VideoFactoryHost
         string databasePath = Path.Combine(dataRoot, storage.DatabaseFileName);
         string connectionString = $"Data Source={databasePath};Cache=Shared";
         await new SqliteMigrationRunner(connectionString).InitializeAsync(cancellationToken);
+    }
+
+    private static string BuildConnectionString(IServiceProvider services)
+    {
+        PathsOptions paths = services.GetRequiredService<IOptions<PathsOptions>>().Value;
+        StorageOptions storage = services.GetRequiredService<IOptions<StorageOptions>>().Value;
+        IHostEnvironment environment = services.GetRequiredService<IHostEnvironment>();
+        string workspaceRoot = Path.GetFullPath(
+            Path.Combine(environment.ContentRootPath, paths.WorkspaceRoot));
+        string dataRoot = Path.GetFullPath(Path.Combine(workspaceRoot, storage.DataRoot));
+        return $"Data Source={Path.Combine(dataRoot, storage.DatabaseFileName)};Cache=Shared";
     }
 
     private static int RunDiagnostics(IServiceProvider services, ILogger logger)
