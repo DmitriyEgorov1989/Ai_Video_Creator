@@ -57,6 +57,11 @@ public sealed class StorageOptions
     /// Получает корневой каталог данных; значение не может быть <see langword="null"/>.
     /// </summary>
     public string DataRoot { get; init; } = "data";
+
+    /// <summary>
+    /// Получает безопасное имя файла SQLite-базы; значение не может быть <see langword="null"/>.
+    /// </summary>
+    public string DatabaseFileName { get; init; } = "jobs.sqlite";
 }
 
 /// <summary>

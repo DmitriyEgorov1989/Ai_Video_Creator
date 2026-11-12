@@ -19,7 +19,14 @@ public static class ConfigurationRegistration
         OptionsBuilder<StorageOptions> storage = services.AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.DataRoot),
-                "Storage:DataRoot is required.");
+                "Storage:DataRoot is required.")
+            .Validate(options => !string.IsNullOrWhiteSpace(options.DatabaseFileName),
+                "Storage:DatabaseFileName is required.")
+            .Validate(options => !Path.IsPathRooted(options.DatabaseFileName)
+                && options.DatabaseFileName is not "." and not ".."
+                && !options.DatabaseFileName.Contains(Path.DirectorySeparatorChar)
+                && !options.DatabaseFileName.Contains(Path.AltDirectorySeparatorChar),
+                "Storage:DatabaseFileName must be a file name without a directory.");
 
         OptionsBuilder<PathsOptions> paths = services.AddOptions<PathsOptions>()
             .Bind(configuration.GetSection(PathsOptions.SectionName))

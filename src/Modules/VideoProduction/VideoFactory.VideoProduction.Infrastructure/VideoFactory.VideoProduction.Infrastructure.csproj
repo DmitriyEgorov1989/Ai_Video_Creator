@@ -1,5 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../VideoFactory.VideoProduction.Application/VideoFactory.VideoProduction.Application.csproj" />
   </ItemGroup>
 </Project>

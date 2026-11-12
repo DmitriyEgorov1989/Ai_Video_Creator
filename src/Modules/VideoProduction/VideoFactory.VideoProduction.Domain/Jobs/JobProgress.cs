@@ -174,6 +174,50 @@ public sealed class JobProgress
     }
 
     /// <summary>
+    /// Восстанавливает состояние задания, сохранённое persistence-адаптером.
+    /// </summary>
+    /// <param name="status">Сохранённый статус задания.</param>
+    /// <param name="stage">Сохранённый этап задания.</param>
+    /// <param name="requestedMode">Изначально запрошенный режим.</param>
+    /// <param name="effectiveMode">Фактически выбранный режим или <see langword="null"/>.</param>
+    /// <param name="pendingConfirmation">Ожидаемое подтверждение или <see langword="null"/>.</param>
+    /// <returns>Восстановленное состояние задания.</returns>
+    public static JobProgress Restore(
+        JobStatus status,
+        ProductionStage stage,
+        ProductionMode requestedMode,
+        ProductionMode? effectiveMode,
+        ConfirmationKind? pendingConfirmation)
+    {
+        if (!Enum.IsDefined(status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status));
+        }
+
+        if (!Enum.IsDefined(stage))
+        {
+            throw new ArgumentOutOfRangeException(nameof(stage));
+        }
+
+        if (!Enum.IsDefined(requestedMode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(requestedMode));
+        }
+
+        if (effectiveMode is not null && !Enum.IsDefined(effectiveMode.Value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(effectiveMode));
+        }
+
+        if (pendingConfirmation is not null && !Enum.IsDefined(pendingConfirmation.Value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(pendingConfirmation));
+        }
+
+        return new(status, stage, requestedMode, effectiveMode, pendingConfirmation);
+    }
+
+    /// <summary>
     /// Начинает подготовку задания, находящегося в очереди.
     /// </summary>
     /// <returns>Новое состояние выполняемой подготовки.</returns>

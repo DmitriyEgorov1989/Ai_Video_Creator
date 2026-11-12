@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Diagnostics;
 using VideoFactory.Bot.Logging;
+using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.Bot;
 
@@ -45,6 +46,7 @@ public static class VideoFactoryHost
         try
         {
             ValidateConfiguration(host.Services);
+            await InitializeStorageAsync(host.Services, cancellationToken);
             await host.RunAsync(cancellationToken);
             return 0;
         }
@@ -73,6 +75,22 @@ public static class VideoFactoryHost
         _ = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
         _ = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
         _ = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
+    }
+
+    private static async Task InitializeStorageAsync(
+        IServiceProvider services,
+        CancellationToken cancellationToken)
+    {
+        PathsOptions paths = services.GetRequiredService<IOptions<PathsOptions>>().Value;
+        StorageOptions storage = services.GetRequiredService<IOptions<StorageOptions>>().Value;
+        IHostEnvironment environment = services.GetRequiredService<IHostEnvironment>();
+        string workspaceRoot = Path.GetFullPath(
+            Path.Combine(environment.ContentRootPath, paths.WorkspaceRoot));
+        string dataRoot = Path.GetFullPath(Path.Combine(workspaceRoot, storage.DataRoot));
+        Directory.CreateDirectory(dataRoot);
+        string databasePath = Path.Combine(dataRoot, storage.DatabaseFileName);
+        string connectionString = $"Data Source={databasePath};Cache=Shared";
+        await new SqliteMigrationRunner(connectionString).InitializeAsync(cancellationToken);
     }
 
     private static int RunDiagnostics(IServiceProvider services, ILogger logger)
