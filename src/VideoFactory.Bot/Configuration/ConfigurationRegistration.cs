@@ -31,9 +31,7 @@ public static class ConfigurationRegistration
             .Validate(options => options.MaxInputFileBytes > 0,
                 "Limits:MaxInputFileBytes must be greater than zero.")
             .Validate(options => options.MaxInputDurationSeconds > 0,
-                "Limits:MaxInputDurationSeconds must be greater than zero.")
-            .Validate(options => options.MaxVariantsPerJob is >= 1 and <= 10,
-                "Limits:MaxVariantsPerJob must be between 1 and 10.");
+                "Limits:MaxInputDurationSeconds must be greater than zero.");
 
         OptionsBuilder<FfmpegOptions> ffmpeg = services.AddOptions<FfmpegOptions>()
             .Bind(configuration.GetSection(FfmpegOptions.SectionName))

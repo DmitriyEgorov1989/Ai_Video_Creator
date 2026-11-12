@@ -1,7 +1,7 @@
 namespace VideoFactory.VideoProduction.Domain.Jobs;
 
 /// <summary>
-/// Определяет режим подготовки вариантов видео.
+/// Определяет режим подготовки видео.
 /// </summary>
 public enum ProductionMode
 {

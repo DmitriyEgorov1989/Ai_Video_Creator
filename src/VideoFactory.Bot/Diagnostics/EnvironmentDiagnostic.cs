@@ -38,7 +38,7 @@ public sealed class EnvironmentDiagnostic
             "Storage:DataRoot is not configured.");
         AddCondition(checks, "limits", LimitsAreValid(limits),
             "Processing limits are valid.",
-            "Processing limits must be positive and MaxVariantsPerJob must be between 1 and 10.");
+            "Processing limits must be positive.");
 
         CheckExecutable(checks, "ffmpeg", ffmpeg.FfmpegPath, workspaceRoot);
         CheckExecutable(checks, "ffprobe", ffmpeg.FfprobePath, workspaceRoot);
@@ -56,8 +56,7 @@ public sealed class EnvironmentDiagnostic
 
     private static bool LimitsAreValid(LimitsOptions limits) =>
         limits.MaxInputFileBytes > 0
-        && limits.MaxInputDurationSeconds > 0
-        && limits.MaxVariantsPerJob is >= 1 and <= 10;
+        && limits.MaxInputDurationSeconds > 0;
 
     private static void CheckSecret(
         List<DiagnosticCheck> checks,

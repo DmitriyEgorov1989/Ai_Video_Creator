@@ -60,7 +60,7 @@ public sealed class StorageOptions
 }
 
 /// <summary>
-/// Ограничения на входные файлы и количество создаваемых вариантов видео.
+/// Ограничения на входные файлы.
 /// Экземпляр параметров не должен быть <see langword="null"/>.
 /// </summary>
 public sealed class LimitsOptions
@@ -82,11 +82,6 @@ public sealed class LimitsOptions
     /// </summary>
     public int MaxInputDurationSeconds { get; init; } = 1_800;
 
-    /// <summary>
-    /// Получает максимально допустимое количество вариантов для одного задания;
-    /// тип значения не допускает <see langword="null"/>.
-    /// </summary>
-    public int MaxVariantsPerJob { get; init; } = 10;
 }
 
 /// <summary>

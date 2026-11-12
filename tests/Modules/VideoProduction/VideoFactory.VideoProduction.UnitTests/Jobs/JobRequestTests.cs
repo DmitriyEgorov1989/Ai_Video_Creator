@@ -7,17 +7,17 @@ public sealed class JobRequestTests
 {
     [Theory]
     [InlineData(0)]
-    [InlineData(11)]
-    public void VariantCountOutsideProductLimitIsRejected(int variantCount)
+    [InlineData(-1)]
+    public void NonPositiveTargetDurationIsRejected(int targetDurationSeconds)
     {
         Assert.Throws<ArgumentOutOfRangeException>(
-            () => new ProductionSettings(variantCount, null, captionsEnabled: true, musicEnabled: true));
+            () => new ProductionSettings(targetDurationSeconds, captionsEnabled: true, musicEnabled: true));
     }
 
     [Fact]
     public void EmptyCommentIsRejected()
     {
-        ProductionSettings settings = new(1, null, captionsEnabled: true, musicEnabled: false);
+        ProductionSettings settings = new(null, captionsEnabled: true, musicEnabled: false);
 
         Assert.Throws<ArgumentException>(
             () => new JobRequest(ArtifactId.New(), "  ", ProductionMode.Fast, settings));
@@ -26,7 +26,7 @@ public sealed class JobRequestTests
     [Fact]
     public void DefaultArtifactIdIsRejected()
     {
-        ProductionSettings settings = new(1, null, captionsEnabled: true, musicEnabled: false);
+        ProductionSettings settings = new(null, captionsEnabled: true, musicEnabled: false);
 
         Assert.Throws<ArgumentException>(
             () => new JobRequest(default, "Make it concise", ProductionMode.Fast, settings));
@@ -36,13 +36,15 @@ public sealed class JobRequestTests
     public void ValidRequestPreservesUserIntent()
     {
         ArtifactId sourceAssetId = ArtifactId.New();
-        ProductionSettings settings = new(3, 30, captionsEnabled: true, musicEnabled: false);
+        ProductionSettings settings = new(30, captionsEnabled: true, musicEnabled: false);
 
         JobRequest request = new(sourceAssetId, "Make it concise", ProductionMode.Auto, settings);
 
         Assert.Equal(sourceAssetId, request.SourceAssetId);
         Assert.Equal("Make it concise", request.Comment);
         Assert.Equal(ProductionMode.Auto, request.RequestedMode);
-        Assert.Equal(3, request.Settings.VariantCount);
+        Assert.Equal(30, request.Settings.TargetDurationSeconds);
+        Assert.True(request.Settings.CaptionsEnabled);
+        Assert.False(request.Settings.MusicEnabled);
     }
 }

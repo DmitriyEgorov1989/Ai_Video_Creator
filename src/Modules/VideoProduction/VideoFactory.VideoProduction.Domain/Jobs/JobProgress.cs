@@ -77,7 +77,7 @@ public enum ProductionStage
     Verification,
 
     /// <summary>
-    /// Упаковка готовых результатов.
+    /// Финализация проверенного результата: QA report, manifest и MP4 без ZIP.
     /// </summary>
     Packaging,
 

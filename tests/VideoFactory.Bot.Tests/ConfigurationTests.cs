@@ -15,7 +15,7 @@ public sealed class ConfigurationTests
             ["Telegram:BotToken"] = "test-token",
             ["Telegram:AllowedUserId"] = "123456",
             ["Paths:WorkspaceRoot"] = "workspace",
-            ["Limits:MaxVariantsPerJob"] = "7"
+            ["Limits:MaxInputDurationSeconds"] = "900"
         });
 
         ServiceProvider services = BuildServices(configuration);
@@ -27,7 +27,7 @@ public sealed class ConfigurationTests
         Assert.Equal("test-token", telegram.BotToken);
         Assert.Equal(123456, telegram.AllowedUserId);
         Assert.Equal("workspace", paths.WorkspaceRoot);
-        Assert.Equal(7, limits.MaxVariantsPerJob);
+        Assert.Equal(900, limits.MaxInputDurationSeconds);
     }
 
     [Fact]
@@ -48,12 +48,12 @@ public sealed class ConfigurationTests
 
     [Theory]
     [InlineData(0)]
-    [InlineData(11)]
-    public void VariantLimitOutsideSupportedRangeIsRejected(int maxVariants)
+    [InlineData(-1)]
+    public void NonPositiveInputDurationLimitIsRejected(int maxInputDurationSeconds)
     {
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
         {
-            ["Limits:MaxVariantsPerJob"] = maxVariants.ToString()
+            ["Limits:MaxInputDurationSeconds"] = maxInputDurationSeconds.ToString()
         });
 
         ServiceProvider services = BuildServices(configuration);
@@ -61,7 +61,7 @@ public sealed class ConfigurationTests
         OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
             () => services.GetRequiredService<IOptions<LimitsOptions>>().Value);
 
-        Assert.Contains("Limits:MaxVariantsPerJob must be between 1 and 10.", exception.Failures);
+        Assert.Contains("Limits:MaxInputDurationSeconds must be greater than zero.", exception.Failures);
     }
 
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>

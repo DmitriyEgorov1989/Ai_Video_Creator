@@ -3,7 +3,7 @@ using VideoFactory.VideoProduction.Domain.Identifiers;
 namespace VideoFactory.VideoProduction.Domain.Jobs;
 
 /// <summary>
-/// Представляет проверенный запрос на создание вариантов видео из исходного артефакта.
+/// Представляет проверенный запрос на создание одного видео из исходного артефакта.
 /// </summary>
 public sealed record JobRequest
 {
@@ -26,7 +26,7 @@ public sealed record JobRequest
     public ProductionMode RequestedMode { get; }
 
     /// <summary>
-    /// Получает настройки создаваемых вариантов.
+    /// Получает настройки создаваемого видео.
     /// </summary>
     /// <value>Ненулевой набор настроек производства.</value>
     public ProductionSettings Settings { get; }
@@ -37,7 +37,7 @@ public sealed record JobRequest
     /// <param name="sourceAssetId">Непустой идентификатор исходного видеоартефакта.</param>
     /// <param name="comment">Непустой пользовательский комментарий с требованиями.</param>
     /// <param name="requestedMode">Запрошенный режим производства.</param>
-    /// <param name="settings">Ненулевые настройки создаваемых вариантов.</param>
+    /// <param name="settings">Ненулевые настройки создаваемого видео.</param>
     public JobRequest(
         ArtifactId sourceAssetId,
         string comment,
