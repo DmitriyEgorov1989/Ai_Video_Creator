@@ -114,13 +114,13 @@ one source video + user comment
 
 ## 7. Безопасный запуск внешних процессов
 
-60. [ ] Создать единый process runner в Infrastructure за application seam.
-61. [ ] Передавать аргументы через `ProcessStartInfo.ArgumentList` без shell interpolation.
-62. [ ] Асинхронно читать `stdout` и `stderr`, не допуская deadlock.
-63. [ ] Зафиксировать timeout в секундах отдельно для probe, decode, normalize и render.
-64. [ ] По отмене или timeout завершать дочернее дерево процессов.
-65. [ ] Ограничить сохраняемый объём `stdout` и `stderr` в байтах, не скрывая exit code и итоговое сообщение.
-66. [ ] Добавить fake executable для success, non-zero exit, timeout, cancellation и большого вывода.
+60. [x] Создать единый process runner в Infrastructure за application seam.
+61. [x] Передавать аргументы через `ProcessStartInfo.ArgumentList` без shell interpolation.
+62. [x] Асинхронно читать `stdout` и `stderr`, не допуская deadlock.
+63. [x] Зафиксировать timeout в секундах отдельно для probe, decode, normalize и render.
+64. [x] По отмене или timeout завершать дочернее дерево процессов.
+65. [x] Ограничить сохраняемый объём `stdout` и `stderr` в байтах, не скрывая exit code и итоговое сообщение.
+66. [x] Добавить fake executable для success, non-zero exit, timeout, cancellation и большого вывода.
 
 Проверка этапа: integration-тесты process runner проходят без shell и без зависших дочерних процессов.
 

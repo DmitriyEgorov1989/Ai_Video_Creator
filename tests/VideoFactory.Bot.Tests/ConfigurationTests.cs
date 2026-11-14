@@ -85,6 +85,54 @@ public sealed class ConfigurationTests
         Assert.Contains("Limits:MaxInputDurationSeconds must be greater than zero.", exception.Failures);
     }
 
+    [Fact]
+    public void ProcessTimeoutsBindSecondsAndOutputLimit()
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["ProcessTimeouts:ProbeSeconds"] = "11",
+            ["ProcessTimeouts:DecodeSeconds"] = "22",
+            ["ProcessTimeouts:NormalizeSeconds"] = "33",
+            ["ProcessTimeouts:RenderSeconds"] = "44",
+            ["ProcessTimeouts:MaxOutputBytes"] = "555"
+        });
+
+        ServiceProvider services = BuildServices(configuration);
+
+        ProcessTimeoutOptions options = services
+            .GetRequiredService<IOptions<ProcessTimeoutOptions>>()
+            .Value;
+
+        Assert.Equal(11, options.ProbeSeconds);
+        Assert.Equal(22, options.DecodeSeconds);
+        Assert.Equal(33, options.NormalizeSeconds);
+        Assert.Equal(44, options.RenderSeconds);
+        Assert.Equal(555, options.MaxOutputBytes);
+    }
+
+    [Theory]
+    [InlineData("ProbeSeconds")]
+    [InlineData("DecodeSeconds")]
+    [InlineData("NormalizeSeconds")]
+    [InlineData("RenderSeconds")]
+    [InlineData("MaxOutputBytes")]
+    public void NonPositiveProcessTimeoutValueIsRejected(string propertyName)
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            [$"ProcessTimeouts:{propertyName}"] = "0"
+        });
+
+        ServiceProvider services = BuildServices(configuration);
+
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value);
+
+        Assert.Contains(
+            exception.Failures,
+            failure => failure.Contains($"ProcessTimeouts:{propertyName}", StringComparison.Ordinal));
+    }
+
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(values)

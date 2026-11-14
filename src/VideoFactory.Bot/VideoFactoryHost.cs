@@ -3,11 +3,13 @@ using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Diagnostics;
 using VideoFactory.Bot.Logging;
 using VideoFactory.Bot.Workers;
+using VideoFactory.VideoProduction.Application.Processes;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Infrastructure.Queue;
+using VideoFactory.VideoProduction.Infrastructure.Processes;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.Bot;
@@ -34,6 +36,7 @@ public static class VideoFactoryHost
             builder.Configuration,
             validateOnStart: !diagnosticMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
+        builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
         builder.Services.AddSingleton<IJobWorkQueue>(services =>
             new SqliteJobWorkQueue(BuildConnectionString(services)));
         builder.Services.AddSingleton<IJobStateStore>(services =>
@@ -92,6 +95,7 @@ public static class VideoFactoryHost
         _ = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
         _ = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
         _ = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
+        _ = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
     }
 
     private static async Task InitializeStorageAsync(

@@ -19,6 +19,7 @@
   <ItemGroup>
     <ProjectReference Include="../../../../src/Modules/VideoProduction/VideoFactory.VideoProduction.Application/VideoFactory.VideoProduction.Application.csproj" />
     <ProjectReference Include="../../../../src/Modules/VideoProduction/VideoFactory.VideoProduction.Infrastructure/VideoFactory.VideoProduction.Infrastructure.csproj" />
+    <ProjectReference Include="../VideoFactory.VideoProduction.ProcessRunnerFake/VideoFactory.VideoProduction.ProcessRunnerFake.csproj" />
   </ItemGroup>
 
 </Project>

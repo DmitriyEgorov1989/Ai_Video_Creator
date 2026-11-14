@@ -77,6 +77,20 @@ public static class ConfigurationRegistration
             .Validate(IsAiApiConfigurationComplete,
                 "AiApi settings must be either empty or contain Provider, ApiKey, and Model.");
 
+        OptionsBuilder<ProcessTimeoutOptions> processTimeouts = services
+            .AddOptions<ProcessTimeoutOptions>()
+            .Bind(configuration.GetSection(ProcessTimeoutOptions.SectionName))
+            .Validate(options => options.ProbeSeconds > 0,
+                "ProcessTimeouts:ProbeSeconds must be greater than zero.")
+            .Validate(options => options.DecodeSeconds > 0,
+                "ProcessTimeouts:DecodeSeconds must be greater than zero.")
+            .Validate(options => options.NormalizeSeconds > 0,
+                "ProcessTimeouts:NormalizeSeconds must be greater than zero.")
+            .Validate(options => options.RenderSeconds > 0,
+                "ProcessTimeouts:RenderSeconds must be greater than zero.")
+            .Validate(options => options.MaxOutputBytes > 0,
+                "ProcessTimeouts:MaxOutputBytes must be greater than zero.");
+
         if (validateOnStart)
         {
             telegram.ValidateOnStart();
@@ -88,6 +102,7 @@ public static class ConfigurationRegistration
             whisper.ValidateOnStart();
             remotion.ValidateOnStart();
             aiApi.ValidateOnStart();
+            processTimeouts.ValidateOnStart();
         }
 
         return services;
