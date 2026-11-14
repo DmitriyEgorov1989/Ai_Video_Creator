@@ -18,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="../../../../src/Modules/VideoProduction/VideoFactory.VideoProduction.Application/VideoFactory.VideoProduction.Application.csproj" />
     <ProjectReference Include="../../../../src/Modules/VideoProduction/VideoFactory.VideoProduction.Domain/VideoFactory.VideoProduction.Domain.csproj" />
+    <ProjectReference Include="../../../../src/Modules/VideoProduction/VideoFactory.VideoProduction.Infrastructure/VideoFactory.VideoProduction.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

@@ -1,4 +1,5 @@
 using VideoFactory.Bot.Configuration;
+using VideoFactory.VideoProduction.Application.Processes;
 
 namespace VideoFactory.Bot.Diagnostics;
 
@@ -6,11 +7,16 @@ public sealed class EnvironmentDiagnostic
 {
     private readonly IConfiguration configuration;
     private readonly string contentRootPath;
+    private readonly IProcessRunner? processRunner;
 
-    public EnvironmentDiagnostic(IConfiguration configuration, string? contentRootPath = null)
+    public EnvironmentDiagnostic(
+        IConfiguration configuration,
+        string? contentRootPath = null,
+        IProcessRunner? processRunner = null)
     {
         this.configuration = configuration;
         this.contentRootPath = contentRootPath ?? Directory.GetCurrentDirectory();
+        this.processRunner = processRunner;
     }
 
     public DiagnosticReport Run()
@@ -49,6 +55,53 @@ public sealed class EnvironmentDiagnostic
         CheckAiApi(checks, aiApi);
 
         return new DiagnosticReport(checks);
+    }
+
+    /// <summary>
+    /// Проверяет наличие и фактический запуск FFmpeg и FFprobe.
+    /// </summary>
+    public async Task<DiagnosticReport> RunAsync(CancellationToken cancellationToken)
+    {
+        DiagnosticReport report = Run();
+        if (processRunner is null)
+        {
+            return report;
+        }
+
+        List<DiagnosticCheck> checks = [.. report.Checks];
+        FfmpegOptions ffmpeg = GetOptions<FfmpegOptions>(FfmpegOptions.SectionName);
+        await AddVersionCheckAsync(checks, "ffmpeg-version", ffmpeg.FfmpegPath, cancellationToken);
+        await AddVersionCheckAsync(checks, "ffprobe-version", ffmpeg.FfprobePath, cancellationToken);
+        return new DiagnosticReport(checks);
+    }
+
+    private async Task AddVersionCheckAsync(
+        List<DiagnosticCheck> checks,
+        string name,
+        string executable,
+        CancellationToken cancellationToken)
+    {
+        ProcessExecutionResult result = await processRunner!.RunAsync(
+            new ProcessStartRequest(
+                executable,
+                ["-version"],
+                TimeSpan.FromSeconds(10),
+                16_384),
+            cancellationToken);
+
+        string output = string.IsNullOrWhiteSpace(result.StandardOutput)
+            ? result.StandardError
+            : result.StandardOutput;
+        string firstLine = output.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault()?
+            .Trim() ?? "No version output was returned.";
+
+        checks.Add(result.IsSuccess
+            ? new DiagnosticCheck(name, DiagnosticStatus.Passed, firstLine)
+            : new DiagnosticCheck(
+                name,
+                DiagnosticStatus.Failed,
+                result.ErrorMessage ?? $"Unable to execute {executable}."));
     }
 
     private T GetOptions<T>(string sectionName) where T : new() =>
