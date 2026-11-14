@@ -5,6 +5,7 @@ using VideoFactory.Bot.Logging;
 using VideoFactory.Bot.Telegram;
 using VideoFactory.Bot.Workers;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Analysis;
 using VideoFactory.VideoProduction.Application.Processes;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
@@ -16,6 +17,7 @@ using VideoFactory.VideoProduction.Infrastructure.Queue;
 using VideoFactory.VideoProduction.Infrastructure.Processes;
 using VideoFactory.VideoProduction.Infrastructure.Media;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
+using VideoFactory.VideoProduction.Infrastructure.Analysis;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -43,6 +45,38 @@ public static class VideoFactoryHost
             validateOnStart: !diagnosticMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
         builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
+        builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
+        builder.Services.AddSingleton<IAudioActivityDetector>(services =>
+        {
+            FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new FfmpegAudioActivityDetector(
+                services.GetRequiredService<IProcessRunner>(),
+                ffmpeg.FfmpegPath,
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes);
+        });
+        builder.Services.AddSingleton<ISceneBoundaryDetector>(services =>
+        {
+            FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new FfmpegSceneBoundaryDetector(
+                services.GetRequiredService<IProcessRunner>(),
+                ffmpeg.FfmpegPath,
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes);
+        });
+        builder.Services.AddSingleton<IWhisperTranscriber>(services =>
+        {
+            WhisperOptions whisper = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new WhisperProcessTranscriber(
+                services.GetRequiredService<IProcessRunner>(),
+                whisper.PythonPath,
+                whisper.WorkerPath,
+                TimeSpan.FromSeconds(timeouts.NormalizeSeconds),
+                timeouts.MaxOutputBytes);
+        });
         builder.Services.AddSingleton<IMediaProbe>(services =>
         {
             FfmpegOptions options = services
@@ -87,6 +121,9 @@ public static class VideoFactoryHost
             new SqliteStageAttemptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IArtifactStore>(services =>
             new SqliteArtifactStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
+            new LocalArtifactStorage(BuildWorkspaceRoot(services)));
+        builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();
         builder.Services.AddSingleton<TelegramBotClient>(services =>
             new TelegramBotClient(
                 services.GetRequiredService<IOptions<TelegramOptions>>().Value.BotToken));
