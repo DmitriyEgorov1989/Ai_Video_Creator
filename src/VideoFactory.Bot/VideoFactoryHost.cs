@@ -2,15 +2,19 @@ using Microsoft.Extensions.Options;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Diagnostics;
 using VideoFactory.Bot.Logging;
+using VideoFactory.Bot.Telegram;
 using VideoFactory.Bot.Workers;
+using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Processes;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Stages;
+using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Queue;
 using VideoFactory.VideoProduction.Infrastructure.Processes;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
+using Telegram.Bot;
 
 namespace VideoFactory.Bot;
 
@@ -41,8 +45,28 @@ public static class VideoFactoryHost
             new SqliteJobWorkQueue(BuildConnectionString(services)));
         builder.Services.AddSingleton<IJobStateStore>(services =>
             new SqliteJobStateStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IJobCreationStore>(services =>
+            new SqliteJobCreationStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IStageAttemptStore>(services =>
             new SqliteStageAttemptStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IArtifactStore>(services =>
+            new SqliteArtifactStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<TelegramBotClient>(services =>
+            new TelegramBotClient(
+                services.GetRequiredService<IOptions<TelegramOptions>>().Value.BotToken));
+        builder.Services.AddSingleton<ITelegramIntakeSessionStore, InMemoryTelegramIntakeSessionStore>();
+        builder.Services.AddSingleton<ITelegramFileDownloader>(services =>
+            new TelegramFileDownloader(
+                services.GetRequiredService<TelegramBotClient>(),
+                BuildWorkspaceRoot(services)));
+        builder.Services.AddSingleton<ITelegramResponder, TelegramBotResponder>();
+        builder.Services.AddSingleton<ICreateJobUseCase>(services =>
+            new CreateJobUseCaseAdapter(
+                new CreateJobUseCase(
+                    services.GetRequiredService<IJobCreationStore>(),
+                    services.GetRequiredService<IJobSignal>())));
+        builder.Services.AddSingleton<TelegramUpdateHandler>();
+        builder.Services.AddHostedService<TelegramPollingService>();
         builder.Services.AddSingleton<IJobStageExecutor, UnavailableJobStageExecutor>();
         builder.Services.AddSingleton<SequentialJobProcessor>();
         builder.Services.AddHostedService<SequentialJobWorker>();
@@ -116,13 +140,17 @@ public static class VideoFactoryHost
 
     private static string BuildConnectionString(IServiceProvider services)
     {
-        PathsOptions paths = services.GetRequiredService<IOptions<PathsOptions>>().Value;
         StorageOptions storage = services.GetRequiredService<IOptions<StorageOptions>>().Value;
-        IHostEnvironment environment = services.GetRequiredService<IHostEnvironment>();
-        string workspaceRoot = Path.GetFullPath(
-            Path.Combine(environment.ContentRootPath, paths.WorkspaceRoot));
+        string workspaceRoot = BuildWorkspaceRoot(services);
         string dataRoot = Path.GetFullPath(Path.Combine(workspaceRoot, storage.DataRoot));
         return $"Data Source={Path.Combine(dataRoot, storage.DatabaseFileName)};Cache=Shared";
+    }
+
+    private static string BuildWorkspaceRoot(IServiceProvider services)
+    {
+        PathsOptions paths = services.GetRequiredService<IOptions<PathsOptions>>().Value;
+        IHostEnvironment environment = services.GetRequiredService<IHostEnvironment>();
+        return Path.GetFullPath(Path.Combine(environment.ContentRootPath, paths.WorkspaceRoot));
     }
 
     private static int RunDiagnostics(IServiceProvider services, ILogger logger)

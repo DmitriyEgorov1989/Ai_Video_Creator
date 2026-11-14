@@ -14,6 +14,7 @@ public sealed class ConfigurationTests
         {
             ["Telegram:BotToken"] = "test-token",
             ["Telegram:AllowedUserId"] = "123456",
+            ["Telegram:ProgressMessageIntervalSeconds"] = "7",
             ["Paths:WorkspaceRoot"] = "workspace",
             ["Storage:DataRoot"] = "data",
             ["Storage:DatabaseFileName"] = "jobs.sqlite",
@@ -29,6 +30,7 @@ public sealed class ConfigurationTests
 
         Assert.Equal("test-token", telegram.BotToken);
         Assert.Equal(123456, telegram.AllowedUserId);
+        Assert.Equal(7, telegram.ProgressMessageIntervalSeconds);
         Assert.Equal("workspace", paths.WorkspaceRoot);
         Assert.Equal("data", storage.DataRoot);
         Assert.Equal("jobs.sqlite", storage.DatabaseFileName);
@@ -49,6 +51,24 @@ public sealed class ConfigurationTests
             () => services.GetRequiredService<IOptions<TelegramOptions>>().Value);
 
         Assert.Contains("Telegram:BotToken is required.", exception.Failures);
+    }
+
+    [Fact]
+    public void NonPositiveTelegramProgressIntervalIsRejected()
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Telegram:ProgressMessageIntervalSeconds"] = "0"
+        });
+
+        ServiceProvider services = BuildServices(configuration);
+
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<TelegramOptions>>().Value);
+
+        Assert.Contains(
+            "Telegram:ProgressMessageIntervalSeconds must be greater than zero.",
+            exception.Failures);
     }
 
     [Fact]

@@ -22,6 +22,12 @@ public sealed class TelegramOptions
     /// тип значения не допускает <see langword="null"/>.
     /// </summary>
     public long AllowedUserId { get; init; }
+
+    /// <summary>
+    /// Получает минимальный интервал между progress-сообщениями в секундах;
+    /// значение должно быть больше нуля.
+    /// </summary>
+    public int ProgressMessageIntervalSeconds { get; init; } = 5;
 }
 
 /// <summary>
