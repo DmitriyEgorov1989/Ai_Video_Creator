@@ -4,12 +4,14 @@ using VideoFactory.Bot.Diagnostics;
 using VideoFactory.Bot.Logging;
 using VideoFactory.Bot.Workers;
 using VideoFactory.VideoProduction.Application.Processes;
+using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Infrastructure.Queue;
 using VideoFactory.VideoProduction.Infrastructure.Processes;
+using VideoFactory.VideoProduction.Infrastructure.Media;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.Bot;
@@ -37,6 +39,40 @@ public static class VideoFactoryHost
             validateOnStart: !diagnosticMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
         builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
+        builder.Services.AddSingleton<IMediaProbe>(services =>
+        {
+            FfmpegOptions options = services
+                .GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            return new FfprobeMediaProbe(
+                services.GetRequiredService<IProcessRunner>(),
+                options.FfprobePath);
+        });
+        builder.Services.AddSingleton<IMediaDecodeVerifier>(services =>
+        {
+            FfmpegOptions options = services
+                .GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            return new FfmpegDecodeVerifier(
+                services.GetRequiredService<IProcessRunner>(),
+                options.FfmpegPath);
+        });
+        builder.Services.AddSingleton<IMezzanineBuilder>(services =>
+        {
+            FfmpegOptions options = services
+                .GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            return new FfmpegMezzanineBuilder(
+                services.GetRequiredService<IProcessRunner>(),
+                services.GetRequiredService<IMediaProbe>(),
+                services.GetRequiredService<IMediaDecodeVerifier>(),
+                options.FfmpegPath);
+        });
+        builder.Services.AddSingleton<IAudioStemBuilder>(services =>
+        {
+            FfmpegOptions options = services
+                .GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            return new FfmpegAudioStemBuilder(
+                services.GetRequiredService<IProcessRunner>(),
+                options.FfmpegPath);
+        });
         builder.Services.AddSingleton<IJobWorkQueue>(services =>
             new SqliteJobWorkQueue(BuildConnectionString(services)));
         builder.Services.AddSingleton<IJobStateStore>(services =>
@@ -49,7 +85,10 @@ public static class VideoFactoryHost
         builder.Services.AddSingleton(serviceProvider =>
         {
             IHostEnvironment environment = serviceProvider.GetRequiredService<IHostEnvironment>();
-            return new EnvironmentDiagnostic(builder.Configuration, environment.ContentRootPath);
+            return new EnvironmentDiagnostic(
+                builder.Configuration,
+                environment.ContentRootPath,
+                serviceProvider.GetRequiredService<IProcessRunner>());
         });
 
         using IHost host = builder.Build();
@@ -59,7 +98,7 @@ public static class VideoFactoryHost
 
         if (diagnosticMode)
         {
-            return RunDiagnostics(host.Services, logger);
+             return await RunDiagnosticsAsync(host.Services, logger, cancellationToken);
         }
 
         try
@@ -125,11 +164,14 @@ public static class VideoFactoryHost
         return $"Data Source={Path.Combine(dataRoot, storage.DatabaseFileName)};Cache=Shared";
     }
 
-    private static int RunDiagnostics(IServiceProvider services, ILogger logger)
+    private static async Task<int> RunDiagnosticsAsync(
+        IServiceProvider services,
+        ILogger logger,
+        CancellationToken cancellationToken)
     {
         EnvironmentDiagnostic diagnostic = services.GetRequiredService<EnvironmentDiagnostic>();
         using IDisposable scope = PipelineLogScope.Begin(logger, stage: "diagnostics");
-        DiagnosticReport report = diagnostic.Run();
+         DiagnosticReport report = await diagnostic.RunAsync(cancellationToken);
 
         foreach (DiagnosticCheck check in report.Checks)
         {

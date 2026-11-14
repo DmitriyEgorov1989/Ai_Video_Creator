@@ -40,6 +40,17 @@ public sealed record VideoStreamMetadata
     public bool? IsVariableFrameRate { get; }
 
     /// <summary>
+    /// Получает отношение ширины пикселя к его высоте или <see langword="null"/>,
+    /// если FFprobe не сообщил SAR.
+    /// </summary>
+    public string? SampleAspectRatio { get; }
+
+    /// <summary>
+    /// Получает признак HDR-потока или <see langword="null"/>, если профиль не определён.
+    /// </summary>
+    public bool? IsHdr { get; }
+
+    /// <summary>
     /// Получает поворот кадра в градусах или <see langword="null"/>, если метаданные поворота отсутствуют.
     /// </summary>
     public int? RotationDegrees { get; }
@@ -61,7 +72,9 @@ public sealed record VideoStreamMetadata
         int height,
         FrameRate? averageFrameRate,
         bool? isVariableFrameRate,
-        int? rotationDegrees)
+        int? rotationDegrees,
+        string? sampleAspectRatio = null,
+        bool? isHdr = null)
     {
         if (streamIndex < 0) throw new ArgumentOutOfRangeException(nameof(streamIndex));
         if (string.IsNullOrWhiteSpace(codec)) throw new ArgumentException("Codec is required.", nameof(codec));
@@ -76,6 +89,8 @@ public sealed record VideoStreamMetadata
         AverageFrameRate = averageFrameRate;
         IsVariableFrameRate = isVariableFrameRate;
         RotationDegrees = rotationDegrees;
+        SampleAspectRatio = sampleAspectRatio;
+        IsHdr = isHdr;
     }
 }
 
