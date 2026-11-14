@@ -238,7 +238,10 @@ dotnet run --project src/VideoFactory.Bot -- diagnose
 dotnet run --project src/VideoFactory.Bot
 ```
 
-Telegram polling будет добавлен отдельным этапом и сейчас не запускается.
+При обычном запуске Telegram polling запускается для одного `Telegram:AllowedUserId`.
+Пользователь отправляет видео или документ с видео, затем непустой комментарий;
+после этого создаётся один Job в режиме `Fast`. Для локального запуска задайте
+`Telegram:BotToken` и `Telegram:AllowedUserId` через User Secrets или переменные окружения.
 
 ## Локальные agent skills
 

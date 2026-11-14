@@ -14,7 +14,9 @@ public static class ConfigurationRegistration
             .Validate(options => !string.IsNullOrWhiteSpace(options.BotToken),
                 "Telegram:BotToken is required.")
             .Validate(options => options.AllowedUserId > 0,
-                "Telegram:AllowedUserId must be greater than zero.");
+                "Telegram:AllowedUserId must be greater than zero.")
+            .Validate(options => options.ProgressMessageIntervalSeconds > 0,
+                "Telegram:ProgressMessageIntervalSeconds must be greater than zero.");
 
         OptionsBuilder<StorageOptions> storage = services.AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.SectionName))
