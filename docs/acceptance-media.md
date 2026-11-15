@@ -71,5 +71,46 @@ dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.Integra
 сравнивайте характеристики, ожидаемые результаты и паспорт новой ревизии.
 Время создания в паспорте при каждом запуске меняется.
 
+## Проверка Preparation через очередь
+
+Этап `Preparation` подключён к `ProductionStageExecutor` и Host. Он проверяет
+целостность Original, выполняет probe и проверку входного профиля, подготавливает
+Master и только после регистрации результата переводит Job в `Analysis`.
+
+Master сохраняется отдельным неизменяемым артефактом `master-video` в
+`data/jobs/{jobId}/normalized/{artifactId}.mp4`. Для VFR или rotation используется
+существующий mezzanine builder; для остальных поддерживаемых файлов создаётся
+побайтовая копия без перекодирования. Копия нужна потому, что текущая схема SQLite
+требует уникального пути каждого артефакта. Перед созданием файла проверяются
+свободное место и квота Job. Original и его Telegram-метаданные не перезаписываются.
+
+Запись Master содержит SHA-256, размер в байтах, родительский ID Original, версию
+`preparation/1` и технические metadata с `schemaVersion = 1`: `originalSha256`,
+`wasNormalized`, `originalMetadata`, `mediaMetadata`, `mapping`. В `mapping`
+сохраняется существующий `TimelineMapping`: ID Original и Master, начало и
+длительность обоих интервалов в целых микросекундах. Metadata и mapping
+регистрируются одной записью, поэтому отдельного частично сохранённого mapping нет.
+
+После остановки между регистрацией Master и переходом Job повтор проверяет hash
+Original, наличие, размер и hash Master, принадлежность и согласованность mapping.
+Завершённый результат используется без повторного запуска процессов. Если Master
+отсутствует или повреждён, создаётся новая ревизия без перезаписи предыдущей.
+Файл, опубликованный до сбоя регистрации, ещё не считается завершённым результатом;
+повтор создаёт новый файл, а оставшийся входит в дисковую квоту и обычную очистку Job.
+
+Проверка с временной SQLite через `SequentialJobProcessor.ProcessNextAsync`:
+
+```powershell
+dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.IntegrationTests\VideoFactory.VideoProduction.IntegrationTests.csproj --filter FullyQualifiedName~PreparationStageExecutorTests
+```
+
+Без `ACCEPTANCE_MEDIA_ROOT` выполняются проверки с подменёнными процессами.
+При заданной переменной дополнительно выполняются два сценария с настоящими
+FFmpeg/FFprobe: `speech.mp4` без перекодирования и его временная копия с поворотом
+на 90 градусов, требующая нормализации. Для результата проверяются переход в
+`Analysis`, hash, размер, потоки, длительность, dimensions, rotation, mapping
+и полный decode с `-xerror`. Для создания повёрнутого входа нужен FFmpeg с
+поддержкой `-display_rotation`.
+
 Это подготовка входных материалов. Сквозная доставка MP4 через Telegram,
 качество распознавания Whisper и удаление пауз проверяются отдельной приёмкой.

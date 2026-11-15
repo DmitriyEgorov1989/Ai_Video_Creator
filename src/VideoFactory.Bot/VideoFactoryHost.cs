@@ -199,6 +199,23 @@ public static class VideoFactoryHost
             services.GetRequiredService<ITelegramResponder>(),
             services.GetRequiredService<ILogger<TelegramUpdateHandler>>()));
         builder.Services.AddHostedService<TelegramPollingService>();
+        builder.Services.AddSingleton<PreparationStageExecutor>(services =>
+        {
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            LimitsOptions limits = services.GetRequiredService<IOptions<LimitsOptions>>().Value;
+            return new PreparationStageExecutor(
+                services.GetRequiredService<IArtifactStore>(),
+                services.GetRequiredService<IMediaProbe>(),
+                services.GetRequiredService<IMezzanineBuilder>(),
+                services.GetRequiredService<IMediaDecodeVerifier>(),
+                BuildWorkspaceRoot(services),
+                new MediaInputProfile { MaxFileBytes = limits.MaxInputFileBytes, MaxDurationSeconds = limits.MaxInputDurationSeconds },
+                TimeSpan.FromSeconds(timeouts.ProbeSeconds),
+                TimeSpan.FromSeconds(timeouts.NormalizeSeconds),
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes,
+                services.GetRequiredService<IStorageBudget>());
+        });
         builder.Services.AddSingleton<RenderingStageExecutor>(services =>
             new RenderingStageExecutor(
                 services.GetRequiredService<IEditPlanRevisionStore>(),
@@ -248,6 +265,7 @@ public static class VideoFactoryHost
         });
         builder.Services.AddSingleton<IJobStageExecutor>(services =>
             new ProductionStageExecutor(
+                services.GetRequiredService<PreparationStageExecutor>(),
                 services.GetRequiredService<RenderingStageExecutor>(),
                 services.GetRequiredService<VerificationStageExecutor>(),
                 services.GetRequiredService<PackagingStageExecutor>(),
