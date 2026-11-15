@@ -15,6 +15,12 @@ public interface IArtifactStore
         ArtifactId artifactId,
         CancellationToken cancellationToken);
 
+    /// <summary>Находит последний артефакт заданного типа для Job.</summary>
+    Task<ArtifactRecord?> FindLatestAsync(
+        JobId jobId,
+        string artifactType,
+        CancellationToken cancellationToken);
+
     /// <summary>
     /// Регистрирует описание Artifact или возвращает уже существующее описание.
     /// </summary>

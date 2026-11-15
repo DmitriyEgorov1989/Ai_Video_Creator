@@ -32,6 +32,9 @@ internal sealed class FfprobeStream
 
     public int? Height { get; init; }
 
+    [JsonPropertyName("pix_fmt")]
+    public string? PixelFormat { get; init; }
+
     [JsonPropertyName("avg_frame_rate")]
     public string? AverageFrameRate { get; init; }
 

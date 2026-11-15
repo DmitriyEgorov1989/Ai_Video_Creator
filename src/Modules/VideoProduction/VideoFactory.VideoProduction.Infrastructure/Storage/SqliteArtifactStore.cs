@@ -34,7 +34,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
         await connection.OpenAsync(cancellationToken);
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT artifact_id, artifact_type, relative_path, sha256, size_bytes,
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
                    metadata_json, parent_artifact_id, tool_version
             FROM artifacts
             WHERE artifact_id = $artifactId;
@@ -47,6 +47,30 @@ public sealed class SqliteArtifactStore : IArtifactStore
         }
 
         return ReadRecord(reader);
+    }
+
+    /// <inheritdoc />
+    public async Task<ArtifactRecord?> FindLatestAsync(
+        JobId jobId,
+        string artifactType,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactType);
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
+                   metadata_json, parent_artifact_id, tool_version
+            FROM artifacts
+            WHERE job_id = $jobId AND artifact_type = $artifactType
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$artifactType", artifactType);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadRecord(reader) : null;
     }
 
     /// <inheritdoc />
@@ -81,13 +105,14 @@ public sealed class SqliteArtifactStore : IArtifactStore
         command.CommandText =
             """
             INSERT INTO artifacts (
-                artifact_id, artifact_type, relative_path, sha256, size_bytes,
+                artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
                 metadata_json, parent_artifact_id, tool_version, created_at)
             VALUES (
-                $artifactId, $artifactType, $relativePath, $sha256, $sizeBytes,
+                $artifactId, $jobId, $artifactType, $relativePath, $sha256, $sizeBytes,
                 $metadataJson, $parentArtifactId, $toolVersion, $createdAt);
             """;
         command.Parameters.AddWithValue("$artifactId", record.ArtifactId.ToString());
+        command.Parameters.AddWithValue("$jobId", record.JobId?.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$artifactType", record.ArtifactType);
         command.Parameters.AddWithValue("$relativePath", record.RelativePath);
         command.Parameters.AddWithValue("$sha256", (object?)record.Sha256 ?? DBNull.Value);
@@ -138,7 +163,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
         command.Transaction = transaction;
         command.CommandText =
             """
-            SELECT artifact_id, artifact_type, relative_path, sha256, size_bytes,
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
                    metadata_json, parent_artifact_id, tool_version
             FROM artifacts
             WHERE artifact_id = $artifactId;
@@ -155,13 +180,14 @@ public sealed class SqliteArtifactStore : IArtifactStore
 
     private static ArtifactRecord ReadRecord(SqliteDataReader reader) => new(
         new ArtifactId(Guid.Parse(reader.GetString(0))),
-        reader.GetString(1),
         reader.GetString(2),
-        GetNullableString(reader, 3),
-        GetNullableInt64(reader, 4),
-        GetNullableString(reader, 5),
-        GetNullableArtifactId(reader, 6),
-        GetNullableString(reader, 7));
+        reader.GetString(3),
+        GetNullableString(reader, 4),
+        GetNullableInt64(reader, 5),
+        GetNullableString(reader, 6),
+        GetNullableArtifactId(reader, 7),
+        GetNullableString(reader, 8),
+        reader.IsDBNull(1) ? null : new JobId(Guid.Parse(reader.GetString(1))));
 
     private static string? GetNullableString(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

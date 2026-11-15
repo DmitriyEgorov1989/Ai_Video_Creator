@@ -10,6 +10,7 @@ public sealed class SqliteMigrationRunner
     private const int InitialSchemaVersion = 1;
     private const int HeartbeatSchemaVersion = 2;
     private const int EditPlanSchemaVersion = 3;
+    private const int DeliverySchemaVersion = 4;
     private readonly string connectionString;
 
     /// <summary>
@@ -88,6 +89,17 @@ public sealed class SqliteMigrationRunner
                 connection,
                 transaction,
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (3, $appliedAt);",
+                cancellationToken,
+                ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, DeliverySchemaVersion, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, DeliverySchemaSql, cancellationToken);
+            await ExecuteAsync(
+                connection,
+                transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (4, $appliedAt);",
                 cancellationToken,
                 ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
@@ -244,5 +256,26 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_edit_plan_revisions_job_variant
             ON edit_plan_revisions (job_id, variant_id);
+        """;
+
+    private const string DeliverySchemaSql = """
+        CREATE TABLE delivery_receipts (
+            receipt_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            variant_id TEXT NOT NULL,
+            artifact_id TEXT NOT NULL,
+            recipient_id INTEGER NOT NULL,
+            remote_message_id TEXT NULL,
+            status TEXT NOT NULL,
+            error_code TEXT NULL,
+            error_message TEXT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE,
+            FOREIGN KEY (artifact_id) REFERENCES artifacts (artifact_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX ix_delivery_receipts_job
+            ON delivery_receipts (job_id, created_at);
         """;
 }

@@ -21,6 +21,11 @@ using VideoFactory.VideoProduction.Infrastructure.Media;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Analysis;
 using VideoFactory.VideoProduction.Infrastructure.Rendering;
+using VideoFactory.VideoProduction.Infrastructure.Pipeline;
+using VideoFactory.VideoProduction.Infrastructure.QualityAssurance;
+using VideoFactory.VideoProduction.Infrastructure.Packaging;
+using VideoFactory.VideoProduction.Infrastructure.Delivery;
+using VideoFactory.VideoProduction.Application.Delivery;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -104,6 +109,16 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IProcessRunner>(),
                 options.FfmpegPath);
         });
+        builder.Services.AddSingleton<IOutputQualityAssurance>(services =>
+        {
+            ProcessTimeoutOptions timeouts = services
+                .GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new OutputQualityAssurance(
+                services.GetRequiredService<IMediaProbe>(),
+                services.GetRequiredService<IMediaDecodeVerifier>(),
+                TimeSpan.FromSeconds(timeouts.ProbeSeconds),
+                timeouts.MaxOutputBytes);
+        });
         builder.Services.AddSingleton<IMezzanineBuilder>(services =>
         {
             FfmpegOptions options = services
@@ -132,6 +147,8 @@ public static class VideoFactoryHost
             new SqliteStageAttemptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IArtifactStore>(services =>
             new SqliteArtifactStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IDeliveryReceiptStore>(services =>
+            new SqliteDeliveryReceiptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IEditPlanRevisionStore>(services =>
             new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
@@ -146,6 +163,7 @@ public static class VideoFactoryHost
                 services.GetRequiredService<TelegramBotClient>(),
                 BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<ITelegramResponder, TelegramBotResponder>();
+        builder.Services.AddSingleton<IVideoDelivery, TelegramVideoDelivery>();
         builder.Services.AddSingleton<ICreateJobUseCase>(services =>
             new CreateJobUseCaseAdapter(
                 new CreateJobUseCase(
@@ -153,7 +171,7 @@ public static class VideoFactoryHost
                     services.GetRequiredService<IJobSignal>())));
         builder.Services.AddSingleton<TelegramUpdateHandler>();
         builder.Services.AddHostedService<TelegramPollingService>();
-        builder.Services.AddSingleton<IJobStageExecutor>(services =>
+        builder.Services.AddSingleton<RenderingStageExecutor>(services =>
             new RenderingStageExecutor(
                 services.GetRequiredService<IEditPlanRevisionStore>(),
                 services.GetRequiredService<IArtifactStore>(),
@@ -166,7 +184,44 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.SampleRate,
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.ChannelLayout,
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.LoudnessLufs,
-                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp));
+                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp));
+        builder.Services.AddSingleton<VerificationStageExecutor>(services =>
+        {
+            OutputQualityOptions options = services.GetRequiredService<IOptions<OutputQualityOptions>>().Value;
+            return new VerificationStageExecutor(
+                services.GetRequiredService<IEditPlanRevisionStore>(),
+                services.GetRequiredService<IArtifactStore>(),
+                services.GetRequiredService<IOutputQualityAssurance>(),
+                BuildWorkspaceRoot(services),
+                new OutputQualityOptionsProfile(
+                    options.ExpectedWidth,
+                    options.ExpectedHeight,
+                    options.DurationToleranceFrames,
+                    options.RequireAudio,
+                    string.IsNullOrWhiteSpace(options.ExpectedPixelFormat) ? null : options.ExpectedPixelFormat,
+                    options.MaxTelegramBytes));
+        });
+        builder.Services.AddSingleton<PackagingStageExecutor>(services =>
+            new PackagingStageExecutor(
+                services.GetRequiredService<IArtifactStore>(),
+                BuildWorkspaceRoot(services),
+                services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.MaxTelegramBytes));
+        builder.Services.AddSingleton<DeliveryStageExecutor>(services =>
+        {
+            TelegramOptions telegram = services.GetRequiredService<IOptions<TelegramOptions>>().Value;
+            return new DeliveryStageExecutor(
+                services.GetRequiredService<IArtifactStore>(),
+                services.GetRequiredService<IVideoDelivery>(),
+                services.GetRequiredService<IDeliveryReceiptStore>(),
+                BuildWorkspaceRoot(services),
+                telegram.AllowedUserId);
+        });
+        builder.Services.AddSingleton<IJobStageExecutor>(services =>
+            new ProductionStageExecutor(
+                services.GetRequiredService<RenderingStageExecutor>(),
+                services.GetRequiredService<VerificationStageExecutor>(),
+                services.GetRequiredService<PackagingStageExecutor>(),
+                services.GetRequiredService<DeliveryStageExecutor>()));
         builder.Services.AddSingleton<SequentialJobProcessor>();
         builder.Services.AddHostedService<SequentialJobWorker>();
         builder.Services.AddSingleton(serviceProvider =>

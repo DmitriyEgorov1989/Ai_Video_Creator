@@ -51,6 +51,11 @@ public sealed record VideoStreamMetadata
     public bool? IsHdr { get; }
 
     /// <summary>
+    /// Получает формат пикселей или <see langword="null"/>, если FFprobe его не сообщил.
+    /// </summary>
+    public string? PixelFormat { get; }
+
+    /// <summary>
     /// Получает поворот кадра в градусах или <see langword="null"/>, если метаданные поворота отсутствуют.
     /// </summary>
     public int? RotationDegrees { get; }
@@ -74,7 +79,8 @@ public sealed record VideoStreamMetadata
         bool? isVariableFrameRate,
         int? rotationDegrees,
         string? sampleAspectRatio = null,
-        bool? isHdr = null)
+        bool? isHdr = null,
+        string? pixelFormat = null)
     {
         if (streamIndex < 0) throw new ArgumentOutOfRangeException(nameof(streamIndex));
         if (string.IsNullOrWhiteSpace(codec)) throw new ArgumentException("Codec is required.", nameof(codec));
@@ -91,6 +97,7 @@ public sealed record VideoStreamMetadata
         RotationDegrees = rotationDegrees;
         SampleAspectRatio = sampleAspectRatio;
         IsHdr = isHdr;
+        PixelFormat = pixelFormat;
     }
 }
 

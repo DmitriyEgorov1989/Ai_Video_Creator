@@ -145,6 +145,12 @@ public sealed class TelegramUpdateHandlerTests
             CancellationToken cancellationToken) =>
             Task.FromResult<ArtifactRegistrationResult>(
                 new ArtifactRegistrationResult.Created(record));
+
+        public Task<ArtifactRecord?> FindLatestAsync(
+            JobId jobId,
+            string artifactType,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ArtifactRecord?>(null);
     }
 
     private sealed class FakeCreateJobUseCase : ICreateJobUseCase

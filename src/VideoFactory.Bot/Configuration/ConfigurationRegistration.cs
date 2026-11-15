@@ -86,6 +86,24 @@ public static class ConfigurationRegistration
             .Validate(options => options.TruePeakDbtp <= 0,
                 "AudioNormalization:TruePeakDbtp must not be positive.");
 
+        OptionsBuilder<OutputQualityOptions> outputQuality = services
+            .AddOptions<OutputQualityOptions>()
+            .Bind(configuration.GetSection(OutputQualityOptions.SectionName))
+            .Validate(options => options.ExpectedWidth > 0,
+                "OutputQuality:ExpectedWidth must be greater than zero.")
+            .Validate(options => options.ExpectedHeight > 0,
+                "OutputQuality:ExpectedHeight must be greater than zero.")
+            .Validate(options => options.ExpectedFrameRateNumerator > 0,
+                "OutputQuality:ExpectedFrameRateNumerator must be greater than zero.")
+            .Validate(options => options.ExpectedFrameRateDenominator > 0,
+                "OutputQuality:ExpectedFrameRateDenominator must be greater than zero.")
+            .Validate(options => options.DurationToleranceFrames >= 0,
+                "OutputQuality:DurationToleranceFrames must not be negative.")
+            .Validate(options => options.MaxTelegramBytes > 0,
+                "OutputQuality:MaxTelegramBytes must be greater than zero.")
+            .Validate(options => options.MaxDeliveryEncodeAttempts is >= 0 and <= 1,
+                "OutputQuality:MaxDeliveryEncodeAttempts must be zero or one.");
+
         OptionsBuilder<AiApiOptions> aiApi = services.AddOptions<AiApiOptions>()
             .Bind(configuration.GetSection(AiApiOptions.SectionName))
             .Validate(IsAiApiConfigurationComplete,
@@ -116,6 +134,7 @@ public static class ConfigurationRegistration
             whisper.ValidateOnStart();
             remotion.ValidateOnStart();
             audio.ValidateOnStart();
+            outputQuality.ValidateOnStart();
             aiApi.ValidateOnStart();
             processTimeouts.ValidateOnStart();
         }

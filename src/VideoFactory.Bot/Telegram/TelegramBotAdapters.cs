@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using Telegram.Bot;
+using Telegram.Bot.Types;
+using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 
 namespace VideoFactory.Bot.Telegram;
@@ -128,4 +130,42 @@ public sealed class TelegramBotResponder : ITelegramResponder
     /// <inheritdoc />
     public Task SendTextAsync(long chatId, string text, CancellationToken cancellationToken) =>
         bot.SendMessage(chatId, text, cancellationToken: cancellationToken);
+}
+
+/// <summary>Доставляет проверенный MP4 через Telegram Bot API.</summary>
+public sealed class TelegramVideoDelivery : IVideoDelivery
+{
+    private readonly TelegramBotClient bot;
+
+    /// <summary>Создаёт Telegram delivery adapter.</summary>
+    public TelegramVideoDelivery(TelegramBotClient bot)
+    {
+        this.bot = bot ?? throw new ArgumentNullException(nameof(bot));
+    }
+
+    /// <inheritdoc />
+    public async Task<VideoDeliveryResult> SendAsync(
+        VideoDeliveryRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(request.FilePath))
+        {
+            return VideoDeliveryResult.Failed("delivery.file_missing", "The delivery file does not exist.");
+        }
+
+        try
+        {
+            await using FileStream stream = new(request.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            Message message = await bot.SendVideo(
+                request.RecipientId,
+                InputFile.FromStream(stream, Path.GetFileName(request.FilePath)),
+                caption: request.Caption,
+                cancellationToken: cancellationToken);
+            return VideoDeliveryResult.Succeeded(message.Id.ToString());
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return VideoDeliveryResult.Failed("delivery.telegram_failed", exception.Message);
+        }
+    }
 }

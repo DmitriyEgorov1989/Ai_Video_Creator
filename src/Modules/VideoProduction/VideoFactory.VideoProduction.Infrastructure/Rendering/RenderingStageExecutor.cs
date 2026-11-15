@@ -184,7 +184,8 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             output.Length,
             JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId, durationFrames = result.DurationFrames }, JsonOptions),
             job.Request.SourceAssetId,
-            "remotion-render-host");
+            "remotion-render-host",
+            job.JobId);
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(record, cancellationToken);
         return registration is ArtifactRegistrationResult.Rejected rejected
             ? StageExecutionResult.Permanent("render.artifact_rejected", rejected.Message)

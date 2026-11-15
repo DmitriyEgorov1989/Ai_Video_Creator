@@ -65,7 +65,7 @@ public sealed class FfprobeMediaProbe : IMediaProbe
                     "-show_entries",
                     "format=format_name,duration:" +
                     "stream=index,codec_type,codec_name,width,height," +
-                    "avg_frame_rate,r_frame_rate,sample_rate,channels," +
+                    "avg_frame_rate,r_frame_rate,pix_fmt,sample_rate,channels," +
                     "tags,side_data_list",
                     request.FilePath
                 ],
@@ -149,7 +149,8 @@ public sealed class FfprobeMediaProbe : IMediaProbe
                     IsVariableFrameRate(stream),
                     ReadRotation(stream),
                     stream.SampleAspectRatio,
-                    IsHdr(stream)));
+                    IsHdr(stream),
+                    stream.PixelFormat));
             }
             else if (stream.CodecType is "audio")
             {

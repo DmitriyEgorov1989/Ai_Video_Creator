@@ -189,6 +189,42 @@ public sealed class AudioNormalizationOptions
 }
 
 /// <summary>
+/// Ожидаемый технический профиль итогового MP4.
+/// </summary>
+public sealed class OutputQualityOptions
+{
+    /// <summary>Имя секции конфигурации.</summary>
+    public const string SectionName = "OutputQuality";
+
+    /// <summary>Ожидаемая ширина видео в пикселях.</summary>
+    public int ExpectedWidth { get; init; } = 1080;
+
+    /// <summary>Ожидаемая высота видео в пикселях.</summary>
+    public int ExpectedHeight { get; init; } = 1920;
+
+    /// <summary>Числитель ожидаемой частоты кадров.</summary>
+    public int ExpectedFrameRateNumerator { get; init; } = 30;
+
+    /// <summary>Знаменатель ожидаемой частоты кадров.</summary>
+    public int ExpectedFrameRateDenominator { get; init; } = 1;
+
+    /// <summary>Ожидаемый pixel format или пустое значение для отсутствия ограничения.</summary>
+    public string ExpectedPixelFormat { get; init; } = "yuv420p";
+
+    /// <summary>Допустимое расхождение длительности в кадрах.</summary>
+    public int DurationToleranceFrames { get; init; } = 1;
+
+    /// <summary>Требуется ли audio stream в итоговом файле.</summary>
+    public bool RequireAudio { get; init; } = true;
+
+    /// <summary>Максимальный размер доставки в Telegram в байтах.</summary>
+    public long MaxTelegramBytes { get; init; } = 50_000_000;
+
+    /// <summary>Максимальное число повторных encode после превышения лимита.</summary>
+    public int MaxDeliveryEncodeAttempts { get; init; } = 1;
+}
+
+/// <summary>
 /// Параметры подключения к внешнему API искусственного интеллекта.
 /// Экземпляр параметров не должен быть <see langword="null"/>.
 /// </summary>

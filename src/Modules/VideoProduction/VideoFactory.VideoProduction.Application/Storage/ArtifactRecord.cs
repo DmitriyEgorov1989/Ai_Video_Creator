@@ -21,4 +21,5 @@ public sealed record ArtifactRecord(
     long? SizeBytes,
     string? MetadataJson,
     ArtifactId? ParentArtifactId,
-    string? ToolVersion);
+    string? ToolVersion,
+    JobId? JobId = null);
