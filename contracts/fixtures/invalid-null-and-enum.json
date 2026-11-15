@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "jobId": "job-1",
+  "variantId": "variant-1",
+  "outputPath": "C:/data/output.mp4",
+  "assets": [{ "id": "segment-1", "path": "C:/data/source.mp4" }],
+  "plan": {
+    "schemaVersion": 1,
+    "jobId": "job-1",
+    "variantId": "variant-1",
+    "revisionId": "revision-1",
+    "analysisRevisionId": "analysis-1",
+    "seed": 42,
+    "output": { "width": 1080, "height": 1920, "frameRate": { "numerator": 30, "denominator": 1 }, "durationFrames": 60 },
+    "template": "unsupported",
+    "templateProps": { "captions": "unknown", "theme": null },
+    "video": null,
+    "audio": { "sourceClips": [], "musicClips": [] },
+    "captions": { "items": [] },
+    "overlays": { "items": [] }
+  }
+}

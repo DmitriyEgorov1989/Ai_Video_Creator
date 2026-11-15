@@ -161,6 +161,21 @@ data/
 
 ## Локальная проверка
 
+### Node render-host
+
+`render-host` принимает только JSON-файл запроса и не владеет состоянием задания:
+
+```powershell
+npm install --prefix .\render-host
+npm run typecheck --prefix .\render-host
+npm test --prefix .\render-host
+npm start --prefix .\render-host -- list-templates
+npm start --prefix .\render-host -- validate --job .\contracts\fixtures\valid-render-request.json
+npm run smoke-render --prefix .\render-host
+```
+
+Команды `validate` и `render` печатают структурированные события JSON Lines в `stdout`, а диагностику — в `stderr`. `render` сначала создаёт MP4 во временном файле и только после успешного завершения переименовывает его в `outputPath`.
+
 Восстановление зависимостей, сборка и запуск всех тестов solution:
 
 ```powershell

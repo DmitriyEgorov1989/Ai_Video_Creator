@@ -1,0 +1,58 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { validateRenderRequest } from "../src/validate.js";
+import type { RenderRequest } from "../src/contracts.js";
+
+function validRequest(): RenderRequest {
+  return {
+    schemaVersion: 1,
+    jobId: "job-1",
+    variantId: "variant-1",
+    outputPath: "C:/data/output.mp4",
+    assets: [{ id: "segment-1", path: "C:/data/source.mp4" }],
+    plan: {
+      schemaVersion: 1,
+      jobId: "job-1",
+      variantId: "variant-1",
+      revisionId: "revision-1",
+      analysisRevisionId: "analysis-1",
+      seed: 42,
+      output: { width: 1080, height: 1920, frameRate: { numerator: 30, denominator: 1 }, durationFrames: 60 },
+      template: "dynamic",
+      templateProps: { captions: "emphasis", theme: "dark", title: null },
+      video: { clips: [{ segmentId: "segment-1", mapping: {}, output: { startFrame: 0, endFrame: 60 }, crop: "centerCrop" }] },
+      audio: { sourceClips: [], musicClips: [] },
+      captions: { items: [] },
+      overlays: { items: [] },
+    },
+  };
+}
+
+test("accepts a valid render request", () => {
+  assert.deepEqual(validateRenderRequest(validRequest()), []);
+});
+
+test("rejects null collections and unknown enums without throwing", () => {
+  const request = validRequest() as unknown as Record<string, unknown>;
+  const plan = request.plan as Record<string, unknown>;
+  plan.video = null;
+  plan.templateProps = { captions: "unknown", theme: "dark" };
+  assert.doesNotThrow(() => validateRenderRequest(request));
+  const issues = validateRenderRequest(request);
+  assert.ok(issues.some((item) => item.code === "video_empty"));
+  assert.ok(issues.some((item) => item.code === "enum_unknown"));
+});
+
+test("rejects ranges outside the output timeline", () => {
+  const request = validRequest();
+  request.plan.video.clips[0].output.endFrame = 61;
+  const issues = validateRenderRequest(request);
+  assert.ok(issues.some((item) => item.code === "range_out_of_bounds"));
+});
+
+test("rejects a clip that is not backed by a registered asset", () => {
+  const request = validRequest();
+  request.plan.video.clips[0].segmentId = "unknown-segment";
+  const issues = validateRenderRequest(request);
+  assert.ok(issues.some((item) => item.code === "asset_unknown"));
+});

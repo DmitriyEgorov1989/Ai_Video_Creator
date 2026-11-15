@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/render-request.schema.json",
+  "title": "RenderRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "variantId", "plan", "assets", "outputPath"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "jobId": { "type": "string", "minLength": 1 },
+    "variantId": { "type": "string", "minLength": 1 },
+    "plan": { "$ref": "edit-plan.schema.json" },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "path"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "outputPath": { "type": "string", "minLength": 1 }
+  }
+}

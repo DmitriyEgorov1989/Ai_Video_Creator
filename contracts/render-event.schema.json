@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/render-event.schema.json",
+  "type": "object",
+  "oneOf": [
+    {
+      "required": ["type", "stage", "percent"],
+      "properties": {
+        "type": { "const": "progress" },
+        "stage": { "type": "string" },
+        "percent": { "type": "integer", "minimum": 0, "maximum": 100 }
+      }
+    },
+    {
+      "required": ["type", "outputPath", "durationFrames"],
+      "properties": {
+        "type": { "const": "completed" },
+        "outputPath": { "type": "string" },
+        "durationFrames": { "type": "integer", "minimum": 1 }
+      }
+    },
+    {
+      "required": ["type", "code", "message"],
+      "properties": {
+        "type": { "const": "failed" },
+        "code": { "type": "string" },
+        "message": { "type": "string" }
+      }
+    }
+  ]
+}

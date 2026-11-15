@@ -12,6 +12,8 @@ node_modules/
 dist/
 .cache/
 .remotion/
+render-host/public/render-assets/
+render-host/.smoke/
 
 # Python
 .venv/
