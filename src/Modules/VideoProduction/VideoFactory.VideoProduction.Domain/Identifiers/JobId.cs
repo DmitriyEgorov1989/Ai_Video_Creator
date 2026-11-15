@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VideoFactory.VideoProduction.Domain.Identifiers;
 
 /// <summary>
@@ -19,6 +21,7 @@ public readonly record struct JobId
     /// Создаёт идентификатор задания.
     /// </summary>
     /// <param name="value">Непустое значение идентификатора.</param>
+    [JsonConstructor]
     public JobId(Guid value)
     {
         if (value == Guid.Empty)

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VideoFactory.VideoProduction.Domain.Timeline;
 
 /// <summary>
@@ -25,6 +27,7 @@ public readonly record struct OutputRange
     /// </summary>
     /// <param name="startFrame">Неотрицательный номер начального кадра включительно.</param>
     /// <param name="endFrame">Номер конечного кадра исключительно, превышающий номер начального кадра.</param>
+    [JsonConstructor]
     public OutputRange(int startFrame, int endFrame)
     {
         if (startFrame < 0)

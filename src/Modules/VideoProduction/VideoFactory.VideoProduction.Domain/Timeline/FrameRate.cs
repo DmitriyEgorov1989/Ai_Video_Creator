@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VideoFactory.VideoProduction.Domain.Timeline;
 
 /// <summary>
@@ -20,6 +22,7 @@ public readonly record struct FrameRate
     /// </summary>
     /// <param name="numerator">Положительный числитель частоты кадров.</param>
     /// <param name="denominator">Положительный знаменатель частоты кадров.</param>
+    [JsonConstructor]
     public FrameRate(int numerator, int denominator)
     {
         if (numerator <= 0)

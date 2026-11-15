@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VideoFactory.VideoProduction.Domain.Timeline;
 
 /// <summary>
@@ -25,6 +27,7 @@ public readonly record struct MasterRange
     /// </summary>
     /// <param name="startMicroseconds">Неотрицательная начальная позиция включительно в микросекундах.</param>
     /// <param name="endMicroseconds">Конечная позиция исключительно в микросекундах, превышающая начальную.</param>
+    [JsonConstructor]
     public MasterRange(long startMicroseconds, long endMicroseconds)
     {
         if (startMicroseconds < 0)

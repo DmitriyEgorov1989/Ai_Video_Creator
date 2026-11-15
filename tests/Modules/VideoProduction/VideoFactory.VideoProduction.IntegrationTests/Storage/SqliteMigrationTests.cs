@@ -29,11 +29,12 @@ public sealed class SqliteMigrationTests
                 Assert.Contains("stage_attempts", tables);
                 Assert.Contains("artifacts", tables);
                 Assert.Contains("events", tables);
+                Assert.Contains("edit_plan_revisions", tables);
 
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                Assert.Equal(2, migrationCount);
+                Assert.Equal(3, migrationCount);
 
                 await using SqliteCommand journalModeCommand = connection.CreateCommand();
                 journalModeCommand.CommandText = "PRAGMA journal_mode;";

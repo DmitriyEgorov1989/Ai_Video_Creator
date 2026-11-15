@@ -9,6 +9,7 @@ public sealed class SqliteMigrationRunner
 {
     private const int InitialSchemaVersion = 1;
     private const int HeartbeatSchemaVersion = 2;
+    private const int EditPlanSchemaVersion = 3;
     private readonly string connectionString;
 
     /// <summary>
@@ -72,6 +73,21 @@ public sealed class SqliteMigrationRunner
                 connection,
                 transaction,
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (2, $appliedAt);",
+                cancellationToken,
+                ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, EditPlanSchemaVersion, cancellationToken))
+        {
+            await ExecuteAsync(
+                connection,
+                transaction,
+                EditPlanSchemaSql,
+                cancellationToken);
+            await ExecuteAsync(
+                connection,
+                transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (3, $appliedAt);",
                 cancellationToken,
                 ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
@@ -209,5 +225,24 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_jobs_work_status_heartbeat
             ON jobs (status, heartbeat_at, created_at);
+        """;
+
+    private const string EditPlanSchemaSql = """
+        CREATE TABLE edit_plan_revisions (
+            revision_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            variant_id TEXT NOT NULL,
+            analysis_revision_id TEXT NOT NULL,
+            plan_hash TEXT NOT NULL,
+            plan_json TEXT NOT NULL,
+            actual_cost_usd TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE,
+            UNIQUE (job_id, variant_id, plan_hash)
+        );
+
+        CREATE INDEX ix_edit_plan_revisions_job_variant
+            ON edit_plan_revisions (job_id, variant_id);
         """;
 }

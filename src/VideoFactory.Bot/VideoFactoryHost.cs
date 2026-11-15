@@ -11,6 +11,7 @@ using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
+using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Queue;
@@ -121,6 +122,8 @@ public static class VideoFactoryHost
             new SqliteStageAttemptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IArtifactStore>(services =>
             new SqliteArtifactStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IEditPlanRevisionStore>(services =>
+            new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
             new LocalArtifactStorage(BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();

@@ -1,6 +1,18 @@
 namespace VideoFactory.VideoProduction.Domain.Jobs;
 
 /// <summary>
+/// Определяет темп монтажа в ограниченном MVP-контракте.
+/// </summary>
+public enum EditTempo
+{
+    /// <summary>Спокойный темп.</summary>
+    Calm,
+
+    /// <summary>Динамичный темп.</summary>
+    Dynamic
+}
+
+/// <summary>
 /// Задаёт пользовательские настройки производства одного видео.
 /// </summary>
 public sealed record ProductionSettings
@@ -24,15 +36,23 @@ public sealed record ProductionSettings
     public bool MusicEnabled { get; }
 
     /// <summary>
+    /// Получает темп монтажа.
+    /// </summary>
+    /// <value>Допустимый темп монтажа.</value>
+    public EditTempo Tempo { get; }
+
+    /// <summary>
     /// Создаёт проверенные настройки производства.
     /// </summary>
     /// <param name="targetDurationSeconds">Положительная целевая длительность в секундах или <see langword="null" />, если длительность не задана.</param>
     /// <param name="captionsEnabled">Признак необходимости субтитров.</param>
     /// <param name="musicEnabled">Признак необходимости музыкального сопровождения.</param>
+    /// <param name="tempo">Темп монтажа.</param>
     public ProductionSettings(
         int? targetDurationSeconds,
         bool captionsEnabled,
-        bool musicEnabled)
+        bool musicEnabled,
+        EditTempo tempo = EditTempo.Dynamic)
     {
         if (targetDurationSeconds is <= 0)
         {
@@ -44,5 +64,11 @@ public sealed record ProductionSettings
         TargetDurationSeconds = targetDurationSeconds;
         CaptionsEnabled = captionsEnabled;
         MusicEnabled = musicEnabled;
+        if (!Enum.IsDefined(tempo))
+        {
+            throw new ArgumentOutOfRangeException(nameof(tempo));
+        }
+
+        Tempo = tempo;
     }
 }
