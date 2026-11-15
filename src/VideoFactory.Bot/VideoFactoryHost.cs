@@ -216,6 +216,12 @@ public static class VideoFactoryHost
                 timeouts.MaxOutputBytes,
                 services.GetRequiredService<IStorageBudget>());
         });
+        builder.Services.AddSingleton<AnalysisStageExecutor>(services =>
+            new AnalysisStageExecutor(
+                services.GetRequiredService<IAnalysisService>(),
+                services.GetRequiredService<IAnalysisArtifactPublisher>(),
+                services.GetRequiredService<IArtifactStore>(),
+                BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<RenderingStageExecutor>(services =>
             new RenderingStageExecutor(
                 services.GetRequiredService<IEditPlanRevisionStore>(),
@@ -266,6 +272,7 @@ public static class VideoFactoryHost
         builder.Services.AddSingleton<IJobStageExecutor>(services =>
             new ProductionStageExecutor(
                 services.GetRequiredService<PreparationStageExecutor>(),
+                services.GetRequiredService<AnalysisStageExecutor>(),
                 services.GetRequiredService<RenderingStageExecutor>(),
                 services.GetRequiredService<VerificationStageExecutor>(),
                 services.GetRequiredService<PackagingStageExecutor>(),

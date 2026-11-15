@@ -8,19 +8,34 @@ namespace VideoFactory.VideoProduction.Infrastructure.Pipeline;
 public sealed class ProductionStageExecutor : IJobStageExecutor
 {
     private readonly IJobStageExecutor preparation;
+    private readonly IJobStageExecutor analysis;
     private readonly IJobStageExecutor rendering;
     private readonly IJobStageExecutor verification;
     private readonly IJobStageExecutor packaging;
     private readonly IJobStageExecutor delivery;
 
     /// <summary>Создаёт маршрутизатор этапов MVP.</summary>
-    public ProductionStageExecutor(IJobStageExecutor preparation, IJobStageExecutor rendering, IJobStageExecutor verification, IJobStageExecutor packaging, IJobStageExecutor delivery)
+    public ProductionStageExecutor(IJobStageExecutor preparation, IJobStageExecutor analysis, IJobStageExecutor rendering, IJobStageExecutor verification, IJobStageExecutor packaging, IJobStageExecutor delivery)
     {
         this.preparation = preparation ?? throw new ArgumentNullException(nameof(preparation));
+        this.analysis = analysis ?? throw new ArgumentNullException(nameof(analysis));
         this.rendering = rendering ?? throw new ArgumentNullException(nameof(rendering));
         this.verification = verification ?? throw new ArgumentNullException(nameof(verification));
         this.packaging = packaging ?? throw new ArgumentNullException(nameof(packaging));
         this.delivery = delivery ?? throw new ArgumentNullException(nameof(delivery));
+    }
+
+    /// <summary>
+    /// Создаёт маршрутизатор без подключённого анализа для совместимости с подготовительными тестовыми сценариями.
+    /// </summary>
+    public ProductionStageExecutor(
+        IJobStageExecutor preparation,
+        IJobStageExecutor rendering,
+        IJobStageExecutor verification,
+        IJobStageExecutor packaging,
+        IJobStageExecutor delivery)
+        : this(preparation, new UnavailableAnalysisStageExecutor(), rendering, verification, packaging, delivery)
+    {
     }
 
     /// <inheritdoc />
@@ -28,6 +43,7 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
         job.Progress.Stage switch
         {
             ProductionStage.Preparation => preparation.ExecuteAsync(job, cancellationToken),
+            ProductionStage.Analysis => analysis.ExecuteAsync(job, cancellationToken),
             ProductionStage.Rendering => rendering.ExecuteAsync(job, cancellationToken),
             ProductionStage.Verification => verification.ExecuteAsync(job, cancellationToken),
             ProductionStage.Packaging => packaging.ExecuteAsync(job, cancellationToken),
@@ -36,4 +52,12 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
                 "stage.unsupported",
                 $"Stage '{job.Progress.Stage}' is not implemented yet."))
         };
+
+    private sealed class UnavailableAnalysisStageExecutor : IJobStageExecutor
+    {
+        public Task<StageExecutionResult> ExecuteAsync(JobCreationRecord job, CancellationToken cancellationToken) =>
+            Task.FromResult(StageExecutionResult.Permanent(
+                "stage.unsupported",
+                "Analysis stage is not configured for this router."));
+    }
 }
