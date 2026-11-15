@@ -74,7 +74,7 @@ public sealed class RenderHostProcessAdapter : IRenderHostAdapter
                     eventErrorMessage = root.GetProperty("message").GetString();
                 }
             }
-            catch (JsonException)
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException or FormatException)
             {
                 return RenderHostResult.Failed(
                     "render.protocol_invalid",

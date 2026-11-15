@@ -10,6 +10,7 @@ using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Rendering;
 
@@ -27,6 +28,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     private readonly IMediaProbe mediaProbe;
     private readonly TimeSpan renderTimeout;
     private readonly int maxOutputBytes;
+    private readonly IStorageBudget storageBudget;
 
     /// <summary>Создаёт исполнитель Rendering.</summary>
     public RenderingStageExecutor(
@@ -41,7 +43,8 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         int audioSampleRate,
         string audioChannelLayout,
         double audioLoudnessLufs,
-        double audioTruePeakDbtp)
+        double audioTruePeakDbtp,
+        IStorageBudget? storageBudget = null)
     {
         this.planStore = planStore ?? throw new ArgumentNullException(nameof(planStore));
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
@@ -53,6 +56,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         if (maxOutputBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxOutputBytes));
         this.renderTimeout = renderTimeout;
         this.maxOutputBytes = maxOutputBytes;
+        this.storageBudget = storageBudget ?? StorageBudgetRunner.Default;
         AudioSampleRate = audioSampleRate;
         AudioChannelLayout = audioChannelLayout;
         AudioLoudnessLufs = audioLoudnessLufs;
@@ -68,6 +72,40 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     public async Task<StageExecutionResult> ExecuteAsync(
         JobCreationRecord job,
         CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(job);
+        string directory = SafeFileTree.Resolve(workspaceRoot, $"data/jobs/{job.JobId}");
+        ArtifactRecord? source = await artifactStore.GetAsync(job.Request.SourceAssetId, cancellationToken);
+        long sourceSize = source?.SizeBytes ?? 0;
+        EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null ? null
+            : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
+        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
+        if (job.Progress.Stage == ProductionStage.Rendering && existing is not null && revision is not null
+            && existing.ParentArtifactId == job.Request.SourceAssetId && existing.MetadataJson is not null)
+        {
+            using JsonDocument metadata = JsonDocument.Parse(existing.MetadataJson);
+            if (metadata.RootElement.TryGetProperty("planRevisionId", out JsonElement id)
+                && id.GetString() == revision.RevisionId.ToString())
+            {
+                string path = ResolveWorkspacePath(existing.RelativePath);
+                if (File.Exists(path))
+                {
+                    await using FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    string hash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
+                    if (file.Length == existing.SizeBytes && hash == existing.Sha256) return StageExecutionResult.Success();
+                }
+            }
+        }
+        double seconds = revision is null ? 0 : (double)revision.Plan.Output.DurationFrames
+            * revision.Plan.Output.FrameRate.Denominator / revision.Plan.Output.FrameRate.Numerator;
+        long estimate = checked((long)Math.Ceiling(seconds * 3_000_000) + sourceSize + 1_048_576);
+        return await StorageBudgetRunner.RunAsync(storageBudget, directory, estimate,
+            token => ExecuteCoreAsync(job, token), failure => failure.Code == "storage.job_quota_exceeded"
+                ? StageExecutionResult.Permanent(failure.Code, failure.Message)
+                : StageExecutionResult.Retryable(failure.Code, failure.Message), cancellationToken);
+    }
+
+    private async Task<StageExecutionResult> ExecuteCoreAsync(JobCreationRecord job, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(job);
         if (job.Progress.Stage != ProductionStage.Rendering)
@@ -172,6 +210,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         }
 
         ArtifactId artifactId = ArtifactId.New();
+        cancellationToken.ThrowIfCancellationRequested();
         string relativePath = Path.GetRelativePath(workspaceRoot, outputPath).Replace(Path.DirectorySeparatorChar, '/');
         FileInfo output = new(outputPath);
         await using FileStream outputStream = new(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read);
@@ -182,7 +221,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             relativePath,
             hash,
             output.Length,
-            JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId, durationFrames = result.DurationFrames }, JsonOptions),
+            JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId, planRevisionId = revision.RevisionId.ToString(), durationFrames = result.DurationFrames }, JsonOptions),
             job.Request.SourceAssetId,
             "remotion-render-host",
             job.JobId);
@@ -194,16 +233,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
 
     private string ResolveWorkspacePath(string relativePath)
     {
-        string path = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        string root = workspaceRoot.EndsWith(Path.DirectorySeparatorChar)
-            ? workspaceRoot
-            : workspaceRoot + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidOperationException("Artifact path escaped workspace root.");
-        }
-
-        return path;
+        return SafeFileTree.Resolve(workspaceRoot, relativePath);
     }
 
     private static string BuildRequestJson(

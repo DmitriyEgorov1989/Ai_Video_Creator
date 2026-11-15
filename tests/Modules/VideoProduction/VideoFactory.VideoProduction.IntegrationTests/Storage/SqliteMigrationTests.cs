@@ -6,6 +6,45 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Storage;
 public sealed class SqliteMigrationTests
 {
     [Fact]
+    public async Task UpgradeFromVersionFourPreservesHistoryAndReleasesCompletedLease()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"retention-upgrade-{Guid.NewGuid():N}.db");
+        string cs = $"Data Source={path};Pooling=False";
+        try
+        {
+            await using SqliteConnection connection = new(cs);
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                INSERT INTO schema_migrations VALUES (1, '2000'), (2, '2000'), (3, '2000'), (4, '2000');
+                CREATE TABLE jobs (job_id TEXT PRIMARY KEY, status INTEGER NOT NULL, updated_at TEXT NOT NULL, lease_owner TEXT NULL);
+                INSERT INTO jobs VALUES ('completed', 3, '2000-01-01T00:00:00Z', 'old-worker');
+                INSERT INTO jobs VALUES ('active', 1, '2000-01-01T00:00:00Z', 'active-worker');
+                """;
+            await command.ExecuteNonQueryAsync();
+            await new SqliteMigrationRunner(cs).InitializeAsync(CancellationToken.None);
+            await new SqliteMigrationRunner(cs).InitializeAsync(CancellationToken.None);
+            command.CommandText = "SELECT completed_at, lease_owner FROM jobs WHERE job_id = 'completed';";
+            await using (SqliteDataReader reader = await command.ExecuteReaderAsync())
+            {
+                Assert.True(await reader.ReadAsync());
+                Assert.Equal("2000-01-01T00:00:00Z", reader.GetString(0));
+                Assert.True(reader.IsDBNull(1));
+            }
+            command.CommandText = "SELECT completed_at, lease_owner FROM jobs WHERE job_id = 'active';";
+            await using SqliteDataReader active = await command.ExecuteReaderAsync();
+            Assert.True(await active.ReadAsync());
+            Assert.True(active.IsDBNull(0));
+            Assert.Equal("active-worker", active.GetString(1));
+        }
+        finally
+        {
+            File.Delete(path); File.Delete(path + "-wal"); File.Delete(path + "-shm");
+        }
+    }
+
+    [Fact]
     public async Task InitializeCreatesRequiredSchemaAndCanRunAgain()
     {
         string databasePath = Path.Combine(Path.GetTempPath(), $"video-factory-{Guid.NewGuid():N}.db");
@@ -35,7 +74,11 @@ public sealed class SqliteMigrationTests
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                Assert.Equal(4, migrationCount);
+                Assert.Equal(5, migrationCount);
+
+                await using SqliteCommand retentionCommand = connection.CreateCommand();
+                retentionCommand.CommandText = "SELECT completed_at, cleanup_started_at, files_deleted_at FROM jobs LIMIT 0;";
+                await using SqliteDataReader retentionReader = await retentionCommand.ExecuteReaderAsync();
 
                 await using SqliteCommand journalModeCommand = connection.CreateCommand();
                 journalModeCommand.CommandText = "PRAGMA journal_mode;";

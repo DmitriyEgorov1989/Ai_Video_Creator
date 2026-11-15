@@ -20,6 +20,10 @@ public static class ConfigurationRegistration
 
         OptionsBuilder<StorageOptions> storage = services.AddOptions<StorageOptions>()
             .Bind(configuration.GetSection(StorageOptions.SectionName))
+            .Validate(options => options.MinimumFreeBytes > 0, "Storage:MinimumFreeBytes must be greater than zero.")
+            .Validate(options => options.JobQuotaBytes > 0, "Storage:JobQuotaBytes must be greater than zero.")
+            .Validate(options => options.CompletedJobRetentionDays is > 0 and <= 36500,
+                "Storage:CompletedJobRetentionDays must be between 1 and 36500 days.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.DataRoot),
                 "Storage:DataRoot is required.")
             .Validate(options => !string.IsNullOrWhiteSpace(options.DatabaseFileName),

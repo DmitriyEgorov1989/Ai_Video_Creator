@@ -104,6 +104,20 @@ public sealed class SqliteMigrationRunner
                 ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 5, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, """
+                ALTER TABLE jobs ADD COLUMN completed_at TEXT NULL;
+                ALTER TABLE jobs ADD COLUMN cleanup_started_at TEXT NULL;
+                ALTER TABLE jobs ADD COLUMN files_deleted_at TEXT NULL;
+                UPDATE jobs SET completed_at = updated_at, lease_owner = NULL WHERE status = 3;
+                CREATE INDEX ix_jobs_retention ON jobs (status, completed_at, files_deleted_at);
+                """, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (5, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 

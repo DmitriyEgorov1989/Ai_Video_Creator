@@ -1,5 +1,7 @@
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Processes;
+using VideoFactory.VideoProduction.Application.Storage;
+using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Media;
 
@@ -10,13 +12,15 @@ public sealed class FfmpegMezzanineBuilder : IMezzanineBuilder
     private readonly IMediaProbe mediaProbe;
     private readonly IMediaDecodeVerifier decodeVerifier;
     private readonly string executablePath;
+    private readonly IStorageBudget storageBudget;
 
     /// <summary>Создаёт builder.</summary>
     public FfmpegMezzanineBuilder(
         IProcessRunner processRunner,
         IMediaProbe mediaProbe,
         IMediaDecodeVerifier decodeVerifier,
-        string executablePath)
+        string executablePath,
+        IStorageBudget? storageBudget = null)
     {
         ArgumentNullException.ThrowIfNull(processRunner);
         ArgumentNullException.ThrowIfNull(mediaProbe);
@@ -26,6 +30,7 @@ public sealed class FfmpegMezzanineBuilder : IMezzanineBuilder
         this.mediaProbe = mediaProbe;
         this.decodeVerifier = decodeVerifier;
         this.executablePath = executablePath;
+        this.storageBudget = storageBudget ?? StorageBudgetRunner.Default;
     }
 
     /// <inheritdoc />
@@ -34,6 +39,17 @@ public sealed class FfmpegMezzanineBuilder : IMezzanineBuilder
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
+
+        bool requiresOutput = request.OriginalMetadata.VideoStreams.Any(video =>
+            video.IsVariableFrameRate == true || video.RotationDegrees is not null and not 0);
+        if (!requiresOutput) return await BuildCoreAsync(request, cancellationToken);
+        long estimate = checked((long)Math.Ceiling(request.OriginalMetadata.DurationMicroseconds / 1_000_000d) * 2_600_000 + 1_048_576);
+        return await StorageBudgetRunner.RunAsync(storageBudget, StorageBudgetRunner.JobDirectory(request.MasterPath), estimate,
+            token => BuildCoreAsync(request, token), failure => MezzanineResult.Failed(failure.Code, failure.Message), cancellationToken);
+    }
+
+    private async Task<MezzanineResult> BuildCoreAsync(MezzanineRequest request, CancellationToken cancellationToken)
+    {
 
         bool needsNormalization = request.OriginalMetadata.VideoStreams.Any(video =>
             video.IsVariableFrameRate == true || video.RotationDegrees is not null and not 0);
@@ -64,9 +80,11 @@ public sealed class FfmpegMezzanineBuilder : IMezzanineBuilder
                         "-vf", "setpts=PTS-STARTPTS",
                         "-r", "30",
                         "-c:v", "libx264",
+                        "-maxrate", "20M", "-bufsize", "40M",
                         "-pix_fmt", "yuv420p",
                         "-c:a", "aac",
                         "-movflags", "+faststart",
+                        "-f", "mp4",
                         temporaryPath
                     ],
                     request.NormalizeTimeout,
@@ -100,6 +118,7 @@ public sealed class FfmpegMezzanineBuilder : IMezzanineBuilder
                     decodeResult.ErrorMessage ?? "The generated Master failed full decode.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             File.Move(temporaryPath, request.MasterPath, overwrite: false);
             return MezzanineResult.Succeeded(
                 request.MasterPath,

@@ -10,6 +10,26 @@ namespace VideoFactory.VideoProduction.UnitTests.Pipeline;
 
 public sealed class SequentialJobProcessorTests
 {
+    [Theory]
+    [InlineData("network")]
+    [InlineData("disk")]
+    public async Task ExpectedIntegrationFailurePreservesStageAndAttempt(string failure)
+    {
+        FakeStateStore state = new();
+        FakeAttemptStore attempts = new();
+        SequentialJobProcessor processor = new(new FakeQueue(CreateJob()), state, attempts, new ThrowingExecutor(failure));
+        Assert.True(await processor.ProcessNextAsync("worker", TimeSpan.FromMinutes(1), TimeSpan.FromHours(1), 3, CancellationToken.None));
+        Assert.Null(state.NextProgress);
+        Assert.Equal(StageAttemptStatus.Retryable, attempts.Last?.Status);
+        Assert.Equal("private provider message", attempts.Last?.ErrorMessage);
+    }
+
+    private sealed class ThrowingExecutor(string failure) : IJobStageExecutor
+    {
+        public Task<StageExecutionResult> ExecuteAsync(JobCreationRecord job, CancellationToken token) =>
+            throw (failure == "network" ? new HttpRequestException("private provider message") : new IOException("private provider message"));
+    }
+
     [Fact]
     public async Task ProcessesOneClaimedJobAndPersistsNextStage()
     {

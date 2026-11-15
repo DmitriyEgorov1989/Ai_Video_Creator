@@ -75,10 +75,20 @@ public sealed class InMemoryTelegramIntakeSessionStore : ITelegramIntakeSessionS
 /// <summary>Скачивает Telegram-файл в локальное хранилище.</summary>
 public interface ITelegramFileDownloader
 {
-    /// <summary>Сохраняет файл и возвращает его проверенное локальное описание.</summary>
-    Task<TelegramDownloadedFile> DownloadAsync(
+    /// <summary>Сохраняет и проверяет файл; возвращает успех либо ожидаемый отказ, никогда не <see langword="null"/>.</summary>
+    Task<TelegramDownloadResult> DownloadAsync(
         TelegramMediaInput input,
         CancellationToken cancellationToken);
+}
+
+/// <summary>Типизированный результат загрузки без исключений для ожидаемых отказов.</summary>
+public abstract record TelegramDownloadResult
+{
+    /// <summary>Успешно проверенный локальный файл; <paramref name="File"/> не <see langword="null"/>.</summary>
+    public sealed record Succeeded(TelegramDownloadedFile File) : TelegramDownloadResult;
+
+    /// <summary>Отказ с безопасным кодом и сообщением; значения не <see langword="null"/>.</summary>
+    public sealed record Rejected(string Code, string Message) : TelegramDownloadResult;
 }
 
 /// <summary>Отправляет пользователю текстовый ответ.</summary>

@@ -6,6 +6,21 @@ namespace VideoFactory.Bot.Tests.Rendering;
 
 public sealed class RenderHostProcessAdapterTests
 {
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[]")]
+    [InlineData("{\"type\":42}")]
+    [InlineData("{\"type\":\"progress\",\"stage\":\"render\",\"percent\":\"bad\"}")]
+    public async Task MalformedEventIsExpectedProtocolFailure(string json)
+    {
+        RenderHostProcessAdapter adapter = new(new FakeProcessRunner(new ProcessExecutionResult(
+            ProcessExecutionStatus.Succeeded, 0, json, "diagnostic", null, null, false, false)), "node", "render.js");
+        RenderHostResult result = await adapter.RenderAsync(new RenderHostRequest("request.json", "output.mp4", TimeSpan.FromSeconds(1), 4096), CancellationToken.None);
+        Assert.Equal(RenderHostResultKind.Failed, result.Kind);
+        Assert.Equal("render.protocol_invalid", result.ErrorCode);
+        Assert.Equal("diagnostic", result.StandardError);
+    }
+
     [Fact]
     public async Task RenderAsync_ReturnsCompletedEventAndProgress()
     {

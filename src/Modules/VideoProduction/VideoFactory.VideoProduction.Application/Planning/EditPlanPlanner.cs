@@ -34,6 +34,15 @@ public sealed class EditPlanPlanner
         PlanningRequest request,
         CancellationToken cancellationToken)
     {
+        try { return await PlanCoreAsync(request, cancellationToken); }
+        catch (Exception exception) when (exception is HttpRequestException or TimeoutException)
+        {
+            return new PlanningResult.Rejected(exception.GetType().Name, exception.Message);
+        }
+    }
+
+    private async Task<PlanningResult> PlanCoreAsync(PlanningRequest request, CancellationToken cancellationToken)
+    {
         PlanningResult.Rejected? inputError = ValidateInput(request);
         if (inputError is not null)
         {

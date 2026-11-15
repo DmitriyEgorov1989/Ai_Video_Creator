@@ -68,6 +68,15 @@ public sealed class StorageOptions
     /// Получает безопасное имя файла SQLite-базы; значение не может быть <see langword="null"/>.
     /// </summary>
     public string DatabaseFileName { get; init; } = "jobs.sqlite";
+
+    /// <summary>Минимальный остаток свободного места после операции в байтах.</summary>
+    public long MinimumFreeBytes { get; init; } = 1_073_741_824;
+
+    /// <summary>Максимальный размер файлов одного Job, включая временные, в байтах.</summary>
+    public long JobQuotaBytes { get; init; } = 5_368_709_120;
+
+    /// <summary>Срок хранения каталогов успешно завершённых Job в сутках UTC.</summary>
+    public int CompletedJobRetentionDays { get; init; } = 30;
 }
 
 /// <summary>

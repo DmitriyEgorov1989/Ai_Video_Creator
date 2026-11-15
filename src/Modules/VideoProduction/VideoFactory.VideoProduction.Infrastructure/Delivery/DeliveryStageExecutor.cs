@@ -3,6 +3,8 @@ using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Infrastructure.Storage;
+using System.Security.Cryptography;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Delivery;
 
@@ -45,6 +47,15 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
         {
             return StageExecutionResult.Permanent("delivery.file_missing", "The packaged MP4 does not exist.");
         }
+        await using (FileStream file = new(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            string actualHash = Convert.ToHexString(await SHA256.HashDataAsync(file, cancellationToken)).ToLowerInvariant();
+            if (file.Length != finalArtifact.SizeBytes || actualHash != finalArtifact.Sha256)
+                return StageExecutionResult.Permanent("delivery.file_changed", "The packaged MP4 changed after verification.");
+        }
+        ArtifactRecord? manifest = await artifactStore.FindLatestAsync(job.JobId, "manifest", cancellationToken);
+        if (manifest is null || manifest.ParentArtifactId != finalArtifact.ArtifactId || !File.Exists(ResolvePath(manifest.RelativePath)))
+            return StageExecutionResult.Permanent("delivery.manifest_missing", "Finalization has not completed.");
 
         VideoDeliveryResult result = await delivery.SendAsync(
             new VideoDeliveryRequest(job.JobId, job.VariantId, path, "Готовый ролик", recipientId),
@@ -68,9 +79,6 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
 
     private string ResolvePath(string relativePath)
     {
-        string path = Path.GetFullPath(Path.Combine(workspaceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
-        string root = workspaceRoot.EndsWith(Path.DirectorySeparatorChar) ? workspaceRoot : workspaceRoot + Path.DirectorySeparatorChar;
-        if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Artifact path escaped workspace root.");
-        return path;
+        return SafeFileTree.Resolve(workspaceRoot, relativePath);
     }
 }

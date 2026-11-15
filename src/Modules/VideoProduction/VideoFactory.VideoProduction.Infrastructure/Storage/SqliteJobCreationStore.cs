@@ -113,7 +113,13 @@ public sealed class SqliteJobCreationStore : IJobCreationStore
     {
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT EXISTS (SELECT 1 FROM artifacts WHERE artifact_id = $artifactId);";
+        command.CommandText = """
+            SELECT EXISTS (SELECT 1 FROM artifacts a WHERE a.artifact_id = $artifactId
+              AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.cleanup_started_at IS NOT NULL
+                AND (j.job_id = a.job_id
+                  OR replace(a.relative_path, '\', '/') LIKE 'data/jobs/' || j.job_id || '/%'
+                  OR replace(a.relative_path, '\', '/') LIKE 'jobs/' || j.job_id || '/%')));
+            """;
         command.Parameters.AddWithValue("$artifactId", artifactId);
         object? value = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt64(value) == 1;

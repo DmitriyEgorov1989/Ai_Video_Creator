@@ -73,7 +73,8 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
                 profile.ExpectedPixelFormat),
             cancellationToken);
 
-        string reportPath = Path.Combine(Path.GetDirectoryName(outputPath)!, "qa-report.json");
+        ArtifactId reportId = ArtifactId.New();
+        string reportPath = Path.Combine(Path.GetDirectoryName(outputPath)!, $"qa-report-{reportId}.json");
         string reportJson = JsonSerializer.Serialize(new
         {
             schemaVersion = 1,
@@ -82,8 +83,8 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
             planRevisionId = revision.RevisionId,
             planHash = revision.PlanHash,
             status = result.IsSuccess ? "passed" : "failed",
-            errorCode = result.ErrorCode,
-            errorMessage = result.ErrorMessage,
+            errorCode = result.IsSuccess ? null : "verification.failed",
+            errorMessage = result.IsSuccess ? null : "Output verification failed. See the stored stage attempt for diagnostics.",
             output = new
             {
                 artifactId = render.ArtifactId,
@@ -95,11 +96,26 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
                 durationFrames = result.DurationFrames
             }
         }, JsonOptions);
-        await File.WriteAllTextAsync(reportPath, reportJson, cancellationToken);
+        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "qa-report", cancellationToken);
+        if (existing is not null && existing.ParentArtifactId == render.ArtifactId && existing.MetadataJson == reportJson
+            && File.Exists(ResolvePath(existing.RelativePath))
+            && await File.ReadAllTextAsync(ResolvePath(existing.RelativePath), cancellationToken) == reportJson)
+        {
+            return result.IsSuccess ? StageExecutionResult.Success()
+                : StageExecutionResult.Permanent(result.ErrorCode ?? "verification.failed", result.ErrorMessage ?? "Output QA failed.");
+        }
+        string temporaryPath = reportPath + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, reportJson, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, reportPath);
+        }
+        finally { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
 
         string reportHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(reportJson))).ToLowerInvariant();
         ArtifactRecord report = new(
-            ArtifactId.New(),
+            reportId,
             "qa-report",
             Path.GetRelativePath(workspaceRoot, reportPath).Replace(Path.DirectorySeparatorChar, '/'),
             reportHash,

@@ -59,7 +59,16 @@ public sealed class SqliteStageAttemptStore : IStageAttemptStore
                 error_code, error_message, started_at, completed_at)
             VALUES (
                 $attemptId, $jobId, $variantId, $stage, $attemptNumber, $status,
-                $errorCode, $errorMessage, $startedAt, $completedAt);
+                $errorCode, $errorMessage, $startedAt, $completedAt)
+            ON CONFLICT (attempt_id) DO UPDATE SET
+                status = excluded.status,
+                error_code = excluded.error_code,
+                error_message = excluded.error_message,
+                completed_at = excluded.completed_at
+            WHERE stage_attempts.status = 'Running'
+              AND stage_attempts.job_id = excluded.job_id
+              AND stage_attempts.stage = excluded.stage
+              AND stage_attempts.attempt_number = excluded.attempt_number;
             """;
         command.Parameters.AddWithValue("$attemptId", attempt.AttemptId.ToString("N"));
         command.Parameters.AddWithValue("$jobId", attempt.JobId.ToString());

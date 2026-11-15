@@ -4,11 +4,55 @@ using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using Microsoft.Extensions.Logging;
 
 namespace VideoFactory.Bot.Tests.Telegram;
 
 public sealed class TelegramUpdateHandlerTests
 {
+    [Fact]
+    public async Task IntegrationDiagnosticsAndUserContentNeverEnterLogs()
+    {
+        const string sensitive = "synthetic-token private-comment private-transcript";
+        CaptureLogger logger = new();
+        TelegramUpdateHandler handler = new(new TelegramOptions { AllowedUserId = 123456789 }, new LimitsOptions(),
+            new FakeDownloader(), new FakeArtifactStore(sensitive), new FakeCreateJobUseCase(),
+            new InMemoryTelegramIntakeSessionStore(), new FakeResponder(), logger);
+        await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, null,
+            new TelegramMediaInput("file", null, 100, "video/mp4", "video.mp4")), CancellationToken.None);
+        Assert.NotEmpty(logger.Messages);
+        Assert.All(logger.Messages, text =>
+        {
+            Assert.DoesNotContain("synthetic-token", text);
+            Assert.DoesNotContain("private-comment", text);
+            Assert.DoesNotContain("private-transcript", text);
+        });
+    }
+
+    private sealed class CaptureLogger : ILogger<TelegramUpdateHandler>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel level) => true;
+        public void Log<TState>(LogLevel level, EventId id, TState state, Exception? exception, Func<TState, Exception?, string> formatter) =>
+            Messages.Add(formatter(state, exception) + exception);
+    }
+
+    [Theory]
+    [InlineData("application/octet-stream", "video.mp4")]
+    [InlineData("video/unknown", "video.mp4")]
+    [InlineData(null, "video.mp4")]
+    [InlineData("video/mp4", "../../video.mp4")]
+    [InlineData("video/mp4", "C:\\outside.mp4")]
+    [InlineData("video/mp4", "video.exe")]
+    public async Task UntrustedMediaIsRejectedBeforeDownload(string? mime, string name)
+    {
+        FakeDownloader downloader = new();
+        await CreateHandler(downloader).HandleAsync(new TelegramUpdate(123456789, 123456789, null,
+            new TelegramMediaInput("file", null, 100, mime, name)), CancellationToken.None);
+        Assert.Equal(0, downloader.DownloadCalls);
+    }
+
     [Fact]
     public async Task UnauthorizedUserCannotTriggerFileDownload()
     {
@@ -121,19 +165,19 @@ public sealed class TelegramUpdateHandlerTests
     {
         public int DownloadCalls { get; private set; }
 
-        public Task<TelegramDownloadedFile> DownloadAsync(
+        public Task<TelegramDownloadResult> DownloadAsync(
             TelegramMediaInput input,
             CancellationToken cancellationToken)
         {
             DownloadCalls++;
-            return Task.FromResult(new TelegramDownloadedFile(
+            return Task.FromResult<TelegramDownloadResult>(new TelegramDownloadResult.Succeeded(new TelegramDownloadedFile(
                 "jobs/source/video.mp4",
                 "hash",
-                input.SizeBytes ?? 0));
+                input.SizeBytes ?? 0)));
         }
     }
 
-    private sealed class FakeArtifactStore : IArtifactStore
+    private sealed class FakeArtifactStore(string? rejection = null) : IArtifactStore
     {
         public Task<ArtifactRecord?> GetAsync(
             ArtifactId artifactId,
@@ -144,7 +188,7 @@ public sealed class TelegramUpdateHandlerTests
             ArtifactRecord record,
             CancellationToken cancellationToken) =>
             Task.FromResult<ArtifactRegistrationResult>(
-                new ArtifactRegistrationResult.Created(record));
+                rejection is null ? new ArtifactRegistrationResult.Created(record) : new ArtifactRegistrationResult.Rejected(rejection));
 
         public Task<ArtifactRecord?> FindLatestAsync(
             JobId jobId,

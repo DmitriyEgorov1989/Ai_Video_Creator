@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Storage;
+using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 
@@ -137,6 +138,11 @@ public sealed class TelegramUpdateHandler
         TelegramMediaInput input,
         CancellationToken cancellationToken)
     {
+        if (!MediaUploadPolicy.Accepts(input.MimeType, input.FileName))
+        {
+            await responder.SendTextAsync(update.ChatId, "Поддерживаются только видео MP4 или MOV с известным типом файла.", cancellationToken);
+            return;
+        }
         if (input.SizeBytes is long size && size > limitsOptions.MaxInputFileBytes)
         {
             await responder.SendTextAsync(
@@ -146,7 +152,14 @@ public sealed class TelegramUpdateHandler
             return;
         }
 
-        TelegramDownloadedFile downloaded = await downloader.DownloadAsync(input, cancellationToken);
+        TelegramDownloadResult result = await downloader.DownloadAsync(input, cancellationToken);
+        if (result is TelegramDownloadResult.Rejected failure)
+        {
+            logger?.LogWarning("Telegram download rejected: {ErrorCode}", failure.Code);
+            await responder.SendTextAsync(update.ChatId, "Не удалось принять видео: проверьте формат и размер или повторите позже.", cancellationToken);
+            return;
+        }
+        TelegramDownloadedFile downloaded = ((TelegramDownloadResult.Succeeded)result).File;
         if (downloaded.SizeBytes > limitsOptions.MaxInputFileBytes)
         {
             await responder.SendTextAsync(
@@ -177,12 +190,11 @@ public sealed class TelegramUpdateHandler
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(
             record,
             cancellationToken);
-        if (registration is ArtifactRegistrationResult.Rejected rejected)
+        if (registration is ArtifactRegistrationResult.Rejected)
         {
             logger?.LogWarning(
-                "Telegram Artifact registration rejected for user {UserId}: {Message}",
-                update.UserId,
-                rejected.Message);
+                "Telegram Artifact registration rejected for user {UserId}",
+                update.UserId);
             await responder.SendTextAsync(
                 update.ChatId,
                 "Не удалось сохранить видео. Попробуйте ещё раз.",

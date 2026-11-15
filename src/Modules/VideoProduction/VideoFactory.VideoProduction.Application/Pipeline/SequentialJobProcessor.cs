@@ -71,12 +71,23 @@ public sealed class SequentialJobProcessor
             job.JobId,
             stage,
             cancellationToken);
+        if (previousAttempt?.Status == StageAttemptStatus.Running)
+        {
+            await attemptStore.AppendAsync(previousAttempt with
+            {
+                Status = StageAttemptStatus.Cancelled,
+                ErrorCode = "stage.interrupted",
+                ErrorMessage = "Previous worker stopped before completing this attempt.",
+                CompletedAt = DateTimeOffset.UtcNow
+            }, cancellationToken);
+        }
         int attemptNumber = (previousAttempt?.AttemptNumber ?? 0) + 1;
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        Guid attemptId = Guid.NewGuid();
 
         await attemptStore.AppendAsync(
             new StageAttemptRecord(
-                Guid.NewGuid(),
+                attemptId,
                 job.JobId,
                 job.VariantId,
                 stage,
@@ -107,6 +118,11 @@ public sealed class SequentialJobProcessor
                 "HOST_STOPPING",
                 "Stage execution was cancelled because the host is stopping.");
         }
+        catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException)
+        {
+            // Исходная диагностика хранится в SQLite, а не выводится в обычный журнал.
+            result = StageExecutionResult.Retryable(exception.GetType().Name, exception.Message);
+        }
         finally
         {
             await heartbeatCts.CancelAsync();
@@ -129,9 +145,11 @@ public sealed class SequentialJobProcessor
             _ => throw new ArgumentOutOfRangeException()
         };
 
+        using CancellationTokenSource persistenceCts = new(TimeSpan.FromSeconds(5));
+        CancellationToken persistenceToken = cancellationToken.IsCancellationRequested ? persistenceCts.Token : cancellationToken;
         await attemptStore.AppendAsync(
             new StageAttemptRecord(
-                Guid.NewGuid(),
+                attemptId,
                 job.JobId,
                 job.VariantId,
                 stage,
@@ -141,7 +159,7 @@ public sealed class SequentialJobProcessor
                 result.ErrorMessage,
                 startedAt,
                 DateTimeOffset.UtcNow),
-            cancellationToken);
+            persistenceToken);
 
         if (result.Kind == StageExecutionKind.Completed)
         {
@@ -151,7 +169,7 @@ public sealed class SequentialJobProcessor
                 job.Progress.Status,
                 job.Progress.Stage,
                 nextProgress,
-                cancellationToken);
+                persistenceToken);
         }
         else if (result.Kind is StageExecutionKind.Permanent
             || (result.Kind == StageExecutionKind.Retryable && attemptNumber >= maxStageAttempts))
@@ -161,7 +179,7 @@ public sealed class SequentialJobProcessor
                 job.Progress.Status,
                 job.Progress.Stage,
                 job.Progress.Fail(),
-                cancellationToken);
+                persistenceToken);
         }
 
         return true;

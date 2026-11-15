@@ -59,12 +59,16 @@ public sealed class SqliteJobStateStore : IJobStateStore
                 stage = $nextStage,
                 effective_mode = $nextEffectiveMode,
                 pending_confirmation = $nextPendingConfirmation,
-                updated_at = $updatedAt
+                updated_at = $updatedAt,
+                completed_at = CASE WHEN $nextStatus = $completedStatus THEN COALESCE(completed_at, $updatedAt) ELSE completed_at END,
+                lease_owner = CASE WHEN $nextStatus = $completedStatus THEN NULL ELSE lease_owner END
             WHERE job_id = $jobId
               AND status = $expectedStatus
-              AND stage = $expectedStage;
+              AND stage = $expectedStage
+              AND cleanup_started_at IS NULL;
             """;
         update.Parameters.AddWithValue("$nextStatus", (int)nextProgress.Status);
+        update.Parameters.AddWithValue("$completedStatus", (int)JobStatus.Completed);
         update.Parameters.AddWithValue("$nextStage", (int)nextProgress.Stage);
         update.Parameters.AddWithValue(
             "$nextEffectiveMode",

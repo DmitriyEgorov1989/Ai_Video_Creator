@@ -73,7 +73,7 @@ public sealed class TelegramPollingService : BackgroundService
                 "video/mp4",
                 null);
         }
-        else if (message.Document is not null && IsVideoDocument(message.Document.MimeType, message.Document.FileName))
+        else if (message.Document is not null)
         {
             media = new TelegramMediaInput(
                 message.Document.FileId,
@@ -95,27 +95,14 @@ public sealed class TelegramPollingService : BackgroundService
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "Telegram update handling failed for user {UserId}", message.From.Id);
+            logger.LogError("Telegram update handling failed for user {UserId}: {ErrorType}", message.From.Id, exception.GetType().Name);
         }
     }
 
     private Task HandleErrorAsync(Exception exception, HandleErrorSource source)
     {
-        logger.LogError(exception, "Telegram polling error from {Source}", source);
+        logger.LogError("Telegram polling error from {Source}: {ErrorType}", source, exception.GetType().Name);
         return Task.CompletedTask;
     }
 
-    private static bool IsVideoDocument(string? mimeType, string? fileName)
-    {
-        if (mimeType?.StartsWith("video/", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            return true;
-        }
-
-        string extension = Path.GetExtension(fileName ?? string.Empty);
-        return extension.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".mov", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".mkv", StringComparison.OrdinalIgnoreCase)
-            || extension.Equals(".webm", StringComparison.OrdinalIgnoreCase);
-    }
 }

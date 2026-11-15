@@ -7,6 +7,22 @@ namespace VideoFactory.Bot.Tests;
 
 public sealed class ConfigurationTests
 {
+    [Theory]
+    [InlineData("MinimumFreeBytes")]
+    [InlineData("JobQuotaBytes")]
+    [InlineData("CompletedJobRetentionDays")]
+    public void InvalidStoragePolicyIsRejected(string key)
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            [$"Storage:{key}"] = "-1"
+        });
+        using ServiceProvider services = BuildServices(configuration);
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<StorageOptions>>().Value);
+        Assert.Contains(exception.Failures, message => message.Contains($"Storage:{key}", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void ConfigurationBindsTypedOptions()
     {

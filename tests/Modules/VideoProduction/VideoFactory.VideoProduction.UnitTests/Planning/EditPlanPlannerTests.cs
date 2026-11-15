@@ -11,6 +11,21 @@ namespace VideoFactory.VideoProduction.UnitTests.Planning;
 
 public sealed class EditPlanPlannerTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProviderNetworkFailureDoesNotSavePlanOrTriggerRepair(bool duringEstimate)
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Provider.NetworkFailure = duringEstimate ? "estimate" : "create";
+        PlanningResult.Rejected rejected = Assert.IsType<PlanningResult.Rejected>(
+            await fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+        Assert.Equal("HttpRequestException", rejected.ErrorCode);
+        Assert.Equal("original integration diagnostic", rejected.ErrorMessage);
+        Assert.Equal(0, fixture.Store.SaveCount);
+        Assert.Equal(duringEstimate ? 0 : 1, fixture.Provider.CreatePlanCount);
+    }
+
     [Fact]
     public async Task SameInputCreatesOneValidDeterministicPlanFromKnownSegments()
     {
@@ -128,6 +143,7 @@ public sealed class EditPlanPlannerTests
         private readonly ProviderPlanResponse response;
         public decimal EstimatedCostUsd { get; set; } = 0.01m;
         public bool ReturnUnknownSegment { get; set; }
+        public string? NetworkFailure { get; set; }
         public int CreatePlanCount { get; private set; }
         public int LastRepairAttempt { get; private set; }
 
@@ -149,7 +165,7 @@ public sealed class EditPlanPlannerTests
         public Task<PlanningCostEstimate> EstimateCostAsync(
             ProviderPlanningRequest request,
             CancellationToken cancellationToken) =>
-            Task.FromResult(new PlanningCostEstimate(
+            NetworkFailure == "estimate" ? throw new HttpRequestException("original integration diagnostic") : Task.FromResult(new PlanningCostEstimate(
                 EstimatedCostUsd,
                 "fake",
                 "deterministic"));
@@ -159,6 +175,7 @@ public sealed class EditPlanPlannerTests
             CancellationToken cancellationToken)
         {
             CreatePlanCount++;
+            if (NetworkFailure == "create") throw new HttpRequestException("original integration diagnostic");
             LastRepairAttempt = request.RepairAttempt;
             if (ReturnUnknownSegment)
             {

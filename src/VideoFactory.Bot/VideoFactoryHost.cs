@@ -39,20 +39,32 @@ public static class VideoFactoryHost
         ArgumentNullException.ThrowIfNull(args);
 
         bool diagnosticMode = args is ["diagnose"];
-        if (!diagnosticMode && args.Any(argument => !argument.StartsWith("-", StringComparison.Ordinal)))
+        bool cleanupMode = args.Length > 0 && args[0] == "cleanup";
+        if (cleanupMode && args.Skip(1).Any(argument => argument != "--apply"
+            && !(argument.StartsWith("--", StringComparison.Ordinal) && argument.Contains('='))))
         {
-            Console.Error.WriteLine("Unknown command. Use 'diagnose' or pass host configuration switches.");
+            Console.Error.WriteLine("Use 'cleanup [--apply]' followed by --Section:Key=value configuration switches.");
+            return 2;
+        }
+        if (!diagnosticMode && (cleanupMode ? args.Skip(1) : args).Any(argument => !argument.StartsWith("-", StringComparison.Ordinal)))
+        {
+            Console.Error.WriteLine("Unknown command. Use 'diagnose', 'cleanup [--apply]' or host configuration switches.");
             return 2;
         }
 
-        string[] hostArgs = diagnosticMode ? [] : args;
+        string[] hostArgs = diagnosticMode ? [] : cleanupMode ? args.Skip(1).Where(arg => arg != "--apply").ToArray() : args;
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(hostArgs);
         ConfigureLogging(builder);
         builder.Services.AddVideoFactoryConfiguration(
             builder.Configuration,
-            validateOnStart: !diagnosticMode);
+            validateOnStart: !diagnosticMode && !cleanupMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
         builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
+        builder.Services.AddSingleton<IStorageBudget>(services =>
+        {
+            StorageOptions options = services.GetRequiredService<IOptions<StorageOptions>>().Value;
+            return new FileSystemStorageBudget(new AvailableDiskSpace(), options.MinimumFreeBytes, options.JobQuotaBytes, BuildWorkspaceRoot(services));
+        });
         builder.Services.AddSingleton<IRenderHostAdapter>(services =>
         {
             RemotionOptions remotion = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
@@ -127,7 +139,8 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IProcessRunner>(),
                 services.GetRequiredService<IMediaProbe>(),
                 services.GetRequiredService<IMediaDecodeVerifier>(),
-                options.FfmpegPath);
+                options.FfmpegPath,
+                services.GetRequiredService<IStorageBudget>());
         });
         builder.Services.AddSingleton<IAudioStemBuilder>(services =>
         {
@@ -161,7 +174,14 @@ public static class VideoFactoryHost
         builder.Services.AddSingleton<ITelegramFileDownloader>(services =>
             new TelegramFileDownloader(
                 services.GetRequiredService<TelegramBotClient>(),
-                BuildWorkspaceRoot(services)));
+                BuildWorkspaceRoot(services),
+                services.GetRequiredService<IStorageBudget>(),
+                services.GetRequiredService<IMediaProbe>(),
+                new MediaInputProfile
+                {
+                    MaxFileBytes = services.GetRequiredService<IOptions<LimitsOptions>>().Value.MaxInputFileBytes,
+                    MaxDurationSeconds = services.GetRequiredService<IOptions<LimitsOptions>>().Value.MaxInputDurationSeconds
+                }));
         builder.Services.AddSingleton<ITelegramResponder, TelegramBotResponder>();
         builder.Services.AddSingleton<IVideoDelivery, TelegramVideoDelivery>();
         builder.Services.AddSingleton<ICreateJobUseCase>(services =>
@@ -169,7 +189,15 @@ public static class VideoFactoryHost
                 new CreateJobUseCase(
                     services.GetRequiredService<IJobCreationStore>(),
                     services.GetRequiredService<IJobSignal>())));
-        builder.Services.AddSingleton<TelegramUpdateHandler>();
+        builder.Services.AddSingleton(services => new TelegramUpdateHandler(
+            services.GetRequiredService<IOptions<TelegramOptions>>().Value,
+            services.GetRequiredService<IOptions<LimitsOptions>>().Value,
+            services.GetRequiredService<ITelegramFileDownloader>(),
+            services.GetRequiredService<IArtifactStore>(),
+            services.GetRequiredService<ICreateJobUseCase>(),
+            services.GetRequiredService<ITelegramIntakeSessionStore>(),
+            services.GetRequiredService<ITelegramResponder>(),
+            services.GetRequiredService<ILogger<TelegramUpdateHandler>>()));
         builder.Services.AddHostedService<TelegramPollingService>();
         builder.Services.AddSingleton<RenderingStageExecutor>(services =>
             new RenderingStageExecutor(
@@ -184,7 +212,8 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.SampleRate,
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.ChannelLayout,
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.LoudnessLufs,
-                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp));
+                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp,
+                 services.GetRequiredService<IStorageBudget>()));
         builder.Services.AddSingleton<VerificationStageExecutor>(services =>
         {
             OutputQualityOptions options = services.GetRequiredService<IOptions<OutputQualityOptions>>().Value;
@@ -205,7 +234,8 @@ public static class VideoFactoryHost
             new PackagingStageExecutor(
                 services.GetRequiredService<IArtifactStore>(),
                 BuildWorkspaceRoot(services),
-                services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.MaxTelegramBytes));
+                services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.MaxTelegramBytes,
+                services.GetRequiredService<IStorageBudget>()));
         builder.Services.AddSingleton<DeliveryStageExecutor>(services =>
         {
             TelegramOptions telegram = services.GetRequiredService<IOptions<TelegramOptions>>().Value;
@@ -241,6 +271,33 @@ public static class VideoFactoryHost
         if (diagnosticMode)
         {
              return await RunDiagnosticsAsync(host.Services, logger, cancellationToken);
+        }
+
+        if (cleanupMode)
+        {
+            try
+            {
+                StorageOptions storage = host.Services.GetRequiredService<IOptions<StorageOptions>>().Value;
+                string root = BuildWorkspaceRoot(host.Services);
+                string database = Path.Combine(root, storage.DataRoot, storage.DatabaseFileName);
+                if (!File.Exists(database))
+                {
+                    logger.LogError("Cleanup requires an existing migrated database.");
+                    return 1;
+                }
+                IJobCleanup cleanup = new SqliteJobCleanup(BuildConnectionString(host.Services), root,
+                    storage.CompletedJobRetentionDays, TimeProvider.System);
+                CleanupReport report = await cleanup.RunAsync(args.Contains("--apply", StringComparer.Ordinal), cancellationToken);
+                logger.LogInformation("Cleanup: apply={Apply}, candidates={Candidates}, deleted={Deleted}, errors={Errors}, freedBytes={FreedBytes}",
+                    args.Contains("--apply", StringComparer.Ordinal), report.Candidates, report.Deleted, report.Errors, report.FreedBytes);
+                return report.Errors == 0 ? 0 : 1;
+            }
+            catch (OptionsValidationException) { return 2; }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or Microsoft.Data.Sqlite.SqliteException)
+            {
+                logger.LogError("Cleanup failed: {ErrorType}", exception.GetType().Name);
+                return 1;
+            }
         }
 
         try

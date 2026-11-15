@@ -89,6 +89,20 @@ public sealed class SqliteArtifactStore : IArtifactStore
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
+        await using (SqliteCommand cleanup = connection.CreateCommand())
+        {
+            cleanup.Transaction = transaction;
+            cleanup.CommandText = """
+                SELECT EXISTS (SELECT 1 FROM jobs j WHERE j.cleanup_started_at IS NOT NULL
+                  AND (j.job_id = $jobId OR $path LIKE 'data/jobs/' || j.job_id || '/%'
+                    OR $path LIKE 'jobs/' || j.job_id || '/%'));
+                """;
+            cleanup.Parameters.AddWithValue("$jobId", record.JobId?.ToString() ?? "");
+            cleanup.Parameters.AddWithValue("$path", record.RelativePath.Replace('\\', '/'));
+            if (Convert.ToInt64(await cleanup.ExecuteScalarAsync(cancellationToken)) != 0)
+                return new ArtifactRegistrationResult.Rejected("Job files are being cleaned or have expired.");
+        }
+
         ArtifactRecord? existing = await FindAsync(
             connection,
             transaction,
@@ -141,11 +155,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
             return new ArtifactRegistrationResult.Rejected("Artifact type cannot be empty.");
         }
 
-        string normalizedPath = record.RelativePath.Replace('\\', '/');
-        string[] segments = normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (Path.IsPathRooted(record.RelativePath)
-            || segments.Any(segment => segment is "." or "..")
-            || segments.Length == 0)
+        if (!SafeFileTree.IsSafeRelativePath(record.RelativePath))
         {
             return new ArtifactRegistrationResult.Rejected("Artifact path must be a safe relative path.");
         }
