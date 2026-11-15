@@ -98,6 +98,14 @@ public sealed record EditPlanRevision(
 /// <summary>Результат поиска или сохранения ревизии плана.</summary>
 public interface IEditPlanRevisionStore
 {
+    /// <summary>Находит ревизию по её идентификатору.</summary>
+    /// <param name="revisionId">Идентификатор ревизии.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Ревизия или <see langword="null"/>, если она не найдена.</returns>
+    Task<EditPlanRevision?> GetAsync(
+        RevisionId revisionId,
+        CancellationToken cancellationToken);
+
     /// <summary>Находит ранее сохранённый план с тем же содержимым.</summary>
     Task<EditPlanRevision?> FindAsync(
         JobId jobId,

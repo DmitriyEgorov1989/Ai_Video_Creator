@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
 import type { RenderRequest, VideoClip } from "../contracts.js";
 
 function clipAsset(clip: VideoClip, request: RenderRequest): string | undefined {
@@ -11,6 +11,7 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
   const { width, height } = useVideoConfig();
   const clip = plan.video.clips.find((item) => frame >= item.output.startFrame && frame < item.output.endFrame);
   const source = clip ? clipAsset(clip, { plan, assets } as RenderRequest) : undefined;
+  const audio = assets.find((asset) => asset.id === "__audio_master")?.path;
   const caption = plan.captions.items.find((item) => frame >= item.output.startFrame && frame < item.output.endFrame);
   const theme = plan.templateProps.theme === "light" ? "#f5f1e8" : "#111318";
   const foreground = plan.templateProps.theme === "light" ? "#141414" : "#ffffff";
@@ -19,11 +20,13 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
     <AbsoluteFill style={{ backgroundColor: theme, color: foreground, fontFamily: "Arial, sans-serif" }}>
       {source && clip ? (
         <OffthreadVideo
-          src={source}
+           src={source}
+           muted
           startFrom={Math.max(0, Math.floor((frame - clip.output.startFrame) * 30 / 30))}
           style={{ width, height, objectFit: clip.crop === "fit" ? "contain" : "cover" }}
         />
       ) : null}
+      {audio ? <Audio src={audio} volume={1} /> : null}
       {plan.templateProps.title ? <div style={{ position: "absolute", top: 100, left: 70, right: 70, fontSize: 58, fontWeight: 700 }}>{plan.templateProps.title}</div> : null}
       {caption && plan.templateProps.captions !== "none" ? (
         <Sequence from={caption.output.startFrame} durationInFrames={caption.output.endFrame - caption.output.startFrame}>

@@ -8,7 +8,11 @@ public sealed record AudioStemRequest(
     string OutputPath,
     MediaMetadata SourceMetadata,
     TimeSpan Timeout,
-    int MaxOutputBytes);
+    int MaxOutputBytes,
+    int TargetSampleRate = 48_000,
+    string ChannelLayout = "stereo",
+    double TargetLoudnessLufs = -16,
+    double TruePeakDbtp = -1);
 
 /// <summary>Результат создания audio stem.</summary>
 public sealed record AudioStemResult(

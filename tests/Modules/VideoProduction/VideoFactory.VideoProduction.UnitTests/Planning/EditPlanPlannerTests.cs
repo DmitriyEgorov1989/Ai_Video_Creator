@@ -189,6 +189,11 @@ public sealed class EditPlanPlannerTests
         private EditPlanRevision? revision;
         public int SaveCount { get; private set; }
 
+        public Task<EditPlanRevision?> GetAsync(
+            RevisionId revisionId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(revision?.RevisionId == revisionId ? revision : null);
+
         public Task<EditPlanRevision?> FindAsync(
             JobId jobId,
             VariantId variantId,

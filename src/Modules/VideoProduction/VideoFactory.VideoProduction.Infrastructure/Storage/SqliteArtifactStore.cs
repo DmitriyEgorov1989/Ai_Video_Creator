@@ -26,6 +26,30 @@ public sealed class SqliteArtifactStore : IArtifactStore
     }
 
     /// <inheritdoc />
+    public async Task<ArtifactRecord?> GetAsync(
+        ArtifactId artifactId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT artifact_id, artifact_type, relative_path, sha256, size_bytes,
+                   metadata_json, parent_artifact_id, tool_version
+            FROM artifacts
+            WHERE artifact_id = $artifactId;
+            """;
+        command.Parameters.AddWithValue("$artifactId", artifactId.ToString());
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return ReadRecord(reader);
+    }
+
+    /// <inheritdoc />
     public async Task<ArtifactRegistrationResult> RegisterAsync(
         ArtifactRecord record,
         CancellationToken cancellationToken)
@@ -126,16 +150,18 @@ public sealed class SqliteArtifactStore : IArtifactStore
             return null;
         }
 
-        return new ArtifactRecord(
-            new ArtifactId(Guid.Parse(reader.GetString(0))),
-            reader.GetString(1),
-            reader.GetString(2),
-            GetNullableString(reader, 3),
-            GetNullableInt64(reader, 4),
-            GetNullableString(reader, 5),
-            GetNullableArtifactId(reader, 6),
-            GetNullableString(reader, 7));
+        return ReadRecord(reader);
     }
+
+    private static ArtifactRecord ReadRecord(SqliteDataReader reader) => new(
+        new ArtifactId(Guid.Parse(reader.GetString(0))),
+        reader.GetString(1),
+        reader.GetString(2),
+        GetNullableString(reader, 3),
+        GetNullableInt64(reader, 4),
+        GetNullableString(reader, 5),
+        GetNullableArtifactId(reader, 6),
+        GetNullableString(reader, 7));
 
     private static string? GetNullableString(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

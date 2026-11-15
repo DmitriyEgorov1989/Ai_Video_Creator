@@ -74,6 +74,18 @@ public static class ConfigurationRegistration
             .Validate(options => !string.IsNullOrWhiteSpace(options.RenderHostPath),
                 "Remotion:RenderHostPath is required.");
 
+        OptionsBuilder<AudioNormalizationOptions> audio = services
+            .AddOptions<AudioNormalizationOptions>()
+            .Bind(configuration.GetSection(AudioNormalizationOptions.SectionName))
+            .Validate(options => options.SampleRate > 0,
+                "AudioNormalization:SampleRate must be greater than zero.")
+            .Validate(options => options.ChannelLayout is "mono" or "stereo",
+                "AudioNormalization:ChannelLayout must be mono or stereo.")
+            .Validate(options => options.LoudnessLufs <= 0,
+                "AudioNormalization:LoudnessLufs must not be positive.")
+            .Validate(options => options.TruePeakDbtp <= 0,
+                "AudioNormalization:TruePeakDbtp must not be positive.");
+
         OptionsBuilder<AiApiOptions> aiApi = services.AddOptions<AiApiOptions>()
             .Bind(configuration.GetSection(AiApiOptions.SectionName))
             .Validate(IsAiApiConfigurationComplete,
@@ -103,6 +115,7 @@ public static class ConfigurationRegistration
             ffmpeg.ValidateOnStart();
             whisper.ValidateOnStart();
             remotion.ValidateOnStart();
+            audio.ValidateOnStart();
             aiApi.ValidateOnStart();
             processTimeouts.ValidateOnStart();
         }

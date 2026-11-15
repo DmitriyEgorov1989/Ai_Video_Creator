@@ -168,6 +168,27 @@ public sealed class RemotionOptions
 }
 
 /// <summary>
+/// Профиль нормализации исходного звука.
+/// </summary>
+public sealed class AudioNormalizationOptions
+{
+    /// <summary>Имя секции конфигурации.</summary>
+    public const string SectionName = "AudioNormalization";
+
+    /// <summary>Целевая частота дискретизации в герцах.</summary>
+    public int SampleRate { get; init; } = 48_000;
+
+    /// <summary>Целевая схема каналов.</summary>
+    public string ChannelLayout { get; init; } = "stereo";
+
+    /// <summary>Целевая громкость в LUFS.</summary>
+    public double LoudnessLufs { get; init; } = -16;
+
+    /// <summary>Ограничение true peak в dBTP.</summary>
+    public double TruePeakDbtp { get; init; } = -1;
+}
+
+/// <summary>
 /// Параметры подключения к внешнему API искусственного интеллекта.
 /// Экземпляр параметров не должен быть <see langword="null"/>.
 /// </summary>

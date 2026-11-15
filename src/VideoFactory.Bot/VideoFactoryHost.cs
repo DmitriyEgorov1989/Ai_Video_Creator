@@ -12,6 +12,7 @@ using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Planning;
+using VideoFactory.VideoProduction.Application.Rendering;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Queue;
@@ -19,6 +20,7 @@ using VideoFactory.VideoProduction.Infrastructure.Processes;
 using VideoFactory.VideoProduction.Infrastructure.Media;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Analysis;
+using VideoFactory.VideoProduction.Infrastructure.Rendering;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -46,6 +48,14 @@ public static class VideoFactoryHost
             validateOnStart: !diagnosticMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
         builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
+        builder.Services.AddSingleton<IRenderHostAdapter>(services =>
+        {
+            RemotionOptions remotion = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
+            return new RenderHostProcessAdapter(
+                services.GetRequiredService<IProcessRunner>(),
+                remotion.NodePath,
+                remotion.RenderHostPath);
+        });
         builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
         builder.Services.AddSingleton<IAudioActivityDetector>(services =>
         {
@@ -143,7 +153,20 @@ public static class VideoFactoryHost
                     services.GetRequiredService<IJobSignal>())));
         builder.Services.AddSingleton<TelegramUpdateHandler>();
         builder.Services.AddHostedService<TelegramPollingService>();
-        builder.Services.AddSingleton<IJobStageExecutor, UnavailableJobStageExecutor>();
+        builder.Services.AddSingleton<IJobStageExecutor>(services =>
+            new RenderingStageExecutor(
+                services.GetRequiredService<IEditPlanRevisionStore>(),
+                services.GetRequiredService<IArtifactStore>(),
+                services.GetRequiredService<IRenderHostAdapter>(),
+                services.GetRequiredService<IAudioStemBuilder>(),
+                services.GetRequiredService<IMediaProbe>(),
+                BuildWorkspaceRoot(services),
+                TimeSpan.FromSeconds(services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.RenderSeconds),
+                services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.MaxOutputBytes,
+                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.SampleRate,
+                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.ChannelLayout,
+                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.LoudnessLufs,
+                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp));
         builder.Services.AddSingleton<SequentialJobProcessor>();
         builder.Services.AddHostedService<SequentialJobWorker>();
         builder.Services.AddSingleton(serviceProvider =>
@@ -197,6 +220,7 @@ public static class VideoFactoryHost
         _ = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
         _ = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
         _ = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
+        _ = services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value;
         _ = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
         _ = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
     }

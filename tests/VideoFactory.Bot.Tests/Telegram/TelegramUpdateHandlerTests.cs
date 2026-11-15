@@ -135,6 +135,11 @@ public sealed class TelegramUpdateHandlerTests
 
     private sealed class FakeArtifactStore : IArtifactStore
     {
+        public Task<ArtifactRecord?> GetAsync(
+            ArtifactId artifactId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ArtifactRecord?>(null);
+
         public Task<ArtifactRegistrationResult> RegisterAsync(
             ArtifactRecord record,
             CancellationToken cancellationToken) =>

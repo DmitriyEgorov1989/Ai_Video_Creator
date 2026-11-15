@@ -29,6 +29,16 @@ public sealed class FfmpegAudioStemBuilder : IAudioStemBuilder
             return AudioStemResult.Skipped();
         }
 
+        if (request.TargetSampleRate <= 0
+            || string.IsNullOrWhiteSpace(request.ChannelLayout)
+            || request.TargetLoudnessLufs > 0
+            || request.TruePeakDbtp > 0)
+        {
+            return AudioStemResult.Failed(
+                "media.audio_profile_invalid",
+                "Audio normalization profile contains invalid values.");
+        }
+
         string directory = Path.GetDirectoryName(request.OutputPath)
             ?? throw new ArgumentException("Output path must include a directory.", nameof(request));
         Directory.CreateDirectory(directory);
@@ -45,6 +55,10 @@ public sealed class FfmpegAudioStemBuilder : IAudioStemBuilder
                         "-y", "-i", request.SourcePath,
                         "-map", "0:a:0",
                         "-vn",
+                        "-af", $"loudnorm=I={request.TargetLoudnessLufs:0.###}:TP={request.TruePeakDbtp:0.###}:LRA=11",
+                        "-ar", request.TargetSampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        "-ac", request.ChannelLayout == "mono" ? "1" : "2",
+                        "-channel_layout", request.ChannelLayout,
                         "-c:a", "aac",
                         temporaryPath
                     ],

@@ -27,6 +27,20 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
     }
 
     /// <inheritdoc />
+    public async Task<EditPlanRevision?> GetAsync(
+        RevisionId revisionId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = SelectSql + " WHERE revision_id = $revisionId;";
+        command.Parameters.AddWithValue("$revisionId", revisionId.ToString());
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await ReadAsync(reader, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<EditPlanRevision?> FindAsync(
         JobId jobId,
         VariantId variantId,
