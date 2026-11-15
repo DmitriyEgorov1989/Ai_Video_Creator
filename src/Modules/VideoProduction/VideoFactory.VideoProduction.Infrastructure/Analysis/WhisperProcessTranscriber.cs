@@ -51,9 +51,15 @@ public sealed class WhisperProcessTranscriber : IWhisperTranscriber
 
         if (!result.IsSuccess)
         {
+            string message = result.ErrorMessage ?? "Whisper worker failed.";
+            if (!string.IsNullOrWhiteSpace(result.StandardError))
+            {
+                message = $"{message}{Environment.NewLine}{result.StandardError}";
+            }
+
             return TranscriptionResult.Failed(
                 result.ErrorCode ?? "analysis.whisper_failed",
-                result.ErrorMessage ?? "Whisper worker failed.");
+                message);
         }
 
         WhisperDocument? document;

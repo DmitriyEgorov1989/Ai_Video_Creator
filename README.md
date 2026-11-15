@@ -241,7 +241,7 @@ $env:FFmpeg__FfmpegPath = "C:\Tools\ffmpeg\bin\ffmpeg.exe"
 dotnet run --project src/VideoFactory.Bot -- diagnose
 ```
 
-Диагностика проверяет конфигурацию и наличие файлов или executable, но пока не запускает их и не проверяет версии. До реализации следующих этапов ожидаемо отсутствуют Whisper worker и собранный Node render-host.
+Диагностика проверяет конфигурацию и наличие файлов или executable, но не запускает их и не проверяет версии. Whisper worker устанавливается по инструкции в `docs/whisper-worker.md`; Node render-host должен быть собран отдельно.
 
 | Exit code | Значение |
 |---:|---|
