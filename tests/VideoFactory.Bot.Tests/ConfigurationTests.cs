@@ -169,6 +169,38 @@ public sealed class ConfigurationTests
             failure => failure.Contains($"ProcessTimeouts:{propertyName}", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void UnsupportedAiProviderIsRejected()
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["AiApi:Provider"] = "other",
+            ["AiApi:ApiKey"] = "test-key",
+            ["AiApi:Model"] = "model"
+        });
+
+        using ServiceProvider services = BuildServices(configuration);
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<AiApiOptions>>().Value);
+
+        Assert.Contains("AiApi:Provider must be 'deepseek'.", exception.Failures);
+    }
+
+    [Fact]
+    public void NegativeAiTokenPriceIsRejected()
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["AiApi:InputCacheMissPriceUsdPerMillionTokens"] = "-0.1"
+        });
+
+        using ServiceProvider services = BuildServices(configuration);
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<AiApiOptions>>().Value);
+
+        Assert.Contains("AiApi token prices must not be negative.", exception.Failures);
+    }
+
     private static IConfiguration BuildConfiguration(Dictionary<string, string?> values) =>
         new ConfigurationBuilder()
             .AddInMemoryCollection(values)

@@ -25,6 +25,7 @@ using VideoFactory.VideoProduction.Infrastructure.Pipeline;
 using VideoFactory.VideoProduction.Infrastructure.QualityAssurance;
 using VideoFactory.VideoProduction.Infrastructure.Packaging;
 using VideoFactory.VideoProduction.Infrastructure.Delivery;
+using VideoFactory.VideoProduction.Infrastructure.Planning;
 using VideoFactory.VideoProduction.Application.Delivery;
 using Telegram.Bot;
 
@@ -54,6 +55,11 @@ public static class VideoFactoryHost
 
         string[] hostArgs = diagnosticMode ? [] : cleanupMode ? args.Skip(1).Where(arg => arg != "--apply").ToArray() : args;
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(hostArgs);
+        string? dotEnvPath = DotEnvLoader.Find(builder.Environment.ContentRootPath);
+        if (dotEnvPath is not null)
+        {
+            DotEnvLoader.Add(builder.Configuration, dotEnvPath);
+        }
         ConfigureLogging(builder);
         builder.Services.AddVideoFactoryConfiguration(
             builder.Configuration,
@@ -74,6 +80,23 @@ public static class VideoFactoryHost
                 remotion.RenderHostPath);
         });
         builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
+        builder.Services.AddSingleton<HttpClient>();
+        builder.Services.AddSingleton<IEditPlanProvider>(services =>
+        {
+            AiApiOptions ai = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
+            HttpClient client = services.GetRequiredService<HttpClient>();
+            return new DeepSeekEditPlanProvider(client, new DeepSeekProviderOptions
+            {
+                ApiKey = ai.ApiKey,
+                BaseAddress = new Uri(ai.BaseAddress),
+                Model = ai.Model,
+                InputCacheHitPriceUsdPerMillionTokens = ai.InputCacheHitPriceUsdPerMillionTokens,
+                InputCacheMissPriceUsdPerMillionTokens = ai.InputCacheMissPriceUsdPerMillionTokens,
+                OutputPriceUsdPerMillionTokens = ai.OutputPriceUsdPerMillionTokens,
+                MaxOutputTokens = ai.MaxOutputTokens,
+                TimeoutSeconds = ai.TimeoutSeconds
+            });
+        });
         builder.Services.AddSingleton<IAudioActivityDetector>(services =>
         {
             FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;

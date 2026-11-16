@@ -31,6 +31,7 @@ public sealed record ProviderPlanningRequest(
     int? TargetDurationSeconds,
     bool CaptionsEnabled,
     ImmutableArray<ProviderSegment> AllowedSegments,
+    string? ExtractedText = null,
     int RepairAttempt = 0);
 
 /// <summary>Известный provider-у сегмент анализа.</summary>

@@ -262,4 +262,22 @@ public sealed class AiApiOptions
     /// а отсутствие настроенной модели представлено пустой строкой.
     /// </summary>
     public string Model { get; init; } = string.Empty;
+
+    /// <summary>Базовый URL DeepSeek API; значение не может быть <see langword="null"/>.</summary>
+    public string BaseAddress { get; init; } = "https://api.deepseek.com/";
+
+    /// <summary>Цена входных cache-hit токенов за миллион токенов в USD.</summary>
+    public decimal InputCacheHitPriceUsdPerMillionTokens { get; init; } = 0.003m;
+
+    /// <summary>Цена входных cache-miss токенов за миллион токенов в USD.</summary>
+    public decimal InputCacheMissPriceUsdPerMillionTokens { get; init; } = 0.15m;
+
+    /// <summary>Цена выходных токенов за миллион токенов в USD.</summary>
+    public decimal OutputPriceUsdPerMillionTokens { get; init; } = 0.6m;
+
+    /// <summary>Максимальное количество токенов в ответе планировщика.</summary>
+    public int MaxOutputTokens { get; init; } = 2_048;
+
+    /// <summary>Предельная длительность HTTP-вызова планировщика в секундах.</summary>
+    public int TimeoutSeconds { get; init; } = 120;
 }

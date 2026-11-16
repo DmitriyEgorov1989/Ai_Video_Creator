@@ -168,7 +168,10 @@ public sealed class EditPlanPlanner
                 .Select(segment => new ProviderSegment(
                     segment.Id,
                     segment.Mapping.Master.DurationMicroseconds))
-                .ToImmutableArray());
+                .ToImmutableArray(),
+            string.Join(
+                Environment.NewLine,
+                request.Analysis.Speech.Select(segment => segment.Text)));
 
     private static EditPlan CreatePlan(
         PlanningRequest request,

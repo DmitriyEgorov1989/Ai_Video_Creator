@@ -111,7 +111,21 @@ public static class ConfigurationRegistration
         OptionsBuilder<AiApiOptions> aiApi = services.AddOptions<AiApiOptions>()
             .Bind(configuration.GetSection(AiApiOptions.SectionName))
             .Validate(IsAiApiConfigurationComplete,
-                "AiApi settings must be either empty or contain Provider, ApiKey, and Model.");
+                "AiApi settings must be either empty or contain Provider, ApiKey, and Model.")
+            .Validate(options => string.IsNullOrWhiteSpace(options.Provider)
+                || string.Equals(options.Provider, "deepseek", StringComparison.OrdinalIgnoreCase),
+                "AiApi:Provider must be 'deepseek'.")
+            .Validate(options => Uri.TryCreate(options.BaseAddress, UriKind.Absolute, out Uri? address)
+                && address.Scheme == Uri.UriSchemeHttps,
+                "AiApi:BaseAddress must be an absolute HTTPS URL.")
+            .Validate(options => options.InputCacheHitPriceUsdPerMillionTokens >= 0
+                && options.InputCacheMissPriceUsdPerMillionTokens >= 0
+                && options.OutputPriceUsdPerMillionTokens >= 0,
+                "AiApi token prices must not be negative.")
+            .Validate(options => options.MaxOutputTokens > 0,
+                "AiApi:MaxOutputTokens must be greater than zero.")
+            .Validate(options => options.TimeoutSeconds > 0,
+                "AiApi:TimeoutSeconds must be greater than zero.");
 
         OptionsBuilder<ProcessTimeoutOptions> processTimeouts = services
             .AddOptions<ProcessTimeoutOptions>()

@@ -217,13 +217,35 @@ dotnet user-secrets set "Telegram:BotToken" "<token>" --project src/VideoFactory
 dotnet user-secrets set "Telegram:AllowedUserId" "123456789" --project src/VideoFactory.Bot
 ```
 
-AI API пока не используется. Его настройки можно заранее сохранить тем же способом, но секция должна быть либо полностью пустой, либо содержать `Provider`, `ApiKey` и `Model`:
+Для планирования подключён DeepSeek через прямой HTTP-адаптер. Host загружает локальный `.env` из текущего каталога или его родителей, если файл существует. В автоматических тестах используется подменённый HTTP, а реальный платный вызов выполняется только при заполненном лимите стоимости задания. Файл `.env` не отслеживается Git.
+
+Скопируйте безопасный шаблон:
 
 ```powershell
-dotnet user-secrets set "AiApi:Provider" "<provider>" --project src/VideoFactory.Bot
-dotnet user-secrets set "AiApi:ApiKey" "<key>" --project src/VideoFactory.Bot
-dotnet user-secrets set "AiApi:Model" "<model>" --project src/VideoFactory.Bot
+Copy-Item .\.env.example .\.env
 ```
+
+Затем укажите `AiApi__ApiKey` в локальном `.env`. Для имён вложенных настроек используется двойное подчёркивание. Переменные окружения процесса и аргументы командной строки имеют приоритет над `.env`.
+
+Альтернативный способ — User Secrets:
+
+```powershell
+dotnet user-secrets set "AiApi:Provider" "deepseek" --project src/VideoFactory.Bot
+dotnet user-secrets set "AiApi:ApiKey" "<deepseek-api-key>" --project src/VideoFactory.Bot
+dotnet user-secrets set "AiApi:Model" "deepseek-flash" --project src/VideoFactory.Bot
+```
+
+Тарифы задаются в конфигурации в USD за один миллион токенов, чтобы их можно было обновить без изменения кода:
+
+```text
+AiApi:InputCacheHitPriceUsdPerMillionTokens
+AiApi:InputCacheMissPriceUsdPerMillionTokens
+AiApi:OutputPriceUsdPerMillionTokens
+AiApi:MaxOutputTokens
+AiApi:TimeoutSeconds
+```
+
+Вызов использует `https://api.deepseek.com/chat/completions`, JSON Output и передаёт провайдеру только пользовательский комментарий, извлечённый текст и известные разрешённые сегменты. Локальные пути, ключи и произвольные assets в запрос не передаются.
 
 Для environment variables вложенные ключи разделяются двойным подчёркиванием:
 
