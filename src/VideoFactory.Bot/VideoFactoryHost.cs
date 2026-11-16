@@ -187,6 +187,8 @@ public static class VideoFactoryHost
             new SqliteDeliveryReceiptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IEditPlanRevisionStore>(services =>
             new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
+        builder.Services.AddSingleton<IPlanningAttemptStore>(services =>
+            new SqlitePlanningAttemptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
             new LocalArtifactStorage(BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();

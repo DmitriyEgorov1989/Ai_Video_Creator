@@ -49,6 +49,8 @@ public sealed class EditPlanPlannerTests
                 fixture.Analysis.AllowedSegments,
                 segment => segment.Id == clip.SegmentId));
         Assert.Equal(1, fixture.Store.SaveCount);
+        Assert.Equal(1, fixture.Provider.EstimateCostCount);
+        Assert.Equal(1, fixture.Provider.CreatePlanCount);
     }
 
     [Fact]
@@ -99,11 +101,50 @@ public sealed class EditPlanPlannerTests
         Assert.Equal(1, fixture.Provider.LastRepairAttempt);
     }
 
+    [Fact]
+    public async Task InvalidFirstResponseAndRepairAreRecordedInTotalCost()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Provider.InvalidFirstResponse = true;
+
+        PlanningResult result = await fixture.Planner.PlanAsync(
+            fixture.Request,
+            CancellationToken.None);
+
+        PlanningResult.Created created = Assert.IsType<PlanningResult.Created>(result);
+        Assert.Equal(0.02m, created.Revision.ActualCostUsd);
+        Assert.Equal(2, fixture.Attempts.Attempts.Count);
+        Assert.Equal(0.02m, fixture.Attempts.Attempts.Sum(attempt => attempt.ActualCostUsd ?? 0m));
+        Assert.Equal("invalid", fixture.Attempts.Attempts[0].Status);
+        Assert.Equal("succeeded", fixture.Attempts.Attempts[1].Status);
+    }
+
+    [Fact]
+    public async Task RepairAttemptIsBlockedWhenAccumulatedCostExceedsBudget()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Provider.InvalidFirstResponse = true;
+        fixture.Provider.ActualCostUsd = 0.4m;
+        fixture.Provider.EstimatedCostUsd = 0.4m;
+        fixture.CostPolicy.Limit = 0.7m;
+
+        PlanningResult result = await fixture.Planner.PlanAsync(
+            fixture.Request,
+            CancellationToken.None);
+
+        PlanningResult.WaitingForApproval waiting = Assert.IsType<PlanningResult.WaitingForApproval>(result);
+        Assert.Equal(0.4m, waiting.EstimatedCostUsd);
+        Assert.Equal(1, fixture.Provider.CreatePlanCount);
+        Assert.Single(fixture.Attempts.Attempts);
+        Assert.Equal(0.4m, fixture.Attempts.Attempts[0].ActualCostUsd);
+    }
+
     private sealed class PlanningFixture
     {
         public required ValidPlanFixture Source { get; init; }
         public required TestProvider Provider { get; init; }
         public required InMemoryRevisionStore Store { get; init; }
+        public required InMemoryAttemptStore Attempts { get; init; }
         public required PlanningRequest Request { get; init; }
         public EditPlanPlanner Planner { get; set; } = null!;
         public required TestCostPolicy CostPolicy { get; init; }
@@ -114,12 +155,14 @@ public sealed class EditPlanPlannerTests
             ValidPlanFixture source = ValidPlanFixture.Create();
             TestProvider provider = new(source.Plan);
             InMemoryRevisionStore store = new();
+            InMemoryAttemptStore attempts = new();
             TestCostPolicy costPolicy = new(1m);
             PlanningFixture fixture = new()
             {
                 Source = source,
                 Provider = provider,
                 Store = store,
+                Attempts = attempts,
                 CostPolicy = costPolicy,
                 Request = new PlanningRequest(
                     source.Plan.JobId,
@@ -133,7 +176,7 @@ public sealed class EditPlanPlannerTests
                         [TemplateId.Dynamic] = source.Templates[TemplateId.Dynamic]
                     })
             };
-            fixture.Planner = new EditPlanPlanner(provider, costPolicy, store);
+            fixture.Planner = new EditPlanPlanner(provider, costPolicy, store, attempts);
             return fixture;
         }
     }
@@ -142,9 +185,12 @@ public sealed class EditPlanPlannerTests
     {
         private readonly ProviderPlanResponse response;
         public decimal EstimatedCostUsd { get; set; } = 0.01m;
+        public decimal ActualCostUsd { get; set; } = 0.01m;
         public bool ReturnUnknownSegment { get; set; }
+        public bool InvalidFirstResponse { get; set; }
         public string? NetworkFailure { get; set; }
         public int CreatePlanCount { get; private set; }
+        public int EstimateCostCount { get; private set; }
         public int LastRepairAttempt { get; private set; }
 
         public TestProvider(EditPlan plan)
@@ -159,16 +205,21 @@ public sealed class EditPlanPlannerTests
                 plan.Captions.Items.Select(caption => new ProviderCaption(
                     caption.Text,
                     caption.Output)).ToImmutableArray(),
-                0.01m);
+                ActualCostUsd);
         }
 
         public Task<PlanningCostEstimate> EstimateCostAsync(
             ProviderPlanningRequest request,
-            CancellationToken cancellationToken) =>
-            NetworkFailure == "estimate" ? throw new HttpRequestException("original integration diagnostic") : Task.FromResult(new PlanningCostEstimate(
-                EstimatedCostUsd,
-                "fake",
-                "deterministic"));
+            CancellationToken cancellationToken)
+        {
+            EstimateCostCount++;
+            return NetworkFailure == "estimate"
+                ? throw new HttpRequestException("original integration diagnostic")
+                : Task.FromResult(new PlanningCostEstimate(
+                    EstimatedCostUsd,
+                    "fake",
+                    "deterministic"));
+        }
 
         public Task<ProviderPlanResponse> CreatePlanAsync(
             ProviderPlanningRequest request,
@@ -177,17 +228,18 @@ public sealed class EditPlanPlannerTests
             CreatePlanCount++;
             if (NetworkFailure == "create") throw new HttpRequestException("original integration diagnostic");
             LastRepairAttempt = request.RepairAttempt;
-            if (ReturnUnknownSegment)
+            if (ReturnUnknownSegment || (InvalidFirstResponse && request.RepairAttempt == 0))
             {
                 return Task.FromResult(response with
                 {
                     VideoClips = response.VideoClips.SetItem(
                         0,
-                        response.VideoClips[0] with { SegmentId = SegmentId.New() })
+                        response.VideoClips[0] with { SegmentId = SegmentId.New() }),
+                    ActualCostUsd = ActualCostUsd
                 });
             }
 
-            return Task.FromResult(response);
+            return Task.FromResult(response with { ActualCostUsd = ActualCostUsd });
         }
     }
 
@@ -195,8 +247,8 @@ public sealed class EditPlanPlannerTests
     {
         public decimal Limit { get; set; } = limit;
 
-        public PlanningCostDecision Decide(PlanningCostEstimate estimate) =>
-            estimate.EstimatedCostUsd > Limit
+        public PlanningCostDecision Decide(PlanningCostEstimate estimate, decimal accumulatedActualCostUsd) =>
+            accumulatedActualCostUsd + estimate.EstimatedCostUsd > Limit
                 ? new PlanningCostDecision(false, true, "Approval is required.")
                 : new PlanningCostDecision(true, false, null);
     }
@@ -210,6 +262,16 @@ public sealed class EditPlanPlannerTests
             RevisionId revisionId,
             CancellationToken cancellationToken) =>
             Task.FromResult(revision?.RevisionId == revisionId ? revision : null);
+
+        public Task<EditPlanRevision?> FindApprovedAsync(
+            JobId jobId,
+            VariantId variantId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(revision is { JobId: var storedJob, VariantId: var storedVariant }
+                && storedJob == jobId
+                && storedVariant == variantId
+                    ? revision
+                    : null);
 
         public Task<EditPlanRevision?> FindAsync(
             JobId jobId,
@@ -238,6 +300,17 @@ public sealed class EditPlanPlannerTests
                 plan,
                 actualCostUsd);
             return Task.FromResult(revision);
+        }
+    }
+
+    private sealed class InMemoryAttemptStore : IPlanningAttemptStore
+    {
+        public List<PlanningAttemptRecord> Attempts { get; } = [];
+
+        public Task SaveAsync(PlanningAttemptRecord attempt, CancellationToken cancellationToken)
+        {
+            Attempts.Add(attempt);
+            return Task.CompletedTask;
         }
     }
 }

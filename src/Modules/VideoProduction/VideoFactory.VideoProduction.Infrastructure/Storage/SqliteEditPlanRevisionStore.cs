@@ -27,6 +27,24 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
     }
 
     /// <inheritdoc />
+    public async Task<EditPlanRevision?> FindApprovedAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = SelectSql + " WHERE revision_id = (" +
+            "SELECT current_approved_edit_plan_revision_id FROM jobs " +
+            "WHERE job_id = $jobId) AND job_id = $jobId AND variant_id = $variantId;";
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$variantId", variantId.ToString());
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await ReadAsync(reader, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<EditPlanRevision?> GetAsync(
         RevisionId revisionId,
         CancellationToken cancellationToken)
@@ -105,6 +123,22 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         try
         {
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            await using SqliteCommand approvalCommand = connection.CreateCommand();
+            approvalCommand.Transaction = transaction;
+            approvalCommand.CommandText = """
+                UPDATE jobs
+                SET current_approved_edit_plan_revision_id = $revisionId, updated_at = $updatedAt
+                WHERE job_id = $jobId;
+                UPDATE variants
+                SET current_approved_edit_plan_revision_id = $revisionId, updated_at = $updatedAt
+                WHERE variant_id = $variantId;
+                """;
+            approvalCommand.Parameters.AddWithValue("$revisionId", plan.RevisionId.ToString());
+            approvalCommand.Parameters.AddWithValue("$jobId", plan.JobId.ToString());
+            approvalCommand.Parameters.AddWithValue("$variantId", plan.VariantId.ToString());
+            approvalCommand.Parameters.AddWithValue("$updatedAt", DateTimeOffset.UtcNow.ToString("O"));
+            await approvalCommand.ExecuteNonQueryAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return revision;
         }

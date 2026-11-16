@@ -149,17 +149,26 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
         }
 
         DeepSeekChoice? choice = providerResponse.Choices?.FirstOrDefault();
+        decimal actualCostUsd = DeepSeekCostCalculator.Calculate(
+            providerResponse.Usage?.PromptCacheHitTokens ?? 0,
+            providerResponse.Usage?.PromptCacheMissTokens
+                ?? providerResponse.Usage?.PromptTokens
+                ?? 0,
+            providerResponse.Usage?.CompletionTokens ?? 0,
+            options);
         if (choice?.FinishReason is not "stop")
         {
-            throw new HttpRequestException(
-                $"DeepSeek stopped before a complete planning response (finish_reason: {choice?.FinishReason ?? "missing"}).");
+            throw new PlanningProviderException(
+                $"DeepSeek stopped before a complete planning response (finish_reason: {choice?.FinishReason ?? "missing"}).",
+                actualCostUsd);
         }
 
         string? content = choice.Message.Content;
         if (string.IsNullOrWhiteSpace(content))
         {
-            throw new HttpRequestException(
-                "DeepSeek returned an empty structured planning response.");
+            throw new PlanningProviderException(
+                "DeepSeek returned an empty structured planning response.",
+                actualCostUsd);
         }
 
         DeepSeekPlanDocument plan;
@@ -170,8 +179,9 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
         }
         catch (JsonException exception)
         {
-            throw new HttpRequestException(
+            throw new PlanningProviderException(
                 "DeepSeek returned an invalid structured planning response.",
+                actualCostUsd,
                 exception);
         }
 
@@ -185,18 +195,13 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
                     caption.Text,
                     new OutputRange(caption.Output.StartFrame, caption.Output.EndFrame)))
                     .ToImmutableArray(),
-                DeepSeekCostCalculator.Calculate(
-                    providerResponse.Usage?.PromptCacheHitTokens ?? 0,
-                    providerResponse.Usage?.PromptCacheMissTokens
-                        ?? providerResponse.Usage?.PromptTokens
-                        ?? 0,
-                    providerResponse.Usage?.CompletionTokens ?? 0,
-                    options));
+                actualCostUsd);
         }
         catch (Exception exception) when (exception is ArgumentException or FormatException)
         {
-            throw new HttpRequestException(
+            throw new PlanningProviderException(
                 "DeepSeek returned a structured plan with invalid values.",
+                actualCostUsd,
                 exception);
         }
     }

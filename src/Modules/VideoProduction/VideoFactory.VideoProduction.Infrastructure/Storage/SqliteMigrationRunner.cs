@@ -118,6 +118,14 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 6, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, PlanningAttemptSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (6, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -291,5 +299,26 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_delivery_receipts_job
             ON delivery_receipts (job_id, created_at);
+        """;
+
+    private const string PlanningAttemptSchemaSql = """
+        CREATE TABLE planning_attempts (
+            attempt_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            variant_id TEXT NOT NULL,
+            attempt_number INTEGER NOT NULL,
+            repair_attempt INTEGER NOT NULL,
+            estimated_cost_usd TEXT NOT NULL,
+            actual_cost_usd TEXT NULL,
+            status TEXT NOT NULL,
+            error_code TEXT NULL,
+            error_message TEXT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX ix_planning_attempts_job_variant
+            ON planning_attempts (job_id, variant_id, attempt_number);
         """;
 }

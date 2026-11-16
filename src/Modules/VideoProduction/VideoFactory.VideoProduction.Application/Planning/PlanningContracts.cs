@@ -45,6 +45,17 @@ public sealed record ProviderPlanResponse(
     ImmutableArray<ProviderCaption> Captions,
     decimal ActualCostUsd);
 
+/// <summary>Ошибка provider после выполнения платного вызова.</summary>
+public sealed class PlanningProviderException : HttpRequestException
+{
+    /// <summary>Создаёт ошибку provider.</summary>
+    public PlanningProviderException(string message, decimal? actualCostUsd = null, Exception? innerException = null)
+        : base(message, innerException) => ActualCostUsd = actualCostUsd;
+
+    /// <summary>Фактическая стоимость вызова или <see langword="null" />, если provider её не сообщил.</summary>
+    public decimal? ActualCostUsd { get; }
+}
+
 /// <summary>Видео-фрагмент ответа provider.</summary>
 public sealed record ProviderVideoClip(
     SegmentId SegmentId,
@@ -83,8 +94,29 @@ public interface IEditPlanProvider
 /// <summary>Политика лимита стоимости одного задания.</summary>
 public interface IPlanningCostPolicy
 {
-    /// <summary>Принимает решение до платного вызова.</summary>
-    PlanningCostDecision Decide(PlanningCostEstimate estimate);
+    /// <summary>Принимает решение до платного вызова с учётом уже понесённых расходов.</summary>
+    PlanningCostDecision Decide(PlanningCostEstimate estimate, decimal accumulatedActualCostUsd);
+}
+
+/// <summary>Результат одной платной попытки планирования.</summary>
+public sealed record PlanningAttemptRecord(
+    Guid AttemptId,
+    JobId JobId,
+    VariantId VariantId,
+    int AttemptNumber,
+    int RepairAttempt,
+    decimal EstimatedCostUsd,
+    decimal? ActualCostUsd,
+    string Status,
+    string? ErrorCode,
+    string? ErrorMessage,
+    DateTimeOffset CreatedAt);
+
+/// <summary>Хранилище аудита платных попыток планирования.</summary>
+public interface IPlanningAttemptStore
+{
+    /// <summary>Сохраняет запись одной платной попытки.</summary>
+    Task SaveAsync(PlanningAttemptRecord attempt, CancellationToken cancellationToken);
 }
 
 /// <summary>Неизменяемая сохранённая ревизия монтажного плана.</summary>
@@ -99,6 +131,13 @@ public sealed record EditPlanRevision(
 /// <summary>Результат поиска или сохранения ревизии плана.</summary>
 public interface IEditPlanRevisionStore
 {
+    /// <summary>Находит текущую утверждённую ревизию задания.</summary>
+    /// <returns>Утверждённая ревизия или <see langword="null" />, если план ещё не утверждён.</returns>
+    Task<EditPlanRevision?> FindApprovedAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken);
+
     /// <summary>Находит ревизию по её идентификатору.</summary>
     /// <param name="revisionId">Идентификатор ревизии.</param>
     /// <param name="cancellationToken">Токен отмены.</param>
