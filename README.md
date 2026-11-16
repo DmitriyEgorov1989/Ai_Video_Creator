@@ -170,10 +170,19 @@ data/
 ```powershell
 npm install --prefix .\render-host
 npm run typecheck --prefix .\render-host
+npm run build --prefix .\render-host
 npm test --prefix .\render-host
 npm start --prefix .\render-host -- list-templates
 npm start --prefix .\render-host -- validate --job .\contracts\fixtures\valid-render-request.json
 npm run smoke-render --prefix .\render-host
+```
+
+После `npm run build` воспроизводимой точкой входа для .NET является
+`render-host/dist/cli.js`. Её можно проверить из корня solution:
+
+```powershell
+node .\render-host\dist\cli.js list-templates
+node .\render-host\dist\cli.js validate --job .\contracts\fixtures\valid-render-request.json
 ```
 
 Команды `validate` и `render` печатают структурированные события JSON Lines в `stdout`, а диагностику — в `stderr`. `render` сначала создаёт MP4 во временном файле и только после успешного завершения переименовывает его в `outputPath`.
@@ -263,7 +272,7 @@ $env:FFmpeg__FfmpegPath = "C:\Tools\ffmpeg\bin\ffmpeg.exe"
 dotnet run --project src/VideoFactory.Bot -- diagnose
 ```
 
-Диагностика проверяет конфигурацию и наличие файлов или executable, но не запускает их и не проверяет версии. Whisper worker устанавливается по инструкции в `docs/whisper-worker.md`; Node render-host должен быть собран отдельно.
+Диагностика проверяет конфигурацию, наличие файлов и executable, версии FFmpeg/FFprobe и фактический запуск настроенной точки входа Node render-host. Whisper worker устанавливается по инструкции в `docs/whisper-worker.md`; перед запуском Host Node render-host должен быть собран отдельно.
 
 | Exit code | Значение |
 |---:|---|

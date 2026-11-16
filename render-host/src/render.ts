@@ -1,6 +1,7 @@
 import { copyFile, mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { fileURLToPath } from "node:url";
 import { basename, dirname, join, resolve } from "node:path";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
@@ -8,6 +9,8 @@ import type { RenderRequest } from "./contracts.js";
 import { emit } from "./events.js";
 import { RemotionRoot } from "./entry.js";
 import { validateAssetFiles, validateRenderRequest } from "./validate.js";
+
+const renderHostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export async function readRenderRequest(path: string): Promise<RenderRequest> {
   const content = await readFile(resolve(path), "utf8");
@@ -25,7 +28,7 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
   const outputPath = resolve(request.outputPath);
   await mkdir(dirname(outputPath), { recursive: true });
   const temporaryOutput = join(dirname(outputPath), `.${request.jobId}-${request.variantId}.rendering.mp4`);
-  const assetDirectory = resolve("public/render-assets", `${request.jobId}-${request.variantId}`);
+  const assetDirectory = join(renderHostRoot, "public", "render-assets", `${request.jobId}-${request.variantId}`);
   await rm(temporaryOutput, { force: true });
   await rm(assetDirectory, { recursive: true, force: true });
   let assetServer: Server | undefined;
@@ -57,7 +60,21 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
     if (!address || typeof address === "string") throw new RenderHostError("asset_server_failed", "Could not start the local asset server.");
     for (const asset of renderRequestWithUrls.assets) asset.path = `http://127.0.0.1:${address.port}${asset.path.replace("__asset_url__", "")}`;
     emit({ type: "progress", stage: "bundle", percent: 0 });
-    const serveUrl = await bundle({ entryPoint: resolve("src/entry.tsx"), rootDir: resolve("."), publicDir: resolve("public"), webpackOverride: (config) => config });
+    const serveUrl = await bundle({
+      entryPoint: join(renderHostRoot, "src", "entry.tsx"),
+      rootDir: renderHostRoot,
+      publicDir: join(renderHostRoot, "public"),
+      webpackOverride: (config) => ({
+        ...config,
+        resolve: {
+          ...config.resolve,
+          extensionAlias: {
+            ...config.resolve?.extensionAlias,
+            ".js": [".ts", ".tsx", ".js"],
+          },
+        },
+      }),
+    });
     emit({ type: "progress", stage: "bundle", percent: 100 });
     const composition = await selectComposition({ serveUrl, id: "dynamic", inputProps: renderRequestWithUrls as unknown as Record<string, unknown> });
     const configuredComposition = {

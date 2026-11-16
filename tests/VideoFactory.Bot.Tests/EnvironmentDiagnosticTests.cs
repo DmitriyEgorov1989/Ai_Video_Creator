@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using VideoFactory.Bot.Diagnostics;
+using VideoFactory.VideoProduction.Application.Processes;
 
 namespace VideoFactory.Bot.Tests;
 
@@ -60,6 +61,29 @@ public sealed class EnvironmentDiagnosticTests : IDisposable
         Assert.DoesNotContain(apiKey, reportText, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task RunAsyncStartsConfiguredRenderHostEntryPoint()
+    {
+        Directory.CreateDirectory(Path.Combine(tempDirectory, "render-host", "dist"));
+        string renderHostPath = Path.Combine(tempDirectory, "render-host", "dist", "cli.js");
+        File.WriteAllText(renderHostPath, string.Empty);
+        RecordingProcessRunner processRunner = new();
+        EnvironmentDiagnostic diagnostic = CreateDiagnostic(
+            new Dictionary<string, string?>
+            {
+                ["Paths:WorkspaceRoot"] = tempDirectory,
+                ["Remotion:NodePath"] = "node",
+                ["Remotion:RenderHostPath"] = "render-host/dist/cli.js"
+            },
+            processRunner);
+
+        DiagnosticReport report = await diagnostic.RunAsync(CancellationToken.None);
+
+        Assert.Contains(report.Checks, check => check.Name == "render-host-runtime" && check.Status == DiagnosticStatus.Passed);
+        Assert.Equal(renderHostPath, processRunner.Requests[^1].Arguments[0]);
+        Assert.Equal("list-templates", processRunner.Requests[^1].Arguments[1]);
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(tempDirectory))
@@ -68,12 +92,35 @@ public sealed class EnvironmentDiagnosticTests : IDisposable
         }
     }
 
-    private static EnvironmentDiagnostic CreateDiagnostic(Dictionary<string, string?> values)
+    private static EnvironmentDiagnostic CreateDiagnostic(
+        Dictionary<string, string?> values,
+        IProcessRunner? processRunner = null)
     {
         IConfiguration configuration = new ConfigurationBuilder()
             .AddInMemoryCollection(values)
             .Build();
 
-        return new EnvironmentDiagnostic(configuration);
+        return new EnvironmentDiagnostic(configuration, processRunner: processRunner);
+    }
+
+    private sealed class RecordingProcessRunner : IProcessRunner
+    {
+        public List<ProcessStartRequest> Requests { get; } = [];
+
+        public Task<ProcessExecutionResult> RunAsync(
+            ProcessStartRequest request,
+            CancellationToken cancellationToken)
+        {
+            Requests.Add(request);
+            return Task.FromResult(new ProcessExecutionResult(
+                ProcessExecutionStatus.Succeeded,
+                0,
+                "{\"templates\":[{\"id\":\"dynamic\"}]}\n",
+                string.Empty,
+                null,
+                null,
+                false,
+                false));
+        }
     }
 }

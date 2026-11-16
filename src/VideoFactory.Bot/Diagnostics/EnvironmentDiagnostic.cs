@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.VideoProduction.Application.Processes;
 
@@ -70,9 +71,59 @@ public sealed class EnvironmentDiagnostic
 
         List<DiagnosticCheck> checks = [.. report.Checks];
         FfmpegOptions ffmpeg = GetOptions<FfmpegOptions>(FfmpegOptions.SectionName);
+        PathsOptions paths = GetOptions<PathsOptions>(PathsOptions.SectionName);
+        RemotionOptions remotion = GetOptions<RemotionOptions>(RemotionOptions.SectionName);
+        string workspaceRoot = ResolvePath(paths.WorkspaceRoot, contentRootPath);
         await AddVersionCheckAsync(checks, "ffmpeg-version", ffmpeg.FfmpegPath, cancellationToken);
         await AddVersionCheckAsync(checks, "ffprobe-version", ffmpeg.FfprobePath, cancellationToken);
+        await AddRenderHostCheckAsync(checks, remotion, workspaceRoot, cancellationToken);
         return new DiagnosticReport(checks);
+    }
+
+    private async Task AddRenderHostCheckAsync(
+        List<DiagnosticCheck> checks,
+        RemotionOptions options,
+        string workspaceRoot,
+        CancellationToken cancellationToken)
+    {
+        string renderHostPath = ResolvePath(options.RenderHostPath, workspaceRoot);
+        ProcessExecutionResult result = await processRunner!.RunAsync(
+            new ProcessStartRequest(
+                options.NodePath,
+                [renderHostPath, "list-templates"],
+                TimeSpan.FromSeconds(30),
+                16_384),
+            cancellationToken);
+
+        if (!result.IsSuccess)
+        {
+            checks.Add(new DiagnosticCheck(
+                "render-host-runtime",
+                DiagnosticStatus.Failed,
+                result.ErrorMessage ?? result.StandardError));
+            return;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            bool hasTemplates = document.RootElement.TryGetProperty("templates", out JsonElement templates)
+                && templates.ValueKind == JsonValueKind.Array
+                && templates.GetArrayLength() > 0;
+            checks.Add(new DiagnosticCheck(
+                "render-host-runtime",
+                hasTemplates ? DiagnosticStatus.Passed : DiagnosticStatus.Failed,
+                hasTemplates
+                    ? $"render-host started successfully: {renderHostPath}"
+                    : "render-host returned no templates."));
+        }
+        catch (JsonException)
+        {
+            checks.Add(new DiagnosticCheck(
+                "render-host-runtime",
+                DiagnosticStatus.Failed,
+                "render-host returned invalid JSON Lines output."));
+        }
     }
 
     private async Task AddVersionCheckAsync(

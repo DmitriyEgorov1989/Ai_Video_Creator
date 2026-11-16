@@ -1,6 +1,6 @@
 import React from "react";
 import { Composition, registerRoot } from "remotion";
-import { DynamicComposition } from "./templates/DynamicComposition.tsx";
+import { DynamicComposition } from "./templates/DynamicComposition.js";
 import type { RenderRequest } from "./contracts.js";
 
 export const RemotionRoot: React.FC = () => (
