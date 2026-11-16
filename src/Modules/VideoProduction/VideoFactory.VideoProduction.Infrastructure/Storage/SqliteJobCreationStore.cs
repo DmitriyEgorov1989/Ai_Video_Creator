@@ -54,12 +54,12 @@ public sealed class SqliteJobCreationStore : IJobCreationStore
                 job_id, source_artifact_id, comment, requested_mode,
                 target_duration_seconds, captions_enabled, music_enabled,
                 status, stage, effective_mode, pending_confirmation,
-                current_approved_edit_plan_revision_id, created_at, updated_at)
+                current_approved_edit_plan_revision_id, telegram_user_id, created_at, updated_at)
             VALUES (
                 $jobId, $sourceArtifactId, $comment, $requestedMode,
                 $targetDurationSeconds, $captionsEnabled, $musicEnabled,
                 $status, $stage, $effectiveMode, $pendingConfirmation,
-                $currentApprovedRevisionId, $createdAt, $updatedAt)
+                $currentApprovedRevisionId, $telegramUserId, $createdAt, $updatedAt)
             ON CONFLICT (source_artifact_id) DO NOTHING;
             """;
         AddJobParameters(insertJob, record);
@@ -151,6 +151,9 @@ public sealed class SqliteJobCreationStore : IJobCreationStore
         command.Parameters.AddWithValue(
             "$currentApprovedRevisionId",
             record.CurrentApprovedEditPlanRevisionId?.ToString() ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue(
+            "$telegramUserId",
+            record.TelegramUserId is long userId ? userId : (object)DBNull.Value);
         command.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$updatedAt", DateTimeOffset.UtcNow.ToString("O"));
     }
@@ -168,7 +171,7 @@ public sealed class SqliteJobCreationStore : IJobCreationStore
             SELECT j.job_id, j.comment, j.requested_mode, j.target_duration_seconds,
                    j.captions_enabled, j.music_enabled, j.status, j.stage,
                    j.effective_mode, j.pending_confirmation,
-                   j.current_approved_edit_plan_revision_id, v.variant_id
+                   j.current_approved_edit_plan_revision_id, j.telegram_user_id, v.variant_id
             FROM jobs AS j
             INNER JOIN variants AS v ON v.job_id = j.job_id
             WHERE j.source_artifact_id = $artifactId;
@@ -193,10 +196,13 @@ public sealed class SqliteJobCreationStore : IJobCreationStore
 
         return new JobCreationRecord(
             new JobId(Guid.Parse(reader.GetString(0))),
-            new VariantId(Guid.Parse(reader.GetString(11))),
+            new VariantId(Guid.Parse(reader.GetString(12))),
             new JobRequest(artifactId, reader.GetString(1), ProductionMode.Fast, settings),
             progress,
-            GetNullableRevisionId(reader, 10));
+            GetNullableRevisionId(reader, 10))
+        {
+            TelegramUserId = reader.IsDBNull(11) ? null : reader.GetInt64(11)
+        };
     }
 
     private static int? GetNullableInt32(SqliteDataReader reader, int ordinal) =>

@@ -6,13 +6,14 @@ using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Application.Planning;
 
 namespace VideoFactory.Bot.Telegram;
 
 /// <summary>
 /// Обрабатывает нормализованные Telegram updates и создаёт только Fast Job.
 /// </summary>
-public sealed class TelegramUpdateHandler
+public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
 {
     private readonly TelegramOptions telegramOptions;
     private readonly LimitsOptions limitsOptions;
@@ -22,6 +23,7 @@ public sealed class TelegramUpdateHandler
     private readonly ITelegramIntakeSessionStore sessions;
     private readonly ITelegramResponder responder;
     private readonly ILogger<TelegramUpdateHandler>? logger;
+    private readonly PlanningApprovalUseCase? approvalUseCase;
 
     /// <summary>Создаёт обработчик intake.</summary>
     public TelegramUpdateHandler(
@@ -32,7 +34,8 @@ public sealed class TelegramUpdateHandler
         ICreateJobUseCase createJob,
         ITelegramIntakeSessionStore sessions,
         ITelegramResponder responder,
-        ILogger<TelegramUpdateHandler>? logger = null)
+        ILogger<TelegramUpdateHandler>? logger = null,
+        PlanningApprovalUseCase? approvalUseCase = null)
     {
         ArgumentNullException.ThrowIfNull(telegramOptions);
         ArgumentNullException.ThrowIfNull(limitsOptions);
@@ -49,6 +52,62 @@ public sealed class TelegramUpdateHandler
         this.sessions = sessions;
         this.responder = responder;
         this.logger = logger;
+        this.approvalUseCase = approvalUseCase;
+    }
+
+    /// <inheritdoc />
+    public async Task<PlanningApprovalResult> HandleAsync(
+        TelegramCallbackQuery query,
+        CancellationToken cancellationToken)
+    {
+        if (query.UserId != telegramOptions.AllowedUserId || approvalUseCase is null)
+        {
+            return new PlanningApprovalResult.Forbidden();
+        }
+
+        string[] parts = query.Data.Split(':', StringSplitOptions.None);
+        if (parts.Length != 4 || parts[0] != "planning-cost"
+            || !Guid.TryParse(parts[1], out Guid jobGuid)
+            || !Guid.TryParse(parts[2], out Guid variantGuid)
+            || parts[3].Length == 0)
+        {
+            return new PlanningApprovalResult.Stale();
+        }
+
+        bool approved = parts[3].EndsWith("-approve", StringComparison.Ordinal);
+        bool rejected = parts[3].EndsWith("-reject", StringComparison.Ordinal);
+        if (!approved && !rejected)
+        {
+            return new PlanningApprovalResult.Stale();
+        }
+
+        PlanningApprovalDecision decision = approved
+            ? PlanningApprovalDecision.Approve
+            : PlanningApprovalDecision.Reject;
+        string versionText = parts[3][..^(approved ? 8 : 7)];
+        if (!int.TryParse(versionText, out int version))
+        {
+            return new PlanningApprovalResult.Stale();
+        }
+
+        PlanningApprovalResult result = await approvalUseCase.ExecuteAsync(
+            new PlanningApprovalCommand(
+                new JobId(jobGuid),
+                new VariantId(variantGuid),
+                query.UserId,
+                version,
+                decision),
+            cancellationToken);
+        string message = result switch
+        {
+            PlanningApprovalResult.Applied when decision == PlanningApprovalDecision.Approve => "Стоимость подтверждена. Продолжаю планирование.",
+            PlanningApprovalResult.Applied => "Дополнительная стоимость отклонена. Задание остановлено.",
+            PlanningApprovalResult.AlreadyResolved => "Это решение уже было обработано.",
+            PlanningApprovalResult.Forbidden => "Это действие недоступно для данного пользователя.",
+            _ => "Запрос подтверждения устарел или уже закрыт."
+        };
+        await responder.SendTextAsync(query.ChatId, message, cancellationToken);
+        return result;
     }
 
     /// <summary>Обрабатывает одно событие Telegram.</summary>
@@ -107,7 +166,8 @@ public sealed class TelegramUpdateHandler
             new CreateJobCommand(
                 session.SourceArtifactId,
                 update.Text,
-                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false)),
+                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false),
+                update.UserId),
             cancellationToken);
 
         if (result is CreateJobResult.Succeeded succeeded)

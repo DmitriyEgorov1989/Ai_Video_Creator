@@ -16,4 +16,8 @@ public sealed record JobCreationRecord(
     VariantId VariantId,
     JobRequest Request,
     JobProgress Progress,
-    RevisionId? CurrentApprovedEditPlanRevisionId);
+    RevisionId? CurrentApprovedEditPlanRevisionId)
+{
+    /// <summary>Идентификатор владельца Job в Telegram или <see langword="null"/>.</summary>
+    public long? TelegramUserId { get; init; }
+}

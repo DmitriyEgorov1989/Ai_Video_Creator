@@ -124,8 +124,13 @@ public static class ConfigurationRegistration
                 "AiApi token prices must not be negative.")
             .Validate(options => options.MaxOutputTokens > 0,
                 "AiApi:MaxOutputTokens must be greater than zero.")
-            .Validate(options => options.TimeoutSeconds > 0,
-                "AiApi:TimeoutSeconds must be greater than zero.");
+             .Validate(options => options.TimeoutSeconds > 0,
+                 "AiApi:TimeoutSeconds must be greater than zero.");
+
+        OptionsBuilder<PlanningOptions> planning = services.AddOptions<PlanningOptions>()
+            .Bind(configuration.GetSection(PlanningOptions.SectionName))
+            .Validate(options => options.JobLimitUsd >= 0,
+                "Planning:JobLimitUsd must not be negative.");
 
         OptionsBuilder<ProcessTimeoutOptions> processTimeouts = services
             .AddOptions<ProcessTimeoutOptions>()
@@ -154,6 +159,7 @@ public static class ConfigurationRegistration
             audio.ValidateOnStart();
             outputQuality.ValidateOnStart();
             aiApi.ValidateOnStart();
+            planning.ValidateOnStart();
             processTimeouts.ValidateOnStart();
         }
 

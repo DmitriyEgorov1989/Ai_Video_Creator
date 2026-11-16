@@ -187,8 +187,20 @@ public static class VideoFactoryHost
             new SqliteDeliveryReceiptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IEditPlanRevisionStore>(services =>
             new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
-        builder.Services.AddSingleton<IPlanningAttemptStore>(services =>
-            new SqlitePlanningAttemptStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IPlanningAttemptStore>(services =>
+             new SqlitePlanningAttemptStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IPlanningApprovalStore>(services =>
+             new SqlitePlanningApprovalStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IPlanningCostPolicy>(services =>
+         {
+             PlanningOptions options = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
+             return new PlanningCostPolicy(new PlanningCostPolicyOptions(options.JobLimitUsd));
+         });
+         builder.Services.AddSingleton<PlanningApprovalUseCase>(services =>
+             new PlanningApprovalUseCase(
+                 services.GetRequiredService<IPlanningApprovalStore>(),
+                 services.GetRequiredService<IJobStateStore>(),
+                 services.GetRequiredService<IJobSignal>()));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
             new LocalArtifactStorage(BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();
@@ -220,9 +232,10 @@ public static class VideoFactoryHost
             services.GetRequiredService<ITelegramFileDownloader>(),
             services.GetRequiredService<IArtifactStore>(),
             services.GetRequiredService<ICreateJobUseCase>(),
-            services.GetRequiredService<ITelegramIntakeSessionStore>(),
-            services.GetRequiredService<ITelegramResponder>(),
-            services.GetRequiredService<ILogger<TelegramUpdateHandler>>()));
+             services.GetRequiredService<ITelegramIntakeSessionStore>(),
+             services.GetRequiredService<ITelegramResponder>(),
+             services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
+             services.GetRequiredService<PlanningApprovalUseCase>()));
         builder.Services.AddHostedService<TelegramPollingService>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>
         {
@@ -383,7 +396,8 @@ public static class VideoFactoryHost
         _ = services.GetRequiredService<IOptions<WhisperOptions>>().Value;
         _ = services.GetRequiredService<IOptions<RemotionOptions>>().Value;
         _ = services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value;
-        _ = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
+         _ = services.GetRequiredService<IOptions<AiApiOptions>>().Value;
+         _ = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
         _ = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
     }
 

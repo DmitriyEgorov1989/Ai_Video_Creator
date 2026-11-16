@@ -126,6 +126,24 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 7, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, PlanningApprovalSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (7, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, 8, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction,
+                "ALTER TABLE jobs ADD COLUMN telegram_user_id INTEGER NULL;",
+                cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (8, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -320,5 +338,28 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_planning_attempts_job_variant
             ON planning_attempts (job_id, variant_id, attempt_number);
+        """;
+
+    private const string PlanningApprovalSchemaSql = """
+        CREATE TABLE planning_approvals (
+            approval_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            variant_id TEXT NOT NULL,
+            telegram_user_id INTEGER NOT NULL,
+            version INTEGER NOT NULL,
+            estimated_cost_usd TEXT NOT NULL,
+            accumulated_actual_cost_usd TEXT NOT NULL,
+            limit_usd TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            decided_at TEXT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE,
+            UNIQUE (job_id, variant_id, version)
+        );
+
+        CREATE UNIQUE INDEX ix_planning_approvals_current
+            ON planning_approvals (job_id, variant_id)
+            WHERE status = 'Pending';
         """;
 }

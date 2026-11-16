@@ -62,7 +62,10 @@ public sealed class CreateJobUseCase
             VariantId.New(),
             request,
             JobProgress.Create(ProductionMode.Fast),
-            null);
+            null)
+        {
+            TelegramUserId = command.TelegramUserId
+        };
 
         JobCreationStoreResult stored = await store.CreateAsync(record, cancellationToken);
 

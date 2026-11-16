@@ -12,4 +12,5 @@ namespace VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 public sealed record CreateJobCommand(
     ArtifactId SourceArtifactId,
     string? Comment,
-    ProductionSettings? Settings);
+    ProductionSettings? Settings,
+    long? TelegramUserId = null);

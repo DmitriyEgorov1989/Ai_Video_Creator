@@ -1,5 +1,6 @@
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Domain.Identifiers;
+using VideoFactory.VideoProduction.Application.Planning;
 
 namespace VideoFactory.Bot.Telegram;
 
@@ -11,6 +12,21 @@ public sealed record TelegramUpdate(
     long ChatId,
     string? Text,
     TelegramMediaInput? Media);
+
+/// <summary>Нормализованное нажатие inline-кнопки подтверждения стоимости.</summary>
+public sealed record TelegramCallbackQuery(
+    long UserId,
+    long ChatId,
+    string Data);
+
+/// <summary>Адаптер обработки решения Telegram-пользователя.</summary>
+public interface IPlanningApprovalHandler
+{
+    /// <summary>Применяет callback подтверждения или отказа.</summary>
+    Task<PlanningApprovalResult> HandleAsync(
+        TelegramCallbackQuery query,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>
 /// Описание видеофайла, заявленное Telegram до скачивания.

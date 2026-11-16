@@ -281,3 +281,13 @@ public sealed class AiApiOptions
     /// <summary>Предельная длительность HTTP-вызова планировщика в секундах.</summary>
     public int TimeoutSeconds { get; init; } = 120;
 }
+
+/// <summary>Параметры бюджета одного платного планирования.</summary>
+public sealed class PlanningOptions
+{
+    /// <summary>Имя секции конфигурации.</summary>
+    public const string SectionName = "Planning";
+
+    /// <summary>Максимальная стоимость Job без подтверждения в долларах США.</summary>
+    public decimal JobLimitUsd { get; init; } = 0.05m;
+}

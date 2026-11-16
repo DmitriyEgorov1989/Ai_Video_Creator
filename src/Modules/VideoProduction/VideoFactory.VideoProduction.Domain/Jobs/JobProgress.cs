@@ -105,7 +105,12 @@ public enum ConfirmationKind
     /// <summary>
     /// Требуется разрешить финальный рендеринг.
     /// </summary>
-    FinalRender
+    FinalRender,
+
+    /// <summary>
+    /// Требуется разрешить платный вызов планировщика сверх лимита задания.
+    /// </summary>
+    CostApproval
 }
 
 /// <summary>
@@ -339,6 +344,26 @@ public sealed class JobProgress
     {
         RequireConfirmation(ConfirmationKind.FinalRender);
         return Next(JobStatus.Running, ProductionStage.Rendering);
+    }
+
+    /// <summary>
+    /// Переводит планирование в ожидание подтверждения дополнительной стоимости.
+    /// </summary>
+    /// <returns>Новое состояние задания в ожидании решения пользователя.</returns>
+    public JobProgress AwaitCostApproval()
+    {
+        RequireRunning(ProductionStage.Planning);
+        return Next(JobStatus.AwaitingConfirmation, ProductionStage.Planning, EffectiveMode, ConfirmationKind.CostApproval);
+    }
+
+    /// <summary>
+    /// Разрешает продолжение планирования после подтверждения стоимости.
+    /// </summary>
+    /// <returns>Новое состояние выполняемого планирования.</returns>
+    public JobProgress ApproveCost()
+    {
+        RequireConfirmation(ConfirmationKind.CostApproval);
+        return Next(JobStatus.Running, ProductionStage.Planning, EffectiveMode, null);
     }
 
     /// <summary>

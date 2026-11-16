@@ -38,6 +38,7 @@ public sealed class TelegramPollingService : BackgroundService
     {
         this.stoppingToken = stoppingToken;
         bot.OnMessage += HandleMessageAsync;
+        bot.OnUpdate += HandleUpdateAsync;
         bot.OnError += HandleErrorAsync;
         logger.LogInformation("Telegram long polling started");
 
@@ -52,6 +53,7 @@ public sealed class TelegramPollingService : BackgroundService
         finally
         {
             bot.OnMessage -= HandleMessageAsync;
+            bot.OnUpdate -= HandleUpdateAsync;
             bot.OnError -= HandleErrorAsync;
         }
     }
@@ -96,6 +98,34 @@ public sealed class TelegramPollingService : BackgroundService
         catch (Exception exception)
         {
             logger.LogError("Telegram update handling failed for user {UserId}: {ErrorType}", message.From.Id, exception.GetType().Name);
+        }
+    }
+
+    private async Task HandleUpdateAsync(Update update)
+    {
+        CallbackQuery? callbackQuery = update.CallbackQuery;
+        if (callbackQuery is null || callbackQuery.From is null || callbackQuery.Message is null || string.IsNullOrWhiteSpace(callbackQuery.Data))
+        {
+            return;
+        }
+
+        try
+        {
+            await handler.HandleAsync(
+                new TelegramCallbackQuery(
+                    callbackQuery.From.Id,
+                    callbackQuery.Message.Chat.Id,
+                    callbackQuery.Data),
+                stoppingToken);
+            await bot.AnswerCallbackQuery(callbackQuery.Id, cancellationToken: stoppingToken);
+        }
+        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+        {
+            logger.LogDebug("Telegram callback handling was cancelled during shutdown");
+        }
+        catch (Exception exception)
+        {
+            logger.LogError("Telegram callback handling failed for user {UserId}: {ErrorType}", callbackQuery.From.Id, exception.GetType().Name);
         }
     }
 

@@ -18,18 +18,21 @@ public sealed class EditPlanPlanner
     private readonly IPlanningCostPolicy costPolicy;
     private readonly IEditPlanRevisionStore revisionStore;
     private readonly IPlanningAttemptStore attemptStore;
+    private readonly IPlanningApprovalStore? approvalStore;
 
     /// <summary>Создаёт planner.</summary>
     public EditPlanPlanner(
         IEditPlanProvider provider,
         IPlanningCostPolicy costPolicy,
         IEditPlanRevisionStore revisionStore,
-        IPlanningAttemptStore attemptStore)
+        IPlanningAttemptStore attemptStore,
+        IPlanningApprovalStore? approvalStore = null)
     {
         this.provider = provider;
         this.costPolicy = costPolicy;
         this.revisionStore = revisionStore;
         this.attemptStore = attemptStore;
+        this.approvalStore = approvalStore;
     }
 
     /// <summary>Строит план с максимум одной попыткой исправления ответа provider.</summary>
@@ -72,11 +75,43 @@ public sealed class EditPlanPlanner
                 cancellationToken);
             PlanningCostDecision decision = costPolicy.Decide(estimate, accumulatedActualCostUsd);
 
-            if (decision.RequiresApproval)
+            PlanningApproval? approval = approvalStore is null
+                ? null
+                : await approvalStore.FindAsync(request.JobId, request.VariantId, cancellationToken);
+
+            bool approvedForThisAttempt = approval is not null
+                && approval.Status == PlanningApprovalStatus.Approved
+                && approval.TelegramUserId == request.TelegramUserId
+                && approval.Version == attempt + 1
+                && approval.EstimatedCostUsd == estimate.EstimatedCostUsd;
+
+            if (approval is { Status: PlanningApprovalStatus.Rejected })
             {
+                return new PlanningResult.Rejected(
+                    "planning.cost_approval_denied",
+                    "The user rejected the additional planning cost.");
+            }
+
+            if (decision.RequiresApproval && !approvedForThisAttempt)
+            {
+                int? approvalVersion = null;
+                if (approvalStore is not null && request.TelegramUserId is long userId)
+                {
+                    PlanningApproval pending = await approvalStore.SavePendingAsync(
+                        request.JobId,
+                        request.VariantId,
+                        userId,
+                        estimate.EstimatedCostUsd,
+                        accumulatedActualCostUsd,
+                        request.JobLimitUsd,
+                        cancellationToken);
+                    approvalVersion = pending.Version;
+                }
+
                 return new PlanningResult.WaitingForApproval(
                     estimate.EstimatedCostUsd,
-                    decision.Message ?? "Planning requires cost approval.");
+                    decision.Message ?? "Planning requires cost approval.",
+                    approvalVersion);
             }
 
             if (!decision.IsAllowed)
