@@ -47,6 +47,8 @@ public sealed class VerificationPrivacyTests
 
     private sealed class Plans(EditPlan plan) : IEditPlanRevisionStore
     {
+        public Task<EditPlanRevision?> FindApprovedAsync(JobId id, VariantId variant, CancellationToken token) =>
+            Task.FromResult<EditPlanRevision?>(null);
         public Task<EditPlanRevision?> GetAsync(RevisionId id, CancellationToken token) =>
             Task.FromResult<EditPlanRevision?>(new(plan.RevisionId, plan.JobId, plan.VariantId, "plan-hash", plan, 0));
         public Task<EditPlanRevision?> FindAsync(JobId id, VariantId variant, string hash, CancellationToken token) => throw new NotSupportedException();

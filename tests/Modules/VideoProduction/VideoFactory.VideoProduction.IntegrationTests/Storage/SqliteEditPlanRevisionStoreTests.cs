@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using Microsoft.Data.Sqlite;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Application.Planning;
@@ -42,6 +43,38 @@ public sealed class SqliteEditPlanRevisionStoreTests
         Assert.Equal(first.Plan.Video.Clips[0].Mapping, second.Plan.Video.Clips[0].Mapping);
         Assert.Equal(first.PlanHash, second.PlanHash);
         Assert.Equal(0.03m, second.ActualCostUsd);
+
+        EditPlanRevision? approved = await store.FindApprovedAsync(
+            job.JobId,
+            job.VariantId,
+            CancellationToken.None);
+        Assert.NotNull(approved);
+        Assert.Equal(first.RevisionId, approved.RevisionId);
+
+        await new SqlitePlanningAttemptStore(database.ConnectionString).SaveAsync(
+            new PlanningAttemptRecord(
+                Guid.NewGuid(),
+                job.JobId,
+                job.VariantId,
+                1,
+                0,
+                0.04m,
+                0.03m,
+                "invalid",
+                "planning.plan_validation_failed",
+                "Invalid plan.",
+                DateTimeOffset.UtcNow),
+            CancellationToken.None);
+
+        await using SqliteConnection connection = new(database.ConnectionString);
+        await connection.OpenAsync();
+        await using SqliteCommand attemptCommand = connection.CreateCommand();
+        attemptCommand.CommandText = "SELECT status, actual_cost_usd FROM planning_attempts WHERE job_id = $jobId;";
+        attemptCommand.Parameters.AddWithValue("$jobId", job.JobId.ToString());
+        await using SqliteDataReader attemptReader = await attemptCommand.ExecuteReaderAsync();
+        Assert.True(await attemptReader.ReadAsync());
+        Assert.Equal("invalid", attemptReader.GetString(0));
+        Assert.Equal("0.03", attemptReader.GetString(1));
     }
 
     private static async Task<CreateJobResult.Succeeded> CreateJobAsync(

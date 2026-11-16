@@ -17,16 +17,19 @@ public sealed class EditPlanPlanner
     private readonly IEditPlanProvider provider;
     private readonly IPlanningCostPolicy costPolicy;
     private readonly IEditPlanRevisionStore revisionStore;
+    private readonly IPlanningAttemptStore attemptStore;
 
     /// <summary>Создаёт planner.</summary>
     public EditPlanPlanner(
         IEditPlanProvider provider,
         IPlanningCostPolicy costPolicy,
-        IEditPlanRevisionStore revisionStore)
+        IEditPlanRevisionStore revisionStore,
+        IPlanningAttemptStore attemptStore)
     {
         this.provider = provider;
         this.costPolicy = costPolicy;
         this.revisionStore = revisionStore;
+        this.attemptStore = attemptStore;
     }
 
     /// <summary>Строит план с максимум одной попыткой исправления ответа provider.</summary>
@@ -49,32 +52,54 @@ public sealed class EditPlanPlanner
             return inputError;
         }
 
-        ProviderPlanningRequest providerRequest = CreateProviderRequest(request);
-        PlanningCostEstimate estimate = await provider.EstimateCostAsync(
-            providerRequest,
+        EditPlanRevision? approved = await revisionStore.FindApprovedAsync(
+            request.JobId,
+            request.VariantId,
             cancellationToken);
-        PlanningCostDecision decision = costPolicy.Decide(estimate);
-
-        if (decision.RequiresApproval)
+        if (approved is not null)
         {
-            return new PlanningResult.WaitingForApproval(
-                estimate.EstimatedCostUsd,
-                decision.Message ?? "Planning requires cost approval.");
+            return new PlanningResult.Existing(approved);
         }
 
-        if (!decision.IsAllowed)
-        {
-            return new PlanningResult.Rejected(
-                "planning.cost_limit_exceeded",
-                decision.Message ?? "Planning cost exceeds the job limit.");
-        }
-
+        ProviderPlanningRequest providerRequest = CreateProviderRequest(request);
+        decimal accumulatedActualCostUsd = 0m;
         PlanConstructionException? lastError = null;
         for (int attempt = 0; attempt < 2; attempt++)
         {
-            ProviderPlanResponse response = await provider.CreatePlanAsync(
-                providerRequest with { RepairAttempt = attempt },
+            ProviderPlanningRequest attemptRequest = providerRequest with { RepairAttempt = attempt };
+            PlanningCostEstimate estimate = await provider.EstimateCostAsync(
+                attemptRequest,
                 cancellationToken);
+            PlanningCostDecision decision = costPolicy.Decide(estimate, accumulatedActualCostUsd);
+
+            if (decision.RequiresApproval)
+            {
+                return new PlanningResult.WaitingForApproval(
+                    estimate.EstimatedCostUsd,
+                    decision.Message ?? "Planning requires cost approval.");
+            }
+
+            if (!decision.IsAllowed)
+            {
+                return new PlanningResult.Rejected(
+                    "planning.cost_limit_exceeded",
+                    decision.Message ?? "Planning cost exceeds the job limit.");
+            }
+
+            ProviderPlanResponse response;
+            try
+            {
+                response = await provider.CreatePlanAsync(attemptRequest, cancellationToken);
+            }
+            catch (PlanningProviderException exception)
+            {
+                await attemptStore.SaveAsync(
+                    CreateAttemptRecord(request, attempt, estimate, exception.ActualCostUsd, "failed", exception),
+                    cancellationToken);
+                throw;
+            }
+
+            accumulatedActualCostUsd += response.ActualCostUsd;
 
             try
             {
@@ -102,19 +127,29 @@ public sealed class EditPlanPlanner
 
                 if (existing is not null)
                 {
+                    await attemptStore.SaveAsync(
+                        CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "existing", null),
+                        cancellationToken);
                     return new PlanningResult.Existing(existing);
                 }
 
                 EditPlanRevision revision = await revisionStore.SaveAsync(
                     plan,
                     planHash,
-                    response.ActualCostUsd,
+                    accumulatedActualCostUsd,
+                    cancellationToken);
+
+                await attemptStore.SaveAsync(
+                    CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "succeeded", null),
                     cancellationToken);
 
                 return new PlanningResult.Created(revision);
             }
             catch (PlanConstructionException exception)
             {
+                await attemptStore.SaveAsync(
+                    CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "invalid", exception),
+                    cancellationToken);
                 lastError = exception;
             }
         }
@@ -123,6 +158,26 @@ public sealed class EditPlanPlanner
             lastError?.ErrorCode ?? "planning.provider_response_invalid",
             lastError?.Message ?? "Provider returned an invalid plan.");
     }
+
+    private static PlanningAttemptRecord CreateAttemptRecord(
+        PlanningRequest request,
+        int attempt,
+        PlanningCostEstimate estimate,
+        decimal? actualCostUsd,
+        string status,
+        Exception? exception) =>
+        new(
+            Guid.NewGuid(),
+            request.JobId,
+            request.VariantId,
+            attempt + 1,
+            attempt,
+            estimate.EstimatedCostUsd,
+            actualCostUsd,
+            status,
+            exception is PlanConstructionException construction ? construction.ErrorCode : exception?.GetType().Name,
+            exception?.Message,
+            DateTimeOffset.UtcNow);
 
     private static PlanningResult.Rejected? ValidateInput(PlanningRequest request)
     {
