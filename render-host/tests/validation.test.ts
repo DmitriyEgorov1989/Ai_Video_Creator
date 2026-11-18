@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { validateRenderRequest } from "../src/validate.js";
 import type { RenderRequest } from "../src/contracts.js";
 
@@ -55,4 +57,30 @@ test("rejects a clip that is not backed by a registered asset", () => {
   request.plan.video.clips[0].segmentId = "unknown-segment";
   const issues = validateRenderRequest(request);
   assert.ok(issues.some((item) => item.code === "asset_unknown"));
+});
+
+test("rejects a plan whose identity differs from the render request", () => {
+  const request = validRequest();
+  request.plan.jobId = "another-job";
+  request.plan.variantId = "another-variant";
+
+  const issues = validateRenderRequest(request);
+
+  assert.ok(issues.some((item) => item.code === "plan_job_id_mismatch"));
+  assert.ok(issues.some((item) => item.code === "plan_variant_id_mismatch"));
+});
+
+test("validates the shared positive fixture", async () => {
+  const fixture = JSON.parse(await readFile(resolve(process.cwd(), "../contracts/fixtures/valid-render-request.json"), "utf8"));
+
+  assert.deepEqual(validateRenderRequest(fixture), []);
+});
+
+test("rejects the shared null and enum fixture without throwing", async () => {
+  const fixture = JSON.parse(await readFile(resolve(process.cwd(), "../contracts/fixtures/invalid-null-and-enum.json"), "utf8"));
+
+  assert.doesNotThrow(() => validateRenderRequest(fixture));
+  const issues = validateRenderRequest(fixture);
+  assert.ok(issues.some((item) => item.code === "video_empty"));
+  assert.ok(issues.some((item) => item.code === "enum_unknown"));
 });

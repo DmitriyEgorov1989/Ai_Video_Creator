@@ -1,0 +1,68 @@
+using VideoFactory.VideoProduction.Infrastructure.Rendering;
+
+namespace VideoFactory.Bot.Tests.Rendering;
+
+public sealed class RenderRequestJsonValidatorTests
+{
+    [Fact]
+    public async Task AcceptsTheSharedPositiveFixture()
+    {
+        string json = await ReadFixtureAsync("valid-render-request.json");
+
+        IReadOnlyList<RenderRequestJsonValidationIssue> issues = RenderRequestJsonValidator.Validate(json);
+
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public async Task RejectsNullCollectionsAndUnknownEnumsWithoutThrowing()
+    {
+        string json = await ReadFixtureAsync("invalid-null-and-enum.json");
+
+        IReadOnlyList<RenderRequestJsonValidationIssue> issues =
+            RenderRequestJsonValidator.Validate(json);
+
+        Assert.Contains(issues, issue => issue.Code == "video_empty");
+        Assert.Contains(issues, issue => issue.Code == "enum_unknown");
+    }
+
+    [Fact]
+    public void RejectsMalformedJsonWithoutThrowing()
+    {
+        IReadOnlyList<RenderRequestJsonValidationIssue> issues =
+            RenderRequestJsonValidator.Validate("{\"plan\":");
+
+        Assert.Contains(issues, issue => issue.Code == "json_invalid");
+    }
+
+    [Fact]
+    public async Task RejectsAClipThatIsNotBackedByAnAsset()
+    {
+        string json = (await ReadFixtureAsync("valid-render-request.json"))
+            .Replace("\"segmentId\": \"segment-1\"", "\"segmentId\": \"unknown-segment\"", StringComparison.Ordinal);
+
+        IReadOnlyList<RenderRequestJsonValidationIssue> issues = RenderRequestJsonValidator.Validate(json);
+
+        Assert.Contains(issues, issue => issue.Code == "asset_unknown");
+    }
+
+    private static async Task<string> ReadFixtureAsync(string fileName)
+    {
+        string path = Path.Combine(FindRepositoryRoot(), "contracts", "fixtures", fileName);
+        return await File.ReadAllTextAsync(path);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Ai_Video_Creator.slnx")))
+                return directory.FullName;
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Repository root was not found from the test output directory.");
+    }
+}

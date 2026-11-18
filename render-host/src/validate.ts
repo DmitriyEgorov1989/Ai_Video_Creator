@@ -135,6 +135,14 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
   requiredString(value.variantId, "variantId", issues);
   requiredString(value.outputPath, "outputPath", issues);
   validatePlan(value.plan, issues);
+  if (isRecord(value.plan)) {
+    if (value.plan.jobId !== value.jobId) {
+      issues.push(issue("plan_job_id_mismatch", "plan.jobId", "Plan jobId must match the render request jobId."));
+    }
+    if (value.plan.variantId !== value.variantId) {
+      issues.push(issue("plan_variant_id_mismatch", "plan.variantId", "Plan variantId must match the render request variantId."));
+    }
+  }
   if (!Array.isArray(value.assets) || value.assets.length === 0) {
     issues.push(issue("assets_empty", "assets", "At least one local asset is required."));
   } else {
