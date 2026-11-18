@@ -9,20 +9,34 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
 {
     private readonly IJobStageExecutor preparation;
     private readonly IJobStageExecutor analysis;
+    private readonly IJobStageExecutor planning;
     private readonly IJobStageExecutor rendering;
     private readonly IJobStageExecutor verification;
     private readonly IJobStageExecutor packaging;
     private readonly IJobStageExecutor delivery;
 
     /// <summary>Создаёт маршрутизатор этапов MVP.</summary>
-    public ProductionStageExecutor(IJobStageExecutor preparation, IJobStageExecutor analysis, IJobStageExecutor rendering, IJobStageExecutor verification, IJobStageExecutor packaging, IJobStageExecutor delivery)
+    public ProductionStageExecutor(IJobStageExecutor preparation, IJobStageExecutor analysis, IJobStageExecutor planning, IJobStageExecutor rendering, IJobStageExecutor verification, IJobStageExecutor packaging, IJobStageExecutor delivery)
     {
         this.preparation = preparation ?? throw new ArgumentNullException(nameof(preparation));
         this.analysis = analysis ?? throw new ArgumentNullException(nameof(analysis));
+        this.planning = planning ?? throw new ArgumentNullException(nameof(planning));
         this.rendering = rendering ?? throw new ArgumentNullException(nameof(rendering));
         this.verification = verification ?? throw new ArgumentNullException(nameof(verification));
         this.packaging = packaging ?? throw new ArgumentNullException(nameof(packaging));
         this.delivery = delivery ?? throw new ArgumentNullException(nameof(delivery));
+    }
+
+    /// <summary>Создаёт маршрутизатор без подключённого Planning.</summary>
+    public ProductionStageExecutor(
+        IJobStageExecutor preparation,
+        IJobStageExecutor analysis,
+        IJobStageExecutor rendering,
+        IJobStageExecutor verification,
+        IJobStageExecutor packaging,
+        IJobStageExecutor delivery)
+        : this(preparation, analysis, new UnavailablePlanningStageExecutor(), rendering, verification, packaging, delivery)
+    {
     }
 
     /// <summary>
@@ -34,7 +48,7 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
         IJobStageExecutor verification,
         IJobStageExecutor packaging,
         IJobStageExecutor delivery)
-        : this(preparation, new UnavailableAnalysisStageExecutor(), rendering, verification, packaging, delivery)
+        : this(preparation, new UnavailableAnalysisStageExecutor(), new UnavailablePlanningStageExecutor(), rendering, verification, packaging, delivery)
     {
     }
 
@@ -44,6 +58,7 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
         {
             ProductionStage.Preparation => preparation.ExecuteAsync(job, cancellationToken),
             ProductionStage.Analysis => analysis.ExecuteAsync(job, cancellationToken),
+            ProductionStage.Planning => planning.ExecuteAsync(job, cancellationToken),
             ProductionStage.Rendering => rendering.ExecuteAsync(job, cancellationToken),
             ProductionStage.Verification => verification.ExecuteAsync(job, cancellationToken),
             ProductionStage.Packaging => packaging.ExecuteAsync(job, cancellationToken),
@@ -59,5 +74,13 @@ public sealed class ProductionStageExecutor : IJobStageExecutor
             Task.FromResult(StageExecutionResult.Permanent(
                 "stage.unsupported",
                 "Analysis stage is not configured for this router."));
+    }
+
+    private sealed class UnavailablePlanningStageExecutor : IJobStageExecutor
+    {
+        public Task<StageExecutionResult> ExecuteAsync(JobCreationRecord job, CancellationToken cancellationToken) =>
+            Task.FromResult(StageExecutionResult.Permanent(
+                "stage.unsupported",
+                "Planning stage is not configured for this router."));
     }
 }

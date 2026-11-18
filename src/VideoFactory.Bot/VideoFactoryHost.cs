@@ -191,11 +191,18 @@ public static class VideoFactoryHost
              new SqlitePlanningAttemptStore(BuildConnectionString(services)));
          builder.Services.AddSingleton<IPlanningApprovalStore>(services =>
              new SqlitePlanningApprovalStore(BuildConnectionString(services)));
-         builder.Services.AddSingleton<IPlanningCostPolicy>(services =>
+          builder.Services.AddSingleton<IPlanningCostPolicy>(services =>
          {
              PlanningOptions options = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
-             return new PlanningCostPolicy(new PlanningCostPolicyOptions(options.JobLimitUsd));
-         });
+              return new PlanningCostPolicy(new PlanningCostPolicyOptions(options.JobLimitUsd));
+          });
+          builder.Services.AddSingleton<EditPlanPlanner>(services =>
+              new EditPlanPlanner(
+                  services.GetRequiredService<IEditPlanProvider>(),
+                  services.GetRequiredService<IPlanningCostPolicy>(),
+                  services.GetRequiredService<IEditPlanRevisionStore>(),
+                  services.GetRequiredService<IPlanningAttemptStore>(),
+                  services.GetRequiredService<IPlanningApprovalStore>()));
          builder.Services.AddSingleton<PlanningApprovalUseCase>(services =>
              new PlanningApprovalUseCase(
                  services.GetRequiredService<IPlanningApprovalStore>(),
@@ -254,13 +261,22 @@ public static class VideoFactoryHost
                 timeouts.MaxOutputBytes,
                 services.GetRequiredService<IStorageBudget>());
         });
-        builder.Services.AddSingleton<AnalysisStageExecutor>(services =>
+         builder.Services.AddSingleton<AnalysisStageExecutor>(services =>
             new AnalysisStageExecutor(
                 services.GetRequiredService<IAnalysisService>(),
                 services.GetRequiredService<IAnalysisArtifactPublisher>(),
-                services.GetRequiredService<IArtifactStore>(),
-                BuildWorkspaceRoot(services)));
-        builder.Services.AddSingleton<RenderingStageExecutor>(services =>
+                 services.GetRequiredService<IArtifactStore>(),
+                 BuildWorkspaceRoot(services)));
+         builder.Services.AddSingleton<PlanningStageExecutor>(services =>
+         {
+             PlanningOptions options = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
+             return new PlanningStageExecutor(
+                 services.GetRequiredService<EditPlanPlanner>(),
+                 services.GetRequiredService<IArtifactStore>(),
+                 BuildWorkspaceRoot(services),
+                 options.JobLimitUsd);
+         });
+         builder.Services.AddSingleton<RenderingStageExecutor>(services =>
             new RenderingStageExecutor(
                 services.GetRequiredService<IEditPlanRevisionStore>(),
                 services.GetRequiredService<IArtifactStore>(),
@@ -309,9 +325,10 @@ public static class VideoFactoryHost
         });
         builder.Services.AddSingleton<IJobStageExecutor>(services =>
             new ProductionStageExecutor(
-                services.GetRequiredService<PreparationStageExecutor>(),
-                services.GetRequiredService<AnalysisStageExecutor>(),
-                services.GetRequiredService<RenderingStageExecutor>(),
+                 services.GetRequiredService<PreparationStageExecutor>(),
+                 services.GetRequiredService<AnalysisStageExecutor>(),
+                 services.GetRequiredService<PlanningStageExecutor>(),
+                 services.GetRequiredService<RenderingStageExecutor>(),
                 services.GetRequiredService<VerificationStageExecutor>(),
                 services.GetRequiredService<PackagingStageExecutor>(),
                 services.GetRequiredService<DeliveryStageExecutor>()));

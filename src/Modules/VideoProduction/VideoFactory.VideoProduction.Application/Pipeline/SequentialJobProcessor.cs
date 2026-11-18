@@ -138,6 +138,7 @@ public sealed class SequentialJobProcessor
         StageAttemptStatus attemptStatus = result.Kind switch
         {
             StageExecutionKind.Completed => StageAttemptStatus.Completed,
+            StageExecutionKind.WaitingForApproval => StageAttemptStatus.Completed,
             StageExecutionKind.Retryable when attemptNumber < maxStageAttempts => StageAttemptStatus.Retryable,
             StageExecutionKind.Retryable => StageAttemptStatus.Permanent,
             StageExecutionKind.Permanent => StageAttemptStatus.Permanent,
@@ -170,6 +171,27 @@ public sealed class SequentialJobProcessor
                 job.Progress.Stage,
                 nextProgress,
                 persistenceToken);
+        }
+        else if (result.Kind == StageExecutionKind.WaitingForApproval)
+        {
+            if (job.Progress.Stage != ProductionStage.Planning)
+            {
+                await stateStore.TryTransitionAsync(
+                    job.JobId,
+                    job.Progress.Status,
+                    job.Progress.Stage,
+                    job.Progress.Fail(),
+                    persistenceToken);
+            }
+            else
+            {
+                await stateStore.TryTransitionAsync(
+                    job.JobId,
+                    job.Progress.Status,
+                    job.Progress.Stage,
+                    job.Progress.AwaitCostApproval(),
+                    persistenceToken);
+            }
         }
         else if (result.Kind is StageExecutionKind.Permanent
             || (result.Kind == StageExecutionKind.Retryable && attemptNumber >= maxStageAttempts))

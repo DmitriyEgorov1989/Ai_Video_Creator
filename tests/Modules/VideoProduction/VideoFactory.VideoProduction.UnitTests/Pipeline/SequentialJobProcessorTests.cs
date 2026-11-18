@@ -56,6 +56,40 @@ public sealed class SequentialJobProcessorTests
         Assert.Equal(StageAttemptStatus.Completed, attempts.Last?.Status);
     }
 
+    [Fact]
+    public async Task PlanningApprovalWaitIsPersistedWithoutFailingTheJob()
+    {
+        JobCreationRecord job = CreateJob() with
+        {
+            Progress = JobProgress.Create(ProductionMode.Fast).Start()
+                .CompletePreparation()
+                .CompleteAnalysis()
+        };
+        FakeStateStore stateStore = new();
+        FakeAttemptStore attempts = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            stateStore,
+            attempts,
+            new FakeExecutor(StageExecutionResult.WaitingForApproval(
+                "planning.cost_approval_required",
+                "Approval is required.",
+                0.08m,
+                1)));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Equal(JobStatus.AwaitingConfirmation, stateStore.NextProgress?.Status);
+        Assert.Equal(ProductionStage.Planning, stateStore.NextProgress?.Stage);
+        Assert.Equal(ConfirmationKind.CostApproval, stateStore.NextProgress?.PendingConfirmation);
+        Assert.Equal(StageAttemptStatus.Completed, attempts.Last?.Status);
+    }
+
     private static JobCreationRecord CreateJob() => new(
         JobId.New(),
         VariantId.New(),
