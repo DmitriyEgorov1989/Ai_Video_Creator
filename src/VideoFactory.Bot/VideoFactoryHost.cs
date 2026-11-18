@@ -283,14 +283,19 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IRenderHostAdapter>(),
                 services.GetRequiredService<IAudioStemBuilder>(),
                 services.GetRequiredService<IMediaProbe>(),
-                BuildWorkspaceRoot(services),
-                TimeSpan.FromSeconds(services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.RenderSeconds),
-                services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.MaxOutputBytes,
-                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.SampleRate,
+                 BuildWorkspaceRoot(services),
+                 TimeSpan.FromSeconds(services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.RenderSeconds),
+                 services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.MaxOutputBytes,
+                 services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.MaxTelegramBytes,
+                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.SampleRate,
                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.ChannelLayout,
-                services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.LoudnessLufs,
-                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp,
-                 services.GetRequiredService<IStorageBudget>()));
+                 services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.LoudnessLufs,
+                  services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value.TruePeakDbtp,
+                  new OutputEncodingProfile(
+                      services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.VideoBitrateBitsPerSecond,
+                      services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.AudioBitrateBitsPerSecond,
+                      services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.ContainerReserveBytes),
+                  services.GetRequiredService<IStorageBudget>()));
         builder.Services.AddSingleton<VerificationStageExecutor>(services =>
         {
             OutputQualityOptions options = services.GetRequiredService<IOptions<OutputQualityOptions>>().Value;

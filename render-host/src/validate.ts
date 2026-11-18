@@ -134,6 +134,17 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
   requiredString(value.jobId, "jobId", issues);
   requiredString(value.variantId, "variantId", issues);
   requiredString(value.outputPath, "outputPath", issues);
+  const encoding = value.encoding;
+  if (!isRecord(encoding)) {
+    issues.push(issue("encoding_missing", "encoding", "Encoding profile is required."));
+  } else {
+    if (!Number.isInteger(encoding.videoBitrateBitsPerSecond) || (encoding.videoBitrateBitsPerSecond as number) <= 0) {
+      issues.push(issue("encoding_invalid", "encoding.videoBitrateBitsPerSecond", "Video bitrate must be a positive integer."));
+    }
+    if (!Number.isInteger(encoding.audioBitrateBitsPerSecond) || (encoding.audioBitrateBitsPerSecond as number) <= 0) {
+      issues.push(issue("encoding_invalid", "encoding.audioBitrateBitsPerSecond", "Audio bitrate must be a positive integer."));
+    }
+  }
   validatePlan(value.plan, issues);
   if (isRecord(value.plan)) {
     if (value.plan.jobId !== value.jobId) {

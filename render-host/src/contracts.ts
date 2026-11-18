@@ -59,6 +59,10 @@ export interface RenderRequest {
   plan: EditPlan;
   assets: RenderAsset[];
   outputPath: string;
+  encoding: {
+    videoBitrateBitsPerSecond: number;
+    audioBitrateBitsPerSecond: number;
+  };
 }
 
 export interface ProgressEvent {

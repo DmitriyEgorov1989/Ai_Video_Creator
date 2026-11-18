@@ -28,6 +28,8 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     private readonly IMediaProbe mediaProbe;
     private readonly TimeSpan renderTimeout;
     private readonly int maxOutputBytes;
+    private readonly long maxTelegramBytes;
+    private readonly OutputEncodingProfile encodingProfile;
     private readonly IStorageBudget storageBudget;
 
     /// <summary>Создаёт исполнитель Rendering.</summary>
@@ -40,10 +42,12 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         string workspaceRoot,
         TimeSpan renderTimeout,
         int maxOutputBytes,
+        long maxTelegramBytes,
         int audioSampleRate,
         string audioChannelLayout,
         double audioLoudnessLufs,
         double audioTruePeakDbtp,
+        OutputEncodingProfile encodingProfile,
         IStorageBudget? storageBudget = null)
     {
         this.planStore = planStore ?? throw new ArgumentNullException(nameof(planStore));
@@ -54,8 +58,12 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
         if (renderTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(renderTimeout));
         if (maxOutputBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxOutputBytes));
+        if (maxTelegramBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxTelegramBytes));
         this.renderTimeout = renderTimeout;
         this.maxOutputBytes = maxOutputBytes;
+        this.maxTelegramBytes = maxTelegramBytes;
+        this.encodingProfile = encodingProfile ?? throw new ArgumentNullException(nameof(encodingProfile));
+        this.encodingProfile.Validate();
         this.storageBudget = storageBudget ?? StorageBudgetRunner.Default;
         AudioSampleRate = audioSampleRate;
         AudioChannelLayout = audioChannelLayout;
@@ -96,9 +104,25 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                 }
             }
         }
-        double seconds = revision is null ? 0 : (double)revision.Plan.Output.DurationFrames
-            * revision.Plan.Output.FrameRate.Denominator / revision.Plan.Output.FrameRate.Numerator;
-        long estimate = checked((long)Math.Ceiling(seconds * 3_000_000) + sourceSize + 1_048_576);
+        if (revision is null)
+        {
+            return StageExecutionResult.Permanent("render.plan_missing", "Rendering requires an approved edit plan.");
+        }
+
+        RenderSizeEstimate sizeEstimate = RenderSizeEstimator.Estimate(
+            revision.Plan.Output.DurationFrames,
+            revision.Plan.Output.FrameRate,
+            encodingProfile);
+        if (sizeEstimate.EstimatedBytes > maxTelegramBytes)
+        {
+            return StageExecutionResult.Permanent(
+                "render.telegram_size_estimate_exceeded",
+                $"Estimated render size {sizeEstimate.EstimatedBytes} bytes for {sizeEstimate.DurationSeconds:0.###} seconds "
+                + $"at {encodingProfile.VideoBitrateBitsPerSecond} video bits/s and "
+                + $"{encodingProfile.AudioBitrateBitsPerSecond} audio bits/s exceeds Telegram limit {maxTelegramBytes} bytes.");
+        }
+
+        long estimate = checked(sizeEstimate.EstimatedBytes + sourceSize + 1_048_576);
         return await StorageBudgetRunner.RunAsync(storageBudget, directory, estimate,
             token => ExecuteCoreAsync(job, token), failure => failure.Code == "storage.job_quota_exceeded"
                 ? StageExecutionResult.Permanent(failure.Code, failure.Message)
@@ -196,7 +220,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             }
         }
 
-        string requestJson = BuildRequestJson(job, revision.Plan, sourcePath, audioPath, outputPath);
+        string requestJson = BuildRequestJson(job, revision.Plan, sourcePath, audioPath, outputPath, encodingProfile);
         await File.WriteAllTextAsync(requestPath, requestJson, Encoding.UTF8, cancellationToken);
 
         RenderHostResult result = await renderHost.RenderAsync(
@@ -241,7 +265,8 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         EditPlan plan,
         string sourcePath,
         string? audioPath,
-        string outputPath)
+        string outputPath,
+        OutputEncodingProfile encodingProfile)
     {
         string[] segmentIds = plan.Video.Clips
             .Select(clip => clip.SegmentId.ToString())
@@ -301,7 +326,12 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                 .Concat(audioPath is null
                     ? []
                     : [new { id = "__audio_master", path = audioPath }]),
-            outputPath
+            outputPath,
+            encoding = new
+            {
+                videoBitrateBitsPerSecond = encodingProfile.VideoBitrateBitsPerSecond,
+                audioBitrateBitsPerSecond = encodingProfile.AudioBitrateBitsPerSecond
+            }
         };
         return JsonSerializer.Serialize(request, JsonOptions);
     }

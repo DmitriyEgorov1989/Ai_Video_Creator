@@ -26,6 +26,56 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Reliability;
 
 public sealed class StageFaultTests
 {
+    [Fact]
+    public async Task RenderRejectsTelegramSizeEstimateBeforeStartingRenderHost()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"render-size-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string cs = $"Data Source={Path.Combine(root, "jobs.db")};Pooling=False";
+        try
+        {
+            await new SqliteMigrationRunner(cs).InitializeAsync(CancellationToken.None);
+            ArtifactId sourceId = ArtifactId.New();
+            await File.WriteAllBytesAsync(Path.Combine(root, "source.mp4"), [7, 8, 9]);
+            SqliteArtifactStore artifacts = new(cs);
+            await artifacts.RegisterAsync(new ArtifactRecord(sourceId, "OriginalVideo", "source.mp4", "source-hash", 3, null, null, "test"), CancellationToken.None);
+            CreateJobResult.Succeeded created = Assert.IsType<CreateJobResult.Succeeded>(await new CreateJobUseCase(new SqliteJobCreationStore(cs))
+                .ExecuteAsync(new CreateJobCommand(sourceId, "private-comment", new ProductionSettings(null, false, false))));
+            EditPlan plan = new(1, created.JobId, created.VariantId, RevisionId.New(), RevisionId.New(), 42,
+                new OutputProfile(1080, 1920, new FrameRate(30, 1), 3_000), TemplateId.Dynamic,
+                new TemplateProps(CaptionPreset.None, ColorTheme.Dark, null), new VideoTrack([]),
+                new AudioTrack([], []), new CaptionTrack([]), new OverlayTrack([]));
+            SqliteEditPlanRevisionStore plans = new(cs);
+            await plans.SaveAsync(plan, "plan-hash", 0, CancellationToken.None);
+            await using (SqliteConnection connection = new(cs))
+            {
+                await connection.OpenAsync();
+                await using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = "UPDATE jobs SET stage = $stage, current_approved_edit_plan_revision_id = $revision;";
+                command.Parameters.AddWithValue("$stage", (int)ProductionStage.Rendering);
+                command.Parameters.AddWithValue("$revision", plan.RevisionId.ToString());
+                await command.ExecuteNonQueryAsync();
+            }
+
+            Host host = new(null);
+            RenderingStageExecutor executor = new(plans, artifacts, host, new NoAudio(), new Probe(), root,
+                TimeSpan.FromSeconds(5), 4096, 50_000_000, 48000, "stereo", -16, -1,
+                new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), new Budget(false));
+
+            StageExecutionResult result = await executor.ExecuteAsync(
+                (await new SqliteJobStateStore(cs).GetAsync(created.JobId, CancellationToken.None))!,
+                CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal("render.telegram_size_estimate_exceeded", result.ErrorCode);
+            Assert.Equal(0, host.Calls);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     [Theory]
     [InlineData("process.timeout")]
     [InlineData("render.failed")]
@@ -60,7 +110,8 @@ public sealed class StageFaultTests
             Host host = new(fault);
             Budget budget = new(fault == "storage.insufficient_space");
             RenderingStageExecutor Executor() => new(plans, artifacts, host, new NoAudio(), new Probe(), root,
-                TimeSpan.FromSeconds(5), 4096, 48000, "stereo", -16, -1, budget);
+                TimeSpan.FromSeconds(5), 4096, 50_000_000, 48000, "stereo", -16, -1,
+                new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), budget);
             SequentialJobProcessor Processor() => new(new SqliteJobWorkQueue(cs), new SqliteJobStateStore(cs), new SqliteStageAttemptStore(cs), Executor());
             Assert.True(await Processor().ProcessNextAsync("first", TimeSpan.FromSeconds(1), TimeSpan.FromHours(1), 3, CancellationToken.None));
             JobCreationRecord? persisted = await new SqliteJobStateStore(cs).GetAsync(created.JobId, CancellationToken.None);

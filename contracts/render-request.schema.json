@@ -4,7 +4,7 @@
   "title": "RenderRequest",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "jobId", "variantId", "plan", "assets", "outputPath"],
+  "required": ["schemaVersion", "jobId", "variantId", "plan", "assets", "outputPath", "encoding"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "jobId": { "type": "string", "minLength": 1 },
@@ -22,6 +22,15 @@
         }
       }
     },
-    "outputPath": { "type": "string", "minLength": 1 }
+    "outputPath": { "type": "string", "minLength": 1 },
+    "encoding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["videoBitrateBitsPerSecond", "audioBitrateBitsPerSecond"],
+      "properties": {
+        "videoBitrateBitsPerSecond": { "type": "integer", "minimum": 1 },
+        "audioBitrateBitsPerSecond": { "type": "integer", "minimum": 1 }
+      }
+    }
   }
 }

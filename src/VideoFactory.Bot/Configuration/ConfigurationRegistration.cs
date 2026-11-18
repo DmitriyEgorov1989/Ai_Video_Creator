@@ -105,6 +105,12 @@ public static class ConfigurationRegistration
                 "OutputQuality:DurationToleranceFrames must not be negative.")
             .Validate(options => options.MaxTelegramBytes > 0,
                 "OutputQuality:MaxTelegramBytes must be greater than zero.")
+            .Validate(options => options.VideoBitrateBitsPerSecond > 0,
+                "OutputQuality:VideoBitrateBitsPerSecond must be greater than zero.")
+            .Validate(options => options.AudioBitrateBitsPerSecond > 0,
+                "OutputQuality:AudioBitrateBitsPerSecond must be greater than zero.")
+            .Validate(options => options.ContainerReserveBytes >= 0,
+                "OutputQuality:ContainerReserveBytes must not be negative.")
             .Validate(options => options.MaxDeliveryEncodeAttempts is >= 0 and <= 1,
                 "OutputQuality:MaxDeliveryEncodeAttempts must be zero or one.");
 

@@ -3,6 +3,10 @@
   "jobId": "job-1",
   "variantId": "variant-1",
   "outputPath": "C:/data/output.mp4",
+  "encoding": {
+    "videoBitrateBitsPerSecond": 4000000,
+    "audioBitrateBitsPerSecond": 128000
+  },
   "assets": [
     { "id": "segment-1", "path": "C:/data/source.mp4" }
   ],

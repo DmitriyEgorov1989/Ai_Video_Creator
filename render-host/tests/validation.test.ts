@@ -11,6 +11,7 @@ function validRequest(): RenderRequest {
     jobId: "job-1",
     variantId: "variant-1",
     outputPath: "C:/data/output.mp4",
+    encoding: { videoBitrateBitsPerSecond: 4_000_000, audioBitrateBitsPerSecond: 128_000 },
     assets: [{ id: "segment-1", path: "C:/data/source.mp4" }],
     plan: {
       schemaVersion: 1,

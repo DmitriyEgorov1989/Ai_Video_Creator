@@ -89,6 +89,8 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
       composition: configuredComposition,
       serveUrl,
       codec: "h264",
+      videoBitrate: toRemotionBitrate(request.encoding.videoBitrateBitsPerSecond),
+      audioBitrate: toRemotionBitrate(request.encoding.audioBitrateBitsPerSecond),
       outputLocation: temporaryOutput,
       inputProps: renderRequestWithUrls as unknown as Record<string, unknown>,
       onProgress: ({ progress }) => emit({ type: "progress", stage: "render", percent: Math.round(progress * 100) }),
@@ -114,4 +116,9 @@ export class RenderHostError extends Error {
 
 function formatIssues(issues: Array<{ code: string; path: string; message: string }>): string {
   return issues.map((item) => `${item.code} at ${item.path}: ${item.message}`).join("; ");
+}
+
+function toRemotionBitrate(bitsPerSecond: number): string {
+  if (bitsPerSecond % 1_000_000 === 0) return `${bitsPerSecond / 1_000_000}M`;
+  return `${Math.ceil(bitsPerSecond / 1_000)}K`;
 }

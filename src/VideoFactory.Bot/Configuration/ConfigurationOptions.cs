@@ -229,6 +229,15 @@ public sealed class OutputQualityOptions
     /// <summary>Максимальный размер доставки в Telegram в байтах.</summary>
     public long MaxTelegramBytes { get; init; } = 50_000_000;
 
+    /// <summary>Целевой bitrate видео в битах в секунду.</summary>
+    public long VideoBitrateBitsPerSecond { get; init; } = 4_000_000;
+
+    /// <summary>Целевой bitrate аудио в битах в секунду.</summary>
+    public long AudioBitrateBitsPerSecond { get; init; } = 128_000;
+
+    /// <summary>Резерв на контейнер и служебные данные в байтах.</summary>
+    public long ContainerReserveBytes { get; init; } = 2_097_152;
+
     /// <summary>Максимальное число повторных encode после превышения лимита.</summary>
     public int MaxDeliveryEncodeAttempts { get; init; } = 1;
 }

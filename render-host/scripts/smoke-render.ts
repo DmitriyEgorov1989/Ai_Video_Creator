@@ -19,6 +19,7 @@ const request: RenderRequest = {
   jobId: "smoke-job",
   variantId: "smoke-variant",
   outputPath: output,
+  encoding: { videoBitrateBitsPerSecond: 4_000_000, audioBitrateBitsPerSecond: 128_000 },
   assets: [{ id: "segment-1", path: source }],
   plan: {
     schemaVersion: 1,
