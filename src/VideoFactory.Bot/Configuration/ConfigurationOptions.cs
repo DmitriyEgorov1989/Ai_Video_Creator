@@ -240,6 +240,12 @@ public sealed class OutputQualityOptions
 
     /// <summary>Максимальное число повторных encode после превышения лимита.</summary>
     public int MaxDeliveryEncodeAttempts { get; init; } = 1;
+
+    /// <summary>Video bitrate controlled encode в битах в секунду.</summary>
+    public long DeliveryEncodeVideoBitrateBitsPerSecond { get; init; } = 3_500_000;
+
+    /// <summary>Audio bitrate controlled encode в битах в секунду.</summary>
+    public long DeliveryEncodeAudioBitrateBitsPerSecond { get; init; } = 96_000;
 }
 
 /// <summary>

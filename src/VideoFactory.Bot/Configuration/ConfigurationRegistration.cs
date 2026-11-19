@@ -112,7 +112,11 @@ public static class ConfigurationRegistration
             .Validate(options => options.ContainerReserveBytes >= 0,
                 "OutputQuality:ContainerReserveBytes must not be negative.")
             .Validate(options => options.MaxDeliveryEncodeAttempts is >= 0 and <= 1,
-                "OutputQuality:MaxDeliveryEncodeAttempts must be zero or one.");
+                "OutputQuality:MaxDeliveryEncodeAttempts must be zero or one.")
+            .Validate(options => options.DeliveryEncodeVideoBitrateBitsPerSecond > 0,
+                "OutputQuality:DeliveryEncodeVideoBitrateBitsPerSecond must be greater than zero.")
+            .Validate(options => options.DeliveryEncodeAudioBitrateBitsPerSecond > 0,
+                "OutputQuality:DeliveryEncodeAudioBitrateBitsPerSecond must be greater than zero.");
 
         OptionsBuilder<AiApiOptions> aiApi = services.AddOptions<AiApiOptions>()
             .Bind(configuration.GetSection(AiApiOptions.SectionName))

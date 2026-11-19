@@ -1,11 +1,15 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
+using VideoFactory.VideoProduction.Application.Planning;
+using VideoFactory.VideoProduction.Application.Rendering;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
+using VideoFactory.VideoProduction.Infrastructure.QualityAssurance;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Packaging;
 
@@ -16,15 +20,49 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
     private readonly string workspaceRoot;
     private readonly long maxTelegramBytes;
     private readonly IStorageBudget storageBudget;
+    private readonly IControlledVideoEncoder? controlledEncoder;
+    private readonly IEditPlanRevisionStore? planStore;
+    private readonly IOutputQualityAssurance? qualityAssurance;
+    private readonly OutputQualityOptionsProfile? qualityProfile;
+    private readonly int maxDeliveryEncodeAttempts;
+    private readonly long deliveryEncodeVideoBitrate;
+    private readonly long deliveryEncodeAudioBitrate;
 
     /// <summary>Создаёт исполнитель Packaging.</summary>
     public PackagingStageExecutor(IArtifactStore artifactStore, string workspaceRoot, long maxTelegramBytes, IStorageBudget? storageBudget = null)
+        : this(artifactStore, workspaceRoot, maxTelegramBytes, storageBudget, null, null, null, null, 0, 3_500_000, 96_000)
+    {
+    }
+
+    /// <summary>Создаёт Packaging с одним контролируемым encode и повторным QA.</summary>
+    public PackagingStageExecutor(
+        IArtifactStore artifactStore,
+        string workspaceRoot,
+        long maxTelegramBytes,
+        IStorageBudget? storageBudget,
+        IControlledVideoEncoder? controlledEncoder,
+        IEditPlanRevisionStore? planStore,
+        IOutputQualityAssurance? qualityAssurance,
+        OutputQualityOptionsProfile? qualityProfile,
+        int maxDeliveryEncodeAttempts,
+        long deliveryEncodeVideoBitrate = 3_500_000,
+        long deliveryEncodeAudioBitrate = 96_000)
     {
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
         if (maxTelegramBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxTelegramBytes));
         this.maxTelegramBytes = maxTelegramBytes;
         this.storageBudget = storageBudget ?? StorageBudgetRunner.Default;
+        this.controlledEncoder = controlledEncoder;
+        this.planStore = planStore;
+        this.qualityAssurance = qualityAssurance;
+        this.qualityProfile = qualityProfile;
+        if (maxDeliveryEncodeAttempts is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(maxDeliveryEncodeAttempts));
+        this.maxDeliveryEncodeAttempts = maxDeliveryEncodeAttempts;
+        if (deliveryEncodeVideoBitrate <= 0) throw new ArgumentOutOfRangeException(nameof(deliveryEncodeVideoBitrate));
+        if (deliveryEncodeAudioBitrate <= 0) throw new ArgumentOutOfRangeException(nameof(deliveryEncodeAudioBitrate));
+        this.deliveryEncodeVideoBitrate = deliveryEncodeVideoBitrate;
+        this.deliveryEncodeAudioBitrate = deliveryEncodeAudioBitrate;
     }
 
     /// <inheritdoc />
@@ -86,7 +124,74 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         }
         if (new FileInfo(sourcePath).Length > maxTelegramBytes)
         {
-            return StageExecutionResult.Permanent("packaging.telegram_size_exceeded", "The verified MP4 exceeds the configured Telegram delivery limit.");
+            if (controlledEncoder is null || planStore is null || qualityAssurance is null || qualityProfile is null || maxDeliveryEncodeAttempts == 0)
+                return StageExecutionResult.Permanent("packaging.telegram_size_exceeded", "The verified MP4 exceeds the configured Telegram delivery limit.");
+
+            ArtifactRecord? encoded = await artifactStore.FindLatestAsync(job.JobId, "delivery-encode-output", cancellationToken);
+            if (encoded is null)
+            {
+                EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null
+                    ? null : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
+                if (revision is null)
+                    return StageExecutionResult.Permanent("packaging.encode_plan_missing", "Controlled encode requires the approved edit plan.");
+
+                string encodeDirectory = SafeFileTree.Resolve(workspaceRoot,
+                    $"data/jobs/{job.JobId}/renders/{job.VariantId}/delivery-encode");
+                Directory.CreateDirectory(encodeDirectory);
+                string encodedPath = Path.Combine(encodeDirectory, "output.mp4");
+                ControlledEncodeResult encode = await controlledEncoder.EncodeAsync(
+                    new ControlledEncodeRequest(sourcePath, encodedPath, deliveryEncodeVideoBitrate, deliveryEncodeAudioBitrate), cancellationToken);
+                if (!encode.IsSuccess)
+                    return StageExecutionResult.Permanent(encode.ErrorCode ?? "packaging.encode_failed", encode.ErrorMessage ?? "Controlled encode failed.");
+
+                OutputQualityResult encodedQa = await qualityAssurance.VerifyAsync(
+                    new OutputQualityRequest(encodedPath, qualityProfile.ExpectedWidth, qualityProfile.ExpectedHeight,
+                        revision.Plan.Output.FrameRate, revision.Plan.Output.DurationFrames, qualityProfile.DurationToleranceFrames,
+                        qualityProfile.RequireAudio, qualityProfile.ExpectedPixelFormat), cancellationToken);
+                long encodedSize = new FileInfo(encodedPath).Length;
+                if (!encodedQa.IsSuccess)
+                    return StageExecutionResult.Permanent("packaging.encode_qa_failed", encodedQa.ErrorMessage ?? "Controlled encode did not pass QA.");
+                if (encodedSize > maxTelegramBytes)
+                    return StageExecutionResult.Permanent("packaging.telegram_size_exceeded_after_encode", "The controlled encode still exceeds the configured Telegram delivery limit.");
+
+                string encodedHash = await HashAsync(encodedPath, cancellationToken);
+                encoded = new ArtifactRecord(ArtifactId.New(), "delivery-encode-output",
+                    Path.GetRelativePath(workspaceRoot, encodedPath).Replace(Path.DirectorySeparatorChar, '/'), encodedHash,
+                    encodedSize, JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId,
+                        parentArtifactId = render.ArtifactId, encodeAttempts = 1, videoBitrateBitsPerSecond = deliveryEncodeVideoBitrate,
+                        audioBitrateBitsPerSecond = deliveryEncodeAudioBitrate }), render.ArtifactId, "ffmpeg-delivery-encode/1", job.JobId);
+                ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(encoded, cancellationToken);
+                if (registration is ArtifactRegistrationResult.Rejected rejected)
+                    return StageExecutionResult.Permanent("packaging.encode_artifact_rejected", rejected.Message);
+
+                ArtifactId qaId = ArtifactId.New();
+                string qaPath = Path.Combine(encodeDirectory, $"qa-report-{qaId}.json");
+                string qaJson = JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 1,
+                    jobId = job.JobId,
+                    variantId = job.VariantId,
+                    planRevisionId = revision.RevisionId,
+                    planHash = revision.PlanHash,
+                    status = "passed",
+                    errorCode = (string?)null,
+                    errorMessage = (string?)null,
+                    output = new { artifactId = encoded.ArtifactId, path = encoded.RelativePath,
+                        sha256 = encoded.Sha256, sizeBytes = encoded.SizeBytes,
+                        width = encodedQa.Width, height = encodedQa.Height, durationFrames = encodedQa.DurationFrames }
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+                await File.WriteAllTextAsync(qaPath, qaJson, cancellationToken);
+                string qaHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(qaJson))).ToLowerInvariant();
+                qa = new ArtifactRecord(qaId, "qa-report",
+                    Path.GetRelativePath(workspaceRoot, qaPath).Replace(Path.DirectorySeparatorChar, '/'), qaHash,
+                    new FileInfo(qaPath).Length, qaJson, encoded.ArtifactId, "video-qa/1", job.JobId);
+                ArtifactRegistrationResult qaRegistration = await artifactStore.RegisterAsync(qa, cancellationToken);
+                if (qaRegistration is ArtifactRegistrationResult.Rejected qaRejected)
+                    return StageExecutionResult.Permanent("packaging.encode_qa_report_rejected", qaRejected.Message);
+            }
+
+            render = encoded;
+            sourcePath = ResolvePath(render.RelativePath);
         }
         await using (FileStream source = new(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {

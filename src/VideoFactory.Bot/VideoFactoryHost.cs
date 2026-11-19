@@ -144,16 +144,23 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IProcessRunner>(),
                 options.FfmpegPath);
         });
-        builder.Services.AddSingleton<IOutputQualityAssurance>(services =>
-        {
+         builder.Services.AddSingleton<IOutputQualityAssurance>(services =>
+         {
             ProcessTimeoutOptions timeouts = services
                 .GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
             return new OutputQualityAssurance(
                 services.GetRequiredService<IMediaProbe>(),
                 services.GetRequiredService<IMediaDecodeVerifier>(),
                 TimeSpan.FromSeconds(timeouts.ProbeSeconds),
-                timeouts.MaxOutputBytes);
-        });
+                 timeouts.MaxOutputBytes);
+         });
+         builder.Services.AddSingleton<IControlledVideoEncoder>(services =>
+         {
+             FfmpegOptions options = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+             return new FfmpegControlledVideoEncoder(services.GetRequiredService<IProcessRunner>(), options.FfmpegPath,
+                 TimeSpan.FromSeconds(timeouts.NormalizeSeconds), timeouts.MaxOutputBytes);
+         });
         builder.Services.AddSingleton<IMezzanineBuilder>(services =>
         {
             FfmpegOptions options = services
@@ -312,12 +319,24 @@ public static class VideoFactoryHost
                     string.IsNullOrWhiteSpace(options.ExpectedPixelFormat) ? null : options.ExpectedPixelFormat,
                     options.MaxTelegramBytes));
         });
-        builder.Services.AddSingleton<PackagingStageExecutor>(services =>
-            new PackagingStageExecutor(
-                services.GetRequiredService<IArtifactStore>(),
-                BuildWorkspaceRoot(services),
-                services.GetRequiredService<IOptions<OutputQualityOptions>>().Value.MaxTelegramBytes,
-                services.GetRequiredService<IStorageBudget>()));
+         builder.Services.AddSingleton<PackagingStageExecutor>(services =>
+         {
+             OutputQualityOptions options = services.GetRequiredService<IOptions<OutputQualityOptions>>().Value;
+             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+             return new PackagingStageExecutor(
+                 services.GetRequiredService<IArtifactStore>(),
+                 BuildWorkspaceRoot(services),
+                 options.MaxTelegramBytes,
+                 services.GetRequiredService<IStorageBudget>(),
+                 services.GetRequiredService<IControlledVideoEncoder>(),
+                 services.GetRequiredService<IEditPlanRevisionStore>(),
+                 services.GetRequiredService<IOutputQualityAssurance>(),
+                 new OutputQualityOptionsProfile(options.ExpectedWidth, options.ExpectedHeight, options.DurationToleranceFrames,
+                     options.RequireAudio, string.IsNullOrWhiteSpace(options.ExpectedPixelFormat) ? null : options.ExpectedPixelFormat,
+                     options.MaxTelegramBytes),
+                 options.MaxDeliveryEncodeAttempts, options.DeliveryEncodeVideoBitrateBitsPerSecond,
+                 options.DeliveryEncodeAudioBitrateBitsPerSecond);
+         });
         builder.Services.AddSingleton<DeliveryStageExecutor>(services =>
         {
             TelegramOptions telegram = services.GetRequiredService<IOptions<TelegramOptions>>().Value;
