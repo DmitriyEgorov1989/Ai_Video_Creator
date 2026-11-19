@@ -11,7 +11,11 @@ public sealed record TelegramUpdate(
     long UserId,
     long ChatId,
     string? Text,
-    TelegramMediaInput? Media);
+    TelegramMediaInput? Media)
+{
+    /// <summary>Идентификатор Telegram update или сообщения, если адаптер его предоставляет.</summary>
+    public long UpdateId { get; init; }
+}
 
 /// <summary>Нормализованное нажатие inline-кнопки подтверждения стоимости.</summary>
 public sealed record TelegramCallbackQuery(

@@ -8,6 +8,7 @@ using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
+using VideoFactory.VideoProduction.Application.Delivery;
 
 namespace VideoFactory.Bot.Telegram;
 
@@ -26,6 +27,7 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
     private readonly ILogger<TelegramUpdateHandler>? logger;
     private readonly PlanningApprovalUseCase? approvalUseCase;
     private readonly CancelJobUseCase? cancelJobUseCase;
+    private readonly RepeatDeliveryUseCase? repeatDeliveryUseCase;
 
     /// <summary>Создаёт обработчик intake.</summary>
     public TelegramUpdateHandler(
@@ -38,7 +40,8 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         ITelegramResponder responder,
         ILogger<TelegramUpdateHandler>? logger = null,
         PlanningApprovalUseCase? approvalUseCase = null,
-        CancelJobUseCase? cancelJobUseCase = null)
+        CancelJobUseCase? cancelJobUseCase = null,
+        RepeatDeliveryUseCase? repeatDeliveryUseCase = null)
     {
         ArgumentNullException.ThrowIfNull(telegramOptions);
         ArgumentNullException.ThrowIfNull(limitsOptions);
@@ -57,6 +60,7 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         this.logger = logger;
         this.approvalUseCase = approvalUseCase;
         this.cancelJobUseCase = cancelJobUseCase;
+        this.repeatDeliveryUseCase = repeatDeliveryUseCase;
     }
 
     /// <inheritdoc />
@@ -147,6 +151,12 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             return;
         }
 
+        if (update.Text?.StartsWith("/resend", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await HandleRepeatDeliveryAsync(update, cancellationToken);
+            return;
+        }
+
         if (update.Media is not null)
         {
             await HandleMediaAsync(update, update.Media, cancellationToken);
@@ -224,6 +234,31 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
                 $"Задание сейчас находится на этапе {unsupported.Stage}; отмена этой командой недоступна.",
             JobCancellationResult.NoActiveJob => "Активных заданий на Analysis или Rendering нет.",
             _ => "Не удалось обработать отмену задания."
+        };
+        await responder.SendTextAsync(update.ChatId, message, cancellationToken);
+    }
+
+    private async Task HandleRepeatDeliveryAsync(TelegramUpdate update, CancellationToken cancellationToken)
+    {
+        string[] parts = update.Text!.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (repeatDeliveryUseCase is null || parts.Length != 2 || !Guid.TryParse(parts[1], out Guid jobGuid) || update.UpdateId <= 0)
+        {
+            await responder.SendTextAsync(update.ChatId, "Используйте команду /resend <jobId> для повторной отправки готового ролика.", cancellationToken);
+            return;
+        }
+
+        RepeatDeliveryResult result = await repeatDeliveryUseCase.ExecuteAsync(
+            new RepeatDeliveryCommand(new JobId(jobGuid), update.UserId, update.UpdateId), cancellationToken);
+        string message = result switch
+        {
+            RepeatDeliveryResult.Succeeded => "Готовый ролик отправлен повторно.",
+            RepeatDeliveryResult.AlreadyProcessed => "Эта команда уже была обработана.",
+            RepeatDeliveryResult.Rejected rejected when rejected.Code == "delivery.forbidden" => "Это задание недоступно для повторной отправки.",
+            RepeatDeliveryResult.Rejected rejected when rejected.Code is "delivery.file_missing" or "delivery.final_missing" => "Готовый файл уже удалён и недоступен.",
+            RepeatDeliveryResult.Rejected rejected when rejected.Code == "delivery.file_changed" => "Готовый файл изменён и не будет отправлен.",
+            RepeatDeliveryResult.Rejected rejected when rejected.Code == "delivery.job_not_completed" => "Задание ещё не завершено.",
+            RepeatDeliveryResult.Rejected rejected when rejected.Code == "delivery.unknown_result" => "Предыдущая попытка доставки имеет неопределённый результат. Повторите команду с новым сообщением.",
+            _ => "Не удалось повторно отправить ролик."
         };
         await responder.SendTextAsync(update.ChatId, message, cancellationToken);
     }

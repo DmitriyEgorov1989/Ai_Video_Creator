@@ -152,6 +152,14 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 10, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, RepeatDeliverySchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (10, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -325,6 +333,26 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_delivery_receipts_job
             ON delivery_receipts (job_id, created_at);
+        """;
+
+    private const string RepeatDeliverySchemaSql = """
+        CREATE TABLE repeat_delivery_requests (
+            telegram_update_id INTEGER PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            variant_id TEXT NULL,
+            artifact_id TEXT NULL,
+            telegram_user_id INTEGER NOT NULL,
+            receipt_id TEXT NULL,
+            remote_message_id TEXT NULL,
+            status TEXT NOT NULL,
+            error_code TEXT NULL,
+            error_message TEXT NULL,
+            created_at TEXT NOT NULL,
+            completed_at TEXT NULL
+        );
+
+        CREATE INDEX ix_repeat_delivery_requests_job
+            ON repeat_delivery_requests (job_id, created_at);
         """;
 
     private const string PlanningAttemptSchemaSql = """

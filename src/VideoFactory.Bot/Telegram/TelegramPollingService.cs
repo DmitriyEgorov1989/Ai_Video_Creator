@@ -88,7 +88,7 @@ public sealed class TelegramPollingService : BackgroundService
         try
         {
             await handler.HandleAsync(
-                new TelegramUpdate(message.From.Id, message.Chat.Id, message.Text, media),
+                new TelegramUpdate(message.From.Id, message.Chat.Id, message.Text, media) { UpdateId = message.Id },
                 stoppingToken);
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

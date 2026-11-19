@@ -194,8 +194,10 @@ public static class VideoFactoryHost
             new SqliteStageAttemptStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IArtifactStore>(services =>
             new SqliteArtifactStore(BuildConnectionString(services)));
-        builder.Services.AddSingleton<IDeliveryReceiptStore>(services =>
-            new SqliteDeliveryReceiptStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IDeliveryReceiptStore>(services =>
+             new SqliteDeliveryReceiptStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IRepeatDeliveryRequestStore>(services =>
+             new SqliteRepeatDeliveryRequestStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IEditPlanRevisionStore>(services =>
             new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
          builder.Services.AddSingleton<IPlanningAttemptStore>(services =>
@@ -219,10 +221,21 @@ public static class VideoFactoryHost
                  services.GetRequiredService<IPlanningApprovalStore>(),
                  services.GetRequiredService<IJobStateStore>(),
                   services.GetRequiredService<IJobSignal>()));
-          builder.Services.AddSingleton<CancelJobUseCase>(services =>
+         builder.Services.AddSingleton<CancelJobUseCase>(services =>
               new CancelJobUseCase(
                   services.GetRequiredService<IJobCancellationStore>(),
-                  services.GetRequiredService<IJobCancellationCoordinator>()));
+                   services.GetRequiredService<IJobCancellationCoordinator>()));
+         builder.Services.AddSingleton<IRepeatDeliveryArtifactSource>(services =>
+             new RepeatDeliveryArtifactSource(
+                 services.GetRequiredService<IArtifactStore>(),
+                 BuildWorkspaceRoot(services)));
+         builder.Services.AddSingleton<RepeatDeliveryUseCase>(services =>
+             new RepeatDeliveryUseCase(
+                 services.GetRequiredService<IJobStateStore>(),
+                 services.GetRequiredService<IRepeatDeliveryArtifactSource>(),
+                 services.GetRequiredService<IVideoDelivery>(),
+                 services.GetRequiredService<IRepeatDeliveryRequestStore>(),
+                 services.GetRequiredService<IDeliveryReceiptStore>()));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
             new LocalArtifactStorage(BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();
@@ -256,9 +269,10 @@ public static class VideoFactoryHost
             services.GetRequiredService<ICreateJobUseCase>(),
              services.GetRequiredService<ITelegramIntakeSessionStore>(),
              services.GetRequiredService<ITelegramResponder>(),
-              services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
-              services.GetRequiredService<PlanningApprovalUseCase>(),
-              services.GetRequiredService<CancelJobUseCase>()));
+               services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
+               services.GetRequiredService<PlanningApprovalUseCase>(),
+               services.GetRequiredService<CancelJobUseCase>(),
+               services.GetRequiredService<RepeatDeliveryUseCase>()));
         builder.Services.AddHostedService<TelegramPollingService>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>
         {

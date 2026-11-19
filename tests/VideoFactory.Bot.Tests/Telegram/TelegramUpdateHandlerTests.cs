@@ -2,6 +2,8 @@ using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Telegram;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
+using VideoFactory.VideoProduction.Application.Delivery;
+using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
@@ -182,6 +184,51 @@ public sealed class TelegramUpdateHandlerTests
         Assert.Contains("запрошена", responder.Messages.Single());
     }
 
+    [Fact]
+    public async Task ResendCommandSendsCompletedJobWithoutRenderHost()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"telegram-resend-{Guid.NewGuid():N}.mp4");
+        await File.WriteAllBytesAsync(path, [4, 5, 6]);
+        try
+        {
+            JobId jobId = JobId.New();
+            JobCreationRecord job = new(
+                jobId,
+                VariantId.New(),
+                new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
+                JobProgress.Restore(JobStatus.Completed, ProductionStage.Delivery, ProductionMode.Fast, ProductionMode.Fast, null),
+                null)
+            {
+                TelegramUserId = 123456789
+            };
+            FakeResponder responder = new();
+            TelegramUpdateHandler handler = new(
+                new TelegramOptions { AllowedUserId = 123456789 },
+                new LimitsOptions(),
+                new FakeDownloader(),
+                new FakeArtifactStore(),
+                new FakeCreateJobUseCase(),
+                new InMemoryTelegramIntakeSessionStore(),
+                responder,
+                repeatDeliveryUseCase: new RepeatDeliveryUseCase(
+                    new RepeatStateStore(job),
+                    new RepeatArtifactSource(path),
+                    new RepeatDelivery(),
+                    new RepeatRequestStore(),
+                    new RepeatReceiptStore()));
+
+            await handler.HandleAsync(
+                new TelegramUpdate(123456789, 123456789, $"/resend {jobId}", null) { UpdateId = 77 },
+                CancellationToken.None);
+
+            Assert.Contains("отправлен повторно", responder.Messages.Single());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static TelegramUpdateHandler CreateHandler(
         FakeDownloader downloader,
         FakeCreateJobUseCase? createJob = null) =>
@@ -284,5 +331,39 @@ public sealed class TelegramUpdateHandlerTests
         public void Cancel(JobId jobId) => CancelledJobId = jobId;
 
         public void Unregister(JobId jobId) { }
+    }
+
+    private sealed class RepeatStateStore(JobCreationRecord job) : IJobStateStore
+    {
+        public Task<JobCreationRecord?> GetAsync(JobId jobId, CancellationToken cancellationToken) =>
+            Task.FromResult<JobCreationRecord?>(job);
+
+        public Task<JobStateTransitionResult> TryTransitionAsync(JobId jobId, JobStatus expectedStatus, ProductionStage expectedStage, JobProgress nextProgress, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class RepeatArtifactSource(string path) : IRepeatDeliveryArtifactSource
+    {
+        public Task<RepeatDeliveryArtifactResult> GetVerifiedAsync(JobCreationRecord job, CancellationToken cancellationToken) =>
+            Task.FromResult<RepeatDeliveryArtifactResult>(new RepeatDeliveryArtifactResult.Succeeded(new RepeatDeliveryArtifact(ArtifactId.New(), path)));
+    }
+
+    private sealed class RepeatDelivery : IVideoDelivery
+    {
+        public Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(VideoDeliveryResult.Succeeded("message-1"));
+    }
+
+    private sealed class RepeatRequestStore : IRepeatDeliveryRequestStore
+    {
+        public Task<RepeatDeliveryRequestStart> TryStartAsync(RepeatDeliveryCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult<RepeatDeliveryRequestStart>(new RepeatDeliveryRequestStart.Started());
+
+        public Task CompleteAsync(long requestId, DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class RepeatReceiptStore : IDeliveryReceiptStore
+    {
+        public Task AppendAsync(DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }
