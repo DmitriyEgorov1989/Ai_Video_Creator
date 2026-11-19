@@ -71,12 +71,13 @@ public sealed class SqliteMigrationTests
                 Assert.Contains("edit_plan_revisions", tables);
                 Assert.Contains("delivery_receipts", tables);
                 Assert.Contains("planning_attempts", tables);
-                Assert.Contains("planning_approvals", tables);
+                 Assert.Contains("planning_approvals", tables);
+                 Assert.Contains("job_cancellation_requests", tables);
 
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                 Assert.Equal(8, migrationCount);
+                 Assert.Equal(9, migrationCount);
 
                 await using SqliteCommand retentionCommand = connection.CreateCommand();
                 retentionCommand.CommandText = "SELECT completed_at, cleanup_started_at, files_deleted_at FROM jobs LIMIT 0;";

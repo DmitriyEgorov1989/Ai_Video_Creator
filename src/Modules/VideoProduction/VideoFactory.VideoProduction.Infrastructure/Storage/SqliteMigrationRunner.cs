@@ -144,6 +144,14 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 9, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, CancellationSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (9, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
     }
 
@@ -361,5 +369,18 @@ public sealed class SqliteMigrationRunner
         CREATE UNIQUE INDEX ix_planning_approvals_current
             ON planning_approvals (job_id, variant_id)
             WHERE status = 'Pending';
+        """;
+
+    private const string CancellationSchemaSql = """
+        CREATE TABLE job_cancellation_requests (
+            job_id TEXT PRIMARY KEY,
+            requested_by_user_id INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX ix_job_cancellation_requests_requested_at
+            ON job_cancellation_requests (requested_at);
         """;
 }

@@ -117,7 +117,7 @@ public sealed class SqliteJobStateStore : IJobStateStore
             SELECT j.job_id, j.source_artifact_id, j.comment, j.requested_mode,
                    j.target_duration_seconds, j.captions_enabled, j.music_enabled,
                    j.status, j.stage, j.effective_mode, j.pending_confirmation,
-                   j.current_approved_edit_plan_revision_id, v.variant_id
+                   j.current_approved_edit_plan_revision_id, v.variant_id, j.telegram_user_id
             FROM jobs AS j
             INNER JOIN variants AS v ON v.job_id = j.job_id
             WHERE j.job_id = $jobId;
@@ -140,7 +140,7 @@ public sealed class SqliteJobStateStore : IJobStateStore
             GetNullableEnum<ProductionMode>(reader, 9),
             GetNullableEnum<ConfirmationKind>(reader, 10));
 
-        return new JobCreationRecord(
+        JobCreationRecord record = new(
             new JobId(Guid.Parse(reader.GetString(0))),
             new VariantId(Guid.Parse(reader.GetString(12))),
             new JobRequest(
@@ -150,6 +150,11 @@ public sealed class SqliteJobStateStore : IJobStateStore
                 settings),
             progress,
             GetNullableRevisionId(reader, 11));
+        record = record with
+        {
+            TelegramUserId = reader.IsDBNull(13) ? null : reader.GetInt64(13)
+        };
+        return record;
     }
 
     private static int? GetNullableInt32(SqliteDataReader reader, int ordinal) =>

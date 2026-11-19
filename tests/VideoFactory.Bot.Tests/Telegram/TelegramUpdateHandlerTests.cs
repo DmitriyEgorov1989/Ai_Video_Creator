@@ -1,6 +1,7 @@
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Telegram;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
@@ -149,6 +150,38 @@ public sealed class TelegramUpdateHandlerTests
         Assert.Null(createJob.Command);
     }
 
+    [Fact]
+    public async Task CancelJobCommandRequestsCancellationForActiveProductionJob()
+    {
+        JobCreationRecord job = new(
+            JobId.New(),
+            VariantId.New(),
+            new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
+            JobProgress.Restore(JobStatus.Running, ProductionStage.Rendering, ProductionMode.Fast, ProductionMode.Fast, null),
+            null)
+        {
+            TelegramUserId = 123456789
+        };
+        FakeCancellationCoordinator coordinator = new();
+        FakeResponder responder = new();
+        TelegramUpdateHandler handler = new(
+            new TelegramOptions { AllowedUserId = 123456789 },
+            new LimitsOptions(),
+            new FakeDownloader(),
+            new FakeArtifactStore(),
+            new FakeCreateJobUseCase(),
+            new InMemoryTelegramIntakeSessionStore(),
+            responder,
+            cancelJobUseCase: new CancelJobUseCase(new FakeCancellationStore(job), coordinator));
+
+        await handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, "/cancel-job", null),
+            CancellationToken.None);
+
+        Assert.Equal(job.JobId, coordinator.CancelledJobId);
+        Assert.Contains("запрошена", responder.Messages.Single());
+    }
+
     private static TelegramUpdateHandler CreateHandler(
         FakeDownloader downloader,
         FakeCreateJobUseCase? createJob = null) =>
@@ -218,7 +251,38 @@ public sealed class TelegramUpdateHandlerTests
 
     private sealed class FakeResponder : ITelegramResponder
     {
+        public List<string> Messages { get; } = [];
+
         public Task SendTextAsync(long chatId, string text, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+            Capture(text);
+
+        private Task Capture(string text)
+        {
+            Messages.Add(text);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeCancellationStore(JobCreationRecord job) : IJobCancellationStore
+    {
+        public Task<JobCreationRecord?> FindActiveAsync(long telegramUserId, CancellationToken cancellationToken) =>
+            Task.FromResult<JobCreationRecord?>(job);
+
+        public Task<bool> RequestAsync(JobCancellationRequest request, CancellationToken cancellationToken) =>
+            Task.FromResult(true);
+
+        public Task<bool> IsRequestedAsync(JobId jobId, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
+    }
+
+    private sealed class FakeCancellationCoordinator : IJobCancellationCoordinator
+    {
+        public JobId? CancelledJobId { get; private set; }
+
+        public CancellationToken Register(JobId jobId, CancellationToken hostToken) => hostToken;
+
+        public void Cancel(JobId jobId) => CancelledJobId = jobId;
+
+        public void Unregister(JobId jobId) { }
     }
 }

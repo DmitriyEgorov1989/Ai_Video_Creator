@@ -1,6 +1,7 @@
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
+using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Domain.Jobs;
 
@@ -15,6 +16,8 @@ public sealed class SequentialJobProcessor
     private readonly IJobStateStore stateStore;
     private readonly IStageAttemptStore attemptStore;
     private readonly IJobStageExecutor stageExecutor;
+    private readonly IJobCancellationStore? cancellationStore;
+    private readonly IJobCancellationCoordinator? cancellationCoordinator;
 
     /// <summary>
     /// Создаёт последовательный процессор Job.
@@ -23,12 +26,16 @@ public sealed class SequentialJobProcessor
         IJobWorkQueue workQueue,
         IJobStateStore stateStore,
         IStageAttemptStore attemptStore,
-        IJobStageExecutor stageExecutor)
+        IJobStageExecutor stageExecutor,
+        IJobCancellationStore? cancellationStore = null,
+        IJobCancellationCoordinator? cancellationCoordinator = null)
     {
         this.workQueue = workQueue;
         this.stateStore = stateStore;
         this.attemptStore = attemptStore;
         this.stageExecutor = stageExecutor;
+        this.cancellationStore = cancellationStore;
+        this.cancellationCoordinator = cancellationCoordinator;
     }
 
     /// <summary>
@@ -107,16 +114,32 @@ public sealed class SequentialJobProcessor
             workerId,
             heartbeatInterval,
             heartbeatCts.Token);
+        CancellationToken stageCancellationToken = cancellationCoordinator?.Register(job.JobId, cancellationToken)
+            ?? cancellationToken;
 
         try
         {
-            result = await stageExecutor.ExecuteAsync(job, cancellationToken);
+            if (cancellationStore is not null
+                && await cancellationStore.IsRequestedAsync(job.JobId, cancellationToken))
+            {
+                result = StageExecutionResult.Cancelled(
+                    "USER_CANCELLED",
+                    "Stage execution was cancelled by the user before it started.");
+            }
+            else
+            {
+                result = await stageExecutor.ExecuteAsync(job, stageCancellationToken);
+            }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (stageCancellationToken.IsCancellationRequested)
         {
-            result = StageExecutionResult.Cancelled(
-                "HOST_STOPPING",
-                "Stage execution was cancelled because the host is stopping.");
+            result = cancellationToken.IsCancellationRequested
+                ? StageExecutionResult.Cancelled(
+                    "HOST_STOPPING",
+                    "Stage execution was cancelled because the host is stopping.")
+                : StageExecutionResult.Cancelled(
+                    "USER_CANCELLED",
+                    "Stage execution was cancelled by the user.");
         }
         catch (Exception exception) when (exception is IOException or HttpRequestException or TimeoutException)
         {
@@ -125,6 +148,7 @@ public sealed class SequentialJobProcessor
         }
         finally
         {
+            cancellationCoordinator?.Unregister(job.JobId);
             await heartbeatCts.CancelAsync();
             try
             {
@@ -133,6 +157,16 @@ public sealed class SequentialJobProcessor
             catch (OperationCanceledException) when (heartbeatCts.IsCancellationRequested)
             {
             }
+        }
+
+        if (result.Kind == StageExecutionKind.Cancelled
+            && !cancellationToken.IsCancellationRequested
+            && cancellationStore is not null
+            && await cancellationStore.IsRequestedAsync(job.JobId, cancellationToken))
+        {
+            result = StageExecutionResult.Cancelled(
+                "USER_CANCELLED",
+                "Stage execution was cancelled by the user.");
         }
 
         StageAttemptStatus attemptStatus = result.Kind switch
@@ -201,6 +235,16 @@ public sealed class SequentialJobProcessor
                 job.Progress.Status,
                 job.Progress.Stage,
                 job.Progress.Fail(),
+                persistenceToken);
+        }
+        else if (result.Kind == StageExecutionKind.Cancelled
+            && string.Equals(result.ErrorCode, "USER_CANCELLED", StringComparison.Ordinal))
+        {
+            await stateStore.TryTransitionAsync(
+                job.JobId,
+                job.Progress.Status,
+                job.Progress.Stage,
+                job.Progress.Cancel(),
                 persistenceToken);
         }
 

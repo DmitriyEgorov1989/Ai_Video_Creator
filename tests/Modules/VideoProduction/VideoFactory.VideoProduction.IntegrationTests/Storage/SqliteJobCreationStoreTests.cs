@@ -1,4 +1,5 @@
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
@@ -141,7 +142,51 @@ public sealed class SqliteJobCreationStoreTests
         Assert.Equal(CreateJobErrorCode.SourceArtifactNotFound, rejected.Error.Code);
     }
 
-    private static async Task<CreateJobResult.Succeeded> CreateJobAsync(TemporarySqliteDatabase database)
+    [Fact]
+    public async Task CancellationRequestSurvivesNewStoreInstanceAndIsIdempotent()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded created = await CreateJobAsync(database);
+        SqliteJobCancellationStore store = new(database.ConnectionString);
+
+        JobCancellationRequest request = new(created.JobId, 123, "telegram.cancel-job", DateTimeOffset.UtcNow);
+        Assert.True(await store.RequestAsync(request, CancellationToken.None));
+        Assert.False(await store.RequestAsync(request, CancellationToken.None));
+        Assert.True(await new SqliteJobCancellationStore(database.ConnectionString)
+            .IsRequestedAsync(created.JobId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task FindsActiveAnalysisByTelegramUserId()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded created = await CreateJobAsync(database, 123);
+        SqliteJobStateStore stateStore = new(database.ConnectionString);
+        JobProgress runningPreparation = JobProgress.Create(ProductionMode.Fast).Start();
+        await stateStore.TryTransitionAsync(
+            created.JobId,
+            JobStatus.Queued,
+            ProductionStage.Preparation,
+            runningPreparation,
+            CancellationToken.None);
+        await stateStore.TryTransitionAsync(
+            created.JobId,
+            JobStatus.Running,
+            ProductionStage.Preparation,
+            runningPreparation.CompletePreparation(),
+            CancellationToken.None);
+
+        JobCreationRecord? active = await new SqliteJobCancellationStore(database.ConnectionString)
+            .FindActiveAsync(123, CancellationToken.None);
+
+        Assert.NotNull(active);
+        Assert.Equal(created.JobId, active.JobId);
+        Assert.Equal(ProductionStage.Analysis, active.Progress.Stage);
+    }
+
+    private static async Task<CreateJobResult.Succeeded> CreateJobAsync(
+        TemporarySqliteDatabase database,
+        long? telegramUserId = null)
     {
         ArtifactId artifactId = ArtifactId.New();
         SqliteArtifactStore artifactStore = new(database.ConnectionString);
@@ -162,7 +207,8 @@ public sealed class SqliteJobCreationStoreTests
             new CreateJobCommand(
                 artifactId,
                 "Сделай динамично",
-                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false)));
+                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false),
+                telegramUserId));
 
         return Assert.IsType<CreateJobResult.Succeeded>(result);
     }

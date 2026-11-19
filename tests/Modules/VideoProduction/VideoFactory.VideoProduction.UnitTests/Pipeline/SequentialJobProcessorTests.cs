@@ -90,6 +90,64 @@ public sealed class SequentialJobProcessorTests
         Assert.Equal(StageAttemptStatus.Completed, attempts.Last?.Status);
     }
 
+    [Theory]
+    [InlineData("Analysis")]
+    [InlineData("Rendering")]
+    public async Task UserCancellationMovesJobToCancelledWithoutAdvancingStage(string stageName)
+    {
+        ProductionStage stage = Enum.Parse<ProductionStage>(stageName);
+        JobCreationRecord job = CreateJob() with
+        {
+            Progress = JobProgress.Restore(
+                JobStatus.Running,
+                stage,
+                ProductionMode.Fast,
+                ProductionMode.Fast,
+                null)
+        };
+        FakeStateStore stateStore = new();
+        FakeAttemptStore attempts = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            stateStore,
+            attempts,
+            new FakeExecutor(StageExecutionResult.Cancelled("USER_CANCELLED", "Cancelled by user.")));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Equal(JobStatus.Cancelled, stateStore.NextProgress?.Status);
+        Assert.Equal(stage, stateStore.NextProgress?.Stage);
+        Assert.Equal(StageAttemptStatus.Cancelled, attempts.Last?.Status);
+    }
+
+    [Fact]
+    public async Task HostShutdownCancellationLeavesJobRecoverable()
+    {
+        JobCreationRecord job = CreateJob();
+        FakeStateStore stateStore = new();
+        FakeAttemptStore attempts = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            stateStore,
+            attempts,
+            new FakeExecutor(StageExecutionResult.Cancelled("HOST_STOPPING", "Host is stopping.")));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Null(stateStore.NextProgress);
+        Assert.Equal(StageAttemptStatus.Cancelled, attempts.Last?.Status);
+    }
+
     private static JobCreationRecord CreateJob() => new(
         JobId.New(),
         VariantId.New(),

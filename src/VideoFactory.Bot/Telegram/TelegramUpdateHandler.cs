@@ -7,6 +7,7 @@ using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Application.Planning;
+using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 
 namespace VideoFactory.Bot.Telegram;
 
@@ -24,6 +25,7 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
     private readonly ITelegramResponder responder;
     private readonly ILogger<TelegramUpdateHandler>? logger;
     private readonly PlanningApprovalUseCase? approvalUseCase;
+    private readonly CancelJobUseCase? cancelJobUseCase;
 
     /// <summary>Создаёт обработчик intake.</summary>
     public TelegramUpdateHandler(
@@ -35,7 +37,8 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         ITelegramIntakeSessionStore sessions,
         ITelegramResponder responder,
         ILogger<TelegramUpdateHandler>? logger = null,
-        PlanningApprovalUseCase? approvalUseCase = null)
+        PlanningApprovalUseCase? approvalUseCase = null,
+        CancelJobUseCase? cancelJobUseCase = null)
     {
         ArgumentNullException.ThrowIfNull(telegramOptions);
         ArgumentNullException.ThrowIfNull(limitsOptions);
@@ -53,6 +56,7 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         this.responder = responder;
         this.logger = logger;
         this.approvalUseCase = approvalUseCase;
+        this.cancelJobUseCase = cancelJobUseCase;
     }
 
     /// <inheritdoc />
@@ -137,6 +141,12 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             return;
         }
 
+        if (string.Equals(update.Text?.Trim(), "/cancel-job", StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleJobCancellationAsync(update, cancellationToken);
+            return;
+        }
+
         if (update.Media is not null)
         {
             await HandleMediaAsync(update, update.Media, cancellationToken);
@@ -191,6 +201,31 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             update.ChatId,
             "Не удалось принять задание. Попробуйте отправить видео ещё раз.",
             cancellationToken);
+    }
+
+    private async Task HandleJobCancellationAsync(
+        TelegramUpdate update,
+        CancellationToken cancellationToken)
+    {
+        if (cancelJobUseCase is null)
+        {
+            await responder.SendTextAsync(update.ChatId, "Отмена заданий пока недоступна.", cancellationToken);
+            return;
+        }
+
+        JobCancellationResult result = await cancelJobUseCase.ExecuteAsync(update.UserId, cancellationToken);
+        string message = result switch
+        {
+            JobCancellationResult.Requested requested =>
+                $"Отмена задания на этапе {requested.Job.Progress.Stage} запрошена. Готовый файл не будет опубликован.",
+            JobCancellationResult.AlreadyRequested already =>
+                $"Отмена задания на этапе {already.Job.Progress.Stage} уже запрошена.",
+            JobCancellationResult.UnsupportedStage unsupported =>
+                $"Задание сейчас находится на этапе {unsupported.Stage}; отмена этой командой недоступна.",
+            JobCancellationResult.NoActiveJob => "Активных заданий на Analysis или Rendering нет.",
+            _ => "Не удалось обработать отмену задания."
+        };
+        await responder.SendTextAsync(update.ChatId, message, cancellationToken);
     }
 
     private async Task HandleMediaAsync(

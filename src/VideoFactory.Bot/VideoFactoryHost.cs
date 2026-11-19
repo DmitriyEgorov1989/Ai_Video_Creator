@@ -27,6 +27,7 @@ using VideoFactory.VideoProduction.Infrastructure.Packaging;
 using VideoFactory.VideoProduction.Infrastructure.Delivery;
 using VideoFactory.VideoProduction.Infrastructure.Planning;
 using VideoFactory.VideoProduction.Application.Delivery;
+using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -182,8 +183,11 @@ public static class VideoFactoryHost
         });
         builder.Services.AddSingleton<IJobWorkQueue>(services =>
             new SqliteJobWorkQueue(BuildConnectionString(services)));
-        builder.Services.AddSingleton<IJobStateStore>(services =>
-            new SqliteJobStateStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IJobStateStore>(services =>
+             new SqliteJobStateStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IJobCancellationStore>(services =>
+             new SqliteJobCancellationStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IJobCancellationCoordinator, JobCancellationCoordinator>();
         builder.Services.AddSingleton<IJobCreationStore>(services =>
             new SqliteJobCreationStore(BuildConnectionString(services)));
         builder.Services.AddSingleton<IStageAttemptStore>(services =>
@@ -210,11 +214,15 @@ public static class VideoFactoryHost
                   services.GetRequiredService<IEditPlanRevisionStore>(),
                   services.GetRequiredService<IPlanningAttemptStore>(),
                   services.GetRequiredService<IPlanningApprovalStore>()));
-         builder.Services.AddSingleton<PlanningApprovalUseCase>(services =>
+          builder.Services.AddSingleton<PlanningApprovalUseCase>(services =>
              new PlanningApprovalUseCase(
                  services.GetRequiredService<IPlanningApprovalStore>(),
                  services.GetRequiredService<IJobStateStore>(),
-                 services.GetRequiredService<IJobSignal>()));
+                  services.GetRequiredService<IJobSignal>()));
+          builder.Services.AddSingleton<CancelJobUseCase>(services =>
+              new CancelJobUseCase(
+                  services.GetRequiredService<IJobCancellationStore>(),
+                  services.GetRequiredService<IJobCancellationCoordinator>()));
         builder.Services.AddSingleton<ILocalArtifactStorage>(services =>
             new LocalArtifactStorage(BuildWorkspaceRoot(services)));
         builder.Services.AddSingleton<IAnalysisArtifactPublisher, AnalysisArtifactPublisher>();
@@ -248,8 +256,9 @@ public static class VideoFactoryHost
             services.GetRequiredService<ICreateJobUseCase>(),
              services.GetRequiredService<ITelegramIntakeSessionStore>(),
              services.GetRequiredService<ITelegramResponder>(),
-             services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
-             services.GetRequiredService<PlanningApprovalUseCase>()));
+              services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
+              services.GetRequiredService<PlanningApprovalUseCase>(),
+              services.GetRequiredService<CancelJobUseCase>()));
         builder.Services.AddHostedService<TelegramPollingService>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>
         {
@@ -354,8 +363,8 @@ public static class VideoFactoryHost
                  services.GetRequiredService<PlanningStageExecutor>(),
                  services.GetRequiredService<RenderingStageExecutor>(),
                 services.GetRequiredService<VerificationStageExecutor>(),
-                services.GetRequiredService<PackagingStageExecutor>(),
-                services.GetRequiredService<DeliveryStageExecutor>()));
+                 services.GetRequiredService<PackagingStageExecutor>(),
+                 services.GetRequiredService<DeliveryStageExecutor>()));
         builder.Services.AddSingleton<SequentialJobProcessor>();
         builder.Services.AddHostedService<SequentialJobWorker>();
         builder.Services.AddSingleton(serviceProvider =>
