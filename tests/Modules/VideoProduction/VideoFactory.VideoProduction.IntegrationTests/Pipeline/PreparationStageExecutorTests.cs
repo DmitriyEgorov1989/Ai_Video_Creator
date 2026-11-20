@@ -162,6 +162,32 @@ public sealed class PreparationStageExecutorTests
         Assert.Null(await fixture.Artifacts.FindLatestAsync(fixture.Job.JobId, "master-video", CancellationToken.None));
     }
 
+    [AcceptanceMediaFact]
+    public async Task RealNormalizeCancellationIsRecoverableByANewProcessor()
+    {
+        string input = Path.Combine(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!, "speech.mp4");
+        await using Fixture fixture = await Fixture.CreateAsync(input, rotated: true);
+        CancellationAfterNormalizeStartRunner interruptedRunner = new();
+
+        Assert.True(await fixture.ProcessAsync(runner: interruptedRunner));
+
+        Assert.Equal(ProductionStage.Preparation, (await fixture.StateAsync())!.Progress.Stage);
+        StageAttemptRecord interruptedAttempt = (await new SqliteStageAttemptStore(fixture.ConnectionString)
+            .GetLatestAsync(fixture.Job.JobId, ProductionStage.Preparation, CancellationToken.None))!;
+        Assert.Equal(StageAttemptStatus.Cancelled, interruptedAttempt.Status);
+        Assert.Equal("process.cancelled", interruptedAttempt.ErrorCode);
+        Assert.Null(await fixture.Artifacts.FindLatestAsync(fixture.Job.JobId, "master-video", CancellationToken.None));
+        Assert.Equal(fixture.Source.Sha256, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(fixture.SourcePath))));
+
+        Assert.True(await fixture.ProcessAsync(runner: new SystemProcessRunner()));
+
+        Assert.Equal(ProductionStage.Analysis, (await fixture.StateAsync())!.Progress.Stage);
+        ArtifactRecord master = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(
+            fixture.Job.JobId, "master-video", CancellationToken.None));
+        Assert.True(master.SizeBytes > 0);
+        Assert.Equal(fixture.Source.Sha256, Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(fixture.SourcePath))));
+    }
+
     [Fact]
     public async Task NormalizationThatLeavesVariableFrameRateDoesNotCompletePreparation()
     {
@@ -384,6 +410,24 @@ public sealed class PreparationStageExecutorTests
                   {"index":1,"codec_type":"audio","codec_name":"aac","sample_rate":"48000","channels":1}]}
                 """ : "";
             return new(ProcessExecutionStatus.Succeeded, 0, output, "", null, null, false, false);
+        }
+    }
+
+    private sealed class CancellationAfterNormalizeStartRunner : IProcessRunner
+    {
+        private readonly SystemProcessRunner inner = new();
+
+        public async Task<ProcessExecutionResult> RunAsync(ProcessStartRequest request, CancellationToken cancellationToken)
+        {
+            if (request.FileName.Equals("ffmpeg", StringComparison.OrdinalIgnoreCase)
+                && request.Arguments.Contains("libx264", StringComparer.Ordinal))
+            {
+                using CancellationTokenSource cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cancellation.CancelAfter(TimeSpan.FromMilliseconds(25));
+                return await inner.RunAsync(request, cancellation.Token);
+            }
+
+            return await inner.RunAsync(request, cancellationToken);
         }
     }
 
