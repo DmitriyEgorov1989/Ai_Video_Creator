@@ -114,3 +114,23 @@ FFmpeg/FFprobe: `speech.mp4` без перекодирования и его в�
 
 Это подготовка входных материалов. Сквозная доставка MP4 через Telegram,
 качество распознавания Whisper и удаление пауз проверяются отдельной приёмкой.
+
+## Сквозная приёмка через подменённый Telegram
+
+После сборки render-host и установки локальной Whisper-модели можно запустить
+сценарий `Telegram video + comment -> verified MP4 -> Telegram delivery` без
+реального Bot API и облачного LLM:
+
+```powershell
+npm ci --prefix .\render-host
+npm run build --prefix .\render-host
+$env:ACCEPTANCE_MEDIA_ROOT = (Resolve-Path .\data\acceptance-media-v2).Path
+$env:WHISPER_TEST_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj `
+  --filter FullyQualifiedName~TelegramToDeliveryAcceptanceTests
+```
+
+Тест создаёт временную SQLite и каталог Job, подаёт видео и комментарий через
+`TelegramUpdateHandler`, запускает последовательный processor и сохраняет
+байты fake Telegram delivery. Основной сценарий требует локальную модель
+Whisper; отрицательный сценарий повреждённого входа не отправляет MP4.

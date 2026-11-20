@@ -60,7 +60,7 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
     if (!address || typeof address === "string") throw new RenderHostError("asset_server_failed", "Could not start the local asset server.");
     for (const asset of renderRequestWithUrls.assets) asset.path = `http://127.0.0.1:${address.port}${asset.path.replace("__asset_url__", "")}`;
     emit({ type: "progress", stage: "bundle", percent: 0 });
-    const serveUrl = await bundle({
+    const serveUrl = await withRemotionDiagnosticsOnStderr(() => bundle({
       entryPoint: join(renderHostRoot, "src", "entry.tsx"),
       rootDir: renderHostRoot,
       publicDir: join(renderHostRoot, "public"),
@@ -74,9 +74,9 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
           },
         },
       }),
-    });
+    }));
     emit({ type: "progress", stage: "bundle", percent: 100 });
-    const composition = await selectComposition({ serveUrl, id: "dynamic", inputProps: renderRequestWithUrls as unknown as Record<string, unknown> });
+    const composition = await withRemotionDiagnosticsOnStderr(() => selectComposition({ serveUrl, id: "dynamic", inputProps: renderRequestWithUrls as unknown as Record<string, unknown> }));
     const configuredComposition = {
       ...composition,
       width: request.plan.output.width,
@@ -85,7 +85,7 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
       durationInFrames: request.plan.output.durationFrames,
     };
     emit({ type: "progress", stage: "render", percent: 0 });
-    await renderMedia({
+    await withRemotionDiagnosticsOnStderr(() => renderMedia({
       composition: configuredComposition,
       serveUrl,
       codec: "h264",
@@ -94,7 +94,7 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
       outputLocation: temporaryOutput,
       inputProps: renderRequestWithUrls as unknown as Record<string, unknown>,
       onProgress: ({ progress }) => emit({ type: "progress", stage: "render", percent: Math.round(progress * 100) }),
-    });
+    }));
     const outputStats = await stat(temporaryOutput);
     if (outputStats.size <= 0) throw new RenderHostError("output_empty", "Render produced an empty file.");
     await rename(temporaryOutput, outputPath);
@@ -121,4 +121,14 @@ function formatIssues(issues: Array<{ code: string; path: string; message: strin
 function toRemotionBitrate(bitsPerSecond: number): string {
   if (bitsPerSecond % 1_000_000 === 0) return `${bitsPerSecond / 1_000_000}M`;
   return `${Math.ceil(bitsPerSecond / 1_000)}K`;
+}
+
+async function withRemotionDiagnosticsOnStderr<T>(operation: () => Promise<T>): Promise<T> {
+  const originalWrite = process.stdout.write;
+  process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
+  try {
+    return await operation();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
 }
