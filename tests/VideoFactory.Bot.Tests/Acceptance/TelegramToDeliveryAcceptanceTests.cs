@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Telegram;
 using VideoFactory.VideoProduction.Application.Analysis;
@@ -64,12 +65,30 @@ public sealed class TelegramToDeliveryAcceptanceTests
             $"root={fixture.Root}; stage={completed.Progress.Stage}; error={failedAttempt?.ErrorCode}; message={failedAttempt?.ErrorMessage}; process={fixture.Runner.LastRequest?.FileName} {string.Join(' ', fixture.Runner.LastRequest?.Arguments ?? [])}; stderr={fixture.Runner.LastResult?.StandardError}");
         Assert.Equal(ProductionStage.Delivery, completed.Progress.Stage);
         ArtifactRecord final = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "final-mp4", CancellationToken.None));
+        ArtifactRecord render = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "render-output", CancellationToken.None));
+        ArtifactRecord qa = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "qa-report", CancellationToken.None));
+        ArtifactRecord manifest = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "manifest", CancellationToken.None));
+        EditPlanRevision approvedPlan = Assert.IsType<EditPlanRevision>(await fixture.PlanRevisions.FindApprovedAsync(
+            fixture.JobId, completed.VariantId, CancellationToken.None));
         Assert.Single(fixture.Delivery.Files);
 
         string finalPath = Path.Combine(fixture.Root, final.RelativePath.Replace('/', Path.DirectorySeparatorChar));
         byte[] finalBytes = await File.ReadAllBytesAsync(finalPath);
         Assert.Equal(final.Sha256, Convert.ToHexStringLower(SHA256.HashData(finalBytes)));
         Assert.Equal(finalBytes, fixture.Delivery.Files.Single());
+
+        string manifestPath = Path.Combine(fixture.Root, manifest.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+        using JsonDocument manifestDocument = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
+        JsonElement manifestRoot = manifestDocument.RootElement;
+        Assert.Equal(fixture.JobId.ToString(), GetIdentifier(manifestRoot.GetProperty("jobId")));
+        Assert.Equal(completed.VariantId.ToString(), GetIdentifier(manifestRoot.GetProperty("variantId")));
+        Assert.Equal(approvedPlan.RevisionId.ToString(), GetIdentifier(manifestRoot.GetProperty("planRevisionId")));
+        Assert.Equal(approvedPlan.PlanHash, manifestRoot.GetProperty("planHash").GetString());
+        Assert.Equal(render.ArtifactId.ToString(), GetIdentifier(manifestRoot.GetProperty("render").GetProperty("artifactId")));
+        Assert.Equal(qa.ArtifactId.ToString(), GetIdentifier(manifestRoot.GetProperty("qa").GetProperty("artifactId")));
+        Assert.Equal(final.ArtifactId.ToString(), GetIdentifier(manifestRoot.GetProperty("final").GetProperty("artifactId")));
+        Assert.Equal(final.Sha256, manifestRoot.GetProperty("final").GetProperty("sha256").GetString());
+        Assert.Equal(finalBytes.LongLength, manifestRoot.GetProperty("final").GetProperty("sizeBytes").GetInt64());
 
         MediaProbeResult probe = await fixture.Probe.ProbeAsync(new ProbeRequest(finalPath, TimeSpan.FromMinutes(1), 65_536), CancellationToken.None);
         Assert.True(probe.IsSuccess, probe.ErrorMessage);
@@ -100,6 +119,13 @@ public sealed class TelegramToDeliveryAcceptanceTests
             $"stage={failed.Progress.Stage}; error={attempt?.ErrorCode}; message={attempt?.ErrorMessage}");
         Assert.Empty(fixture.Delivery.Files);
     }
+
+    private static string GetIdentifier(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString()!,
+        JsonValueKind.Object => element.GetProperty("value").GetGuid().ToString("N"),
+        _ => throw new Xunit.Sdk.XunitException($"Expected an identifier, received {element.ValueKind}.")
+    };
 
     private sealed class Fixture : IAsyncDisposable
     {
