@@ -25,3 +25,15 @@ public interface IJobEventStore
         JobId jobId,
         CancellationToken cancellationToken);
 }
+
+/// <summary>
+/// Передаёт сохранённое событие фоновому обработчику пользовательских уведомлений.
+/// </summary>
+public interface IJobEventSignal
+{
+    /// <summary>Добавляет событие в сигнал после его сохранения в SQLite.</summary>
+    void Publish(JobEventRecord eventRecord);
+
+    /// <summary>Читает новые события до отмены host.</summary>
+    IAsyncEnumerable<JobEventRecord> ReadAllAsync(CancellationToken cancellationToken);
+}

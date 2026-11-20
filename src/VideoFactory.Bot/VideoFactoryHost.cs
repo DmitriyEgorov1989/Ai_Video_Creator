@@ -28,6 +28,7 @@ using VideoFactory.VideoProduction.Infrastructure.Delivery;
 using VideoFactory.VideoProduction.Infrastructure.Planning;
 using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
+using VideoFactory.VideoProduction.Application.Events;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -184,7 +185,10 @@ public static class VideoFactoryHost
         builder.Services.AddSingleton<IJobWorkQueue>(services =>
             new SqliteJobWorkQueue(BuildConnectionString(services)));
          builder.Services.AddSingleton<IJobStateStore>(services =>
-             new SqliteJobStateStore(BuildConnectionString(services)));
+              new SqliteJobStateStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IJobEventStore>(services =>
+              new SqliteJobEventStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IJobEventSignal, InMemoryJobEventSignal>();
          builder.Services.AddSingleton<IJobCancellationStore>(services =>
              new SqliteJobCancellationStore(BuildConnectionString(services)));
          builder.Services.AddSingleton<IJobCancellationCoordinator, JobCancellationCoordinator>();
@@ -254,8 +258,13 @@ public static class VideoFactoryHost
                     MaxFileBytes = services.GetRequiredService<IOptions<LimitsOptions>>().Value.MaxInputFileBytes,
                     MaxDurationSeconds = services.GetRequiredService<IOptions<LimitsOptions>>().Value.MaxInputDurationSeconds
                 }));
-        builder.Services.AddSingleton<ITelegramResponder, TelegramBotResponder>();
-        builder.Services.AddSingleton<IVideoDelivery, TelegramVideoDelivery>();
+         builder.Services.AddSingleton<ITelegramResponder, TelegramBotResponder>();
+         builder.Services.AddSingleton<TelegramJobNotificationService>(services =>
+             new TelegramJobNotificationService(
+                 services.GetRequiredService<IOptions<TelegramOptions>>().Value,
+                 services.GetRequiredService<IJobStateStore>(),
+                 services.GetRequiredService<ITelegramResponder>()));
+         builder.Services.AddSingleton<IVideoDelivery, TelegramVideoDelivery>();
         builder.Services.AddSingleton<ICreateJobUseCase>(services =>
             new CreateJobUseCaseAdapter(
                 new CreateJobUseCase(
@@ -273,7 +282,8 @@ public static class VideoFactoryHost
                services.GetRequiredService<PlanningApprovalUseCase>(),
                services.GetRequiredService<CancelJobUseCase>(),
                services.GetRequiredService<RepeatDeliveryUseCase>()));
-        builder.Services.AddHostedService<TelegramPollingService>();
+         builder.Services.AddHostedService<TelegramPollingService>();
+         builder.Services.AddHostedService<TelegramJobNotificationWorker>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>
         {
             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;

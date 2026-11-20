@@ -1,3 +1,5 @@
+using System.Text.Json;
+using VideoFactory.VideoProduction.Application.Events;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
@@ -18,6 +20,8 @@ public sealed class SequentialJobProcessor
     private readonly IJobStageExecutor stageExecutor;
     private readonly IJobCancellationStore? cancellationStore;
     private readonly IJobCancellationCoordinator? cancellationCoordinator;
+    private readonly IJobEventStore? eventStore;
+    private readonly IJobEventSignal? eventSignal;
 
     /// <summary>
     /// Создаёт последовательный процессор Job.
@@ -28,7 +32,9 @@ public sealed class SequentialJobProcessor
         IStageAttemptStore attemptStore,
         IJobStageExecutor stageExecutor,
         IJobCancellationStore? cancellationStore = null,
-        IJobCancellationCoordinator? cancellationCoordinator = null)
+        IJobCancellationCoordinator? cancellationCoordinator = null,
+        IJobEventStore? eventStore = null,
+        IJobEventSignal? eventSignal = null)
     {
         this.workQueue = workQueue;
         this.stateStore = stateStore;
@@ -36,6 +42,8 @@ public sealed class SequentialJobProcessor
         this.stageExecutor = stageExecutor;
         this.cancellationStore = cancellationStore;
         this.cancellationCoordinator = cancellationCoordinator;
+        this.eventStore = eventStore;
+        this.eventSignal = eventSignal;
     }
 
     /// <summary>
@@ -199,57 +207,105 @@ public sealed class SequentialJobProcessor
         if (result.Kind == StageExecutionKind.Completed)
         {
             JobProgress nextProgress = JobStageTransitions.Complete(job.Progress);
-            await stateStore.TryTransitionAsync(
+            await PersistTransitionAsync(
                 job.JobId,
                 job.Progress.Status,
                 job.Progress.Stage,
                 nextProgress,
+                result,
                 persistenceToken);
         }
         else if (result.Kind == StageExecutionKind.WaitingForApproval)
         {
             if (job.Progress.Stage != ProductionStage.Planning)
             {
-                await stateStore.TryTransitionAsync(
+                await PersistTransitionAsync(
                     job.JobId,
                     job.Progress.Status,
                     job.Progress.Stage,
                     job.Progress.Fail(),
+                    result,
                     persistenceToken);
             }
             else
             {
-                await stateStore.TryTransitionAsync(
+                await PersistTransitionAsync(
                     job.JobId,
                     job.Progress.Status,
                     job.Progress.Stage,
                     job.Progress.AwaitCostApproval(),
+                    result,
                     persistenceToken);
             }
         }
         else if (result.Kind is StageExecutionKind.Permanent
             || (result.Kind == StageExecutionKind.Retryable && attemptNumber >= maxStageAttempts))
         {
-            await stateStore.TryTransitionAsync(
+            await PersistTransitionAsync(
                 job.JobId,
                 job.Progress.Status,
                 job.Progress.Stage,
                 job.Progress.Fail(),
+                result,
                 persistenceToken);
         }
         else if (result.Kind == StageExecutionKind.Cancelled
             && string.Equals(result.ErrorCode, "USER_CANCELLED", StringComparison.Ordinal))
         {
-            await stateStore.TryTransitionAsync(
+            await PersistTransitionAsync(
                 job.JobId,
                 job.Progress.Status,
                 job.Progress.Stage,
                 job.Progress.Cancel(),
+                result,
                 persistenceToken);
         }
 
         return true;
     }
+
+    private async Task PersistTransitionAsync(
+        VideoFactory.VideoProduction.Domain.Identifiers.JobId jobId,
+        JobStatus expectedStatus,
+        ProductionStage expectedStage,
+        JobProgress nextProgress,
+        StageExecutionResult result,
+        CancellationToken cancellationToken)
+    {
+        JobStateTransitionResult transition = await stateStore.TryTransitionAsync(
+            jobId,
+            expectedStatus,
+            expectedStage,
+            nextProgress,
+            cancellationToken);
+
+        if (transition is not JobStateTransitionResult.Applied applied
+            || eventStore is null)
+        {
+            return;
+        }
+
+        JobEventRecord eventRecord = new(
+            Guid.NewGuid(),
+            applied.Record.JobId,
+            applied.Record.VariantId,
+            GetEventType(applied.Record.Progress),
+            applied.Record.Progress.Stage,
+            JsonSerializer.Serialize(new { errorCode = result.ErrorCode }),
+            DateTimeOffset.UtcNow);
+        await eventStore.AppendAsync(eventRecord, cancellationToken);
+        eventSignal?.Publish(eventRecord);
+    }
+
+    private static string GetEventType(JobProgress progress) =>
+        progress.Status switch
+        {
+            JobStatus.Completed => "job.completed",
+            JobStatus.Failed => "job.failed",
+            JobStatus.Cancelled => "job.cancelled",
+            JobStatus.AwaitingConfirmation => "job.awaiting_confirmation",
+            _ => "job.stage_changed"
+        };
 
     private async Task RunHeartbeatAsync(
         VideoFactory.VideoProduction.Domain.Identifiers.JobId jobId,

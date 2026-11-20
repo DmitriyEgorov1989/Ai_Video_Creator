@@ -1,4 +1,5 @@
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Events;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Pipeline;
@@ -54,6 +55,29 @@ public sealed class SequentialJobProcessorTests
         Assert.Equal(ProductionStage.Analysis, stateStore.NextProgress?.Stage);
         Assert.Equal(JobStatus.Running, stateStore.NextProgress?.Status);
         Assert.Equal(StageAttemptStatus.Completed, attempts.Last?.Status);
+    }
+
+    [Fact]
+    public async Task AppliedTransitionIsRecordedAsNotificationEvent()
+    {
+        JobCreationRecord job = CreateJob();
+        FakeEventStore events = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            new AppliedStateStore(job),
+            new FakeAttemptStore(),
+            new FakeExecutor(StageExecutionResult.Success()),
+            eventStore: events);
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Equal("job.stage_changed", events.Last?.EventType);
+        Assert.Equal(ProductionStage.Analysis, events.Last?.Stage);
     }
 
     [Fact]
@@ -212,6 +236,34 @@ public sealed class SequentialJobProcessorTests
             return Task.FromResult<JobStateTransitionResult>(
                 new JobStateTransitionResult.NotFound());
         }
+    }
+
+    private sealed class AppliedStateStore(JobCreationRecord job) : IJobStateStore
+    {
+        public Task<JobCreationRecord?> GetAsync(JobId jobId, CancellationToken cancellationToken) =>
+            Task.FromResult<JobCreationRecord?>(job);
+
+        public Task<JobStateTransitionResult> TryTransitionAsync(
+            JobId jobId,
+            JobStatus expectedStatus,
+            ProductionStage expectedStage,
+            JobProgress nextProgress,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<JobStateTransitionResult>(new JobStateTransitionResult.Applied(job with { Progress = nextProgress }));
+    }
+
+    private sealed class FakeEventStore : IJobEventStore
+    {
+        public JobEventRecord? Last { get; private set; }
+
+        public Task AppendAsync(JobEventRecord eventRecord, CancellationToken cancellationToken)
+        {
+            Last = eventRecord;
+            return Task.CompletedTask;
+        }
+
+        public Task<IReadOnlyList<JobEventRecord>> GetAsync(JobId jobId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<JobEventRecord>>([]);
     }
 
     private sealed class FakeAttemptStore : IStageAttemptStore
