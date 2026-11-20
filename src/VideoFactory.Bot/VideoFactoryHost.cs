@@ -368,7 +368,8 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IVideoDelivery>(),
                 services.GetRequiredService<IDeliveryReceiptStore>(),
                 BuildWorkspaceRoot(services),
-                telegram.AllowedUserId);
+                telegram.AllowedUserId,
+                services.GetRequiredService<IEditPlanRevisionStore>());
         });
         builder.Services.AddSingleton<IJobStageExecutor>(services =>
             new ProductionStageExecutor(

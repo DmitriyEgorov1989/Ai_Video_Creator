@@ -2,9 +2,11 @@ using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Storage;
+using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Delivery;
 
@@ -16,9 +18,10 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
     private readonly string workspaceRoot;
     private readonly long recipientId;
     private readonly IDeliveryReceiptStore receiptStore;
+    private readonly IEditPlanRevisionStore? planStore;
 
     /// <summary>Создаёт исполнитель Delivery.</summary>
-    public DeliveryStageExecutor(IArtifactStore artifactStore, IVideoDelivery delivery, IDeliveryReceiptStore receiptStore, string workspaceRoot, long recipientId)
+    public DeliveryStageExecutor(IArtifactStore artifactStore, IVideoDelivery delivery, IDeliveryReceiptStore receiptStore, string workspaceRoot, long recipientId, IEditPlanRevisionStore? planStore = null)
     {
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.delivery = delivery ?? throw new ArgumentNullException(nameof(delivery));
@@ -26,6 +29,7 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
         if (recipientId <= 0) throw new ArgumentOutOfRangeException(nameof(recipientId));
         this.recipientId = recipientId;
+        this.planStore = planStore;
     }
 
     /// <inheritdoc />
@@ -57,6 +61,65 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
         if (manifest is null || manifest.ParentArtifactId != finalArtifact.ArtifactId || !File.Exists(ResolvePath(manifest.RelativePath)))
             return StageExecutionResult.Permanent("delivery.manifest_missing", "Finalization has not completed.");
 
+        try
+        {
+            string manifestPath = ResolvePath(manifest.RelativePath);
+            byte[] manifestBytes = await File.ReadAllBytesAsync(manifestPath, cancellationToken);
+            string manifestHash = Convert.ToHexString(SHA256.HashData(manifestBytes)).ToLowerInvariant();
+            if (manifest.SizeBytes != manifestBytes.LongLength || manifest.Sha256 != manifestHash)
+                return StageExecutionResult.Permanent("delivery.manifest_changed", "The delivery manifest changed after finalization.");
+
+            using JsonDocument document = JsonDocument.Parse(manifestBytes);
+            JsonElement root = document.RootElement;
+            ArtifactRecord? qa = await artifactStore.FindLatestAsync(job.JobId, "qa-report", cancellationToken);
+            ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
+            if (!MatchesId(root, "jobId", job.JobId.Value)
+                || !MatchesId(root, "variantId", job.VariantId.Value)
+                || !MatchesId(root, "finalArtifactId", finalArtifact.ArtifactId.Value))
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest does not identify this Job, Variant, or final artifact.");
+            if (qa is null || render is null)
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest inputs are missing.");
+            if (!MatchesId(root, "qaArtifactId", qa.ArtifactId.Value))
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest does not identify the QA artifact.");
+            if (!root.TryGetProperty("render", out JsonElement renderElement)
+                || !MatchesId(renderElement, "artifactId", render.ArtifactId.Value)
+                || !MatchesString(renderElement, "sha256", render.Sha256)
+                || !MatchesLong(renderElement, "sizeBytes", render.SizeBytes))
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest does not match the render artifact.");
+            if (!root.TryGetProperty("qa", out JsonElement qaElement)
+                || !MatchesId(qaElement, "artifactId", qa.ArtifactId.Value)
+                || !MatchesString(qaElement, "sha256", qa.Sha256)
+                || !MatchesLong(qaElement, "sizeBytes", qa.SizeBytes))
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest does not match the QA artifact.");
+            if (!root.TryGetProperty("final", out JsonElement final)
+                || !MatchesId(final, "artifactId", finalArtifact.ArtifactId.Value)
+                || !MatchesString(final, "sha256", finalArtifact.Sha256)
+                || !MatchesLong(final, "sizeBytes", finalArtifact.SizeBytes))
+                return StageExecutionResult.Permanent("delivery.manifest_mismatch", "The delivery manifest does not match the final artifact.");
+
+            if (planStore is not null)
+            {
+                if (job.CurrentApprovedEditPlanRevisionId is null
+                    || !MatchesId(root, "planRevisionId", job.CurrentApprovedEditPlanRevisionId.Value.Value)
+                    || !root.TryGetProperty("planHash", out JsonElement planHash)
+                    || planHash.ValueKind != JsonValueKind.String)
+                {
+                    return StageExecutionResult.Permanent("delivery.plan_mismatch", "The delivery manifest does not identify the approved edit plan.");
+                }
+
+                EditPlanRevision? approved = await planStore.FindApprovedAsync(job.JobId, job.VariantId, cancellationToken);
+                if (approved is null || approved.RevisionId != job.CurrentApprovedEditPlanRevisionId.Value
+                    || approved.PlanHash != planHash.GetString())
+                {
+                    return StageExecutionResult.Permanent("delivery.plan_mismatch", "The delivery manifest does not match the approved edit plan.");
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            return StageExecutionResult.Permanent("delivery.manifest_invalid", "The delivery manifest is invalid.");
+        }
+
         VideoDeliveryResult result = await delivery.SendAsync(
             new VideoDeliveryRequest(job.JobId, job.VariantId, path, "Готовый ролик", recipientId),
             cancellationToken);
@@ -81,4 +144,20 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
     {
         return SafeFileTree.Resolve(workspaceRoot, relativePath);
     }
+
+    private static bool MatchesId(JsonElement parent, string name, Guid expected) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(name, out JsonElement id)
+        && id.ValueKind == JsonValueKind.Object
+        && id.TryGetProperty("value", out JsonElement value)
+        && value.ValueKind == JsonValueKind.String
+        && value.TryGetGuid(out Guid actual) && actual == expected;
+
+    private static bool MatchesString(JsonElement parent, string name, string? expected) =>
+        expected is not null && parent.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.String && value.GetString() == expected;
+
+    private static bool MatchesLong(JsonElement parent, string name, long? expected) =>
+        expected is not null && parent.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long actual) && actual == expected.Value;
 }

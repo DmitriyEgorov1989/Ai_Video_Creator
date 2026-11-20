@@ -1,5 +1,6 @@
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
+using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
@@ -11,6 +12,34 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Reliability;
 
 public sealed class PackagingSafetyTests
 {
+    [Fact]
+    public async Task PackagingRejectsMissingApprovedPlanBeforePublishingManifest()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"packaging-plan-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            JobId jobId = JobId.New();
+            JobCreationRecord job = new(jobId, VariantId.New(),
+                new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast,
+                    new ProductionSettings(null, true, false)),
+                JobProgress.Restore(JobStatus.Running, ProductionStage.Packaging,
+                    ProductionMode.Fast, ProductionMode.Fast, null), RevisionId.New());
+            MemoryArtifacts artifacts = new(
+                new ArtifactRecord(ArtifactId.New(), "render-output", "render.mp4", "abc", 3, null, null, "test", jobId),
+                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", "abc", 3, null, null, "test", jobId));
+
+            StageExecutionResult result = await new PackagingStageExecutor(
+                artifacts, root, 1_000, null, null, new MissingPlanStore(), null, null, 0)
+                .ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal("packaging.plan_missing", result.ErrorCode);
+            Assert.DoesNotContain(artifacts.Records, record => record.ArtifactType == "manifest");
+            Assert.DoesNotContain(artifacts.Records, record => record.ArtifactType == "final-mp4");
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData("{\"status\":\"failed\"}", "packaging.qa_not_passed")]
     [InlineData("{\"status\":\"passed\"}", "packaging.qa_mismatch")]
@@ -122,5 +151,17 @@ public sealed class PackagingSafetyTests
     {
         public Task<StorageBudgetFailure?> CheckAsync(string directory, long bytes, CancellationToken token) =>
             Task.FromResult<StorageBudgetFailure?>(new("storage.insufficient_space", "Insufficient space."));
+    }
+
+    private sealed class MissingPlanStore : IEditPlanRevisionStore
+    {
+        public Task<EditPlanRevision?> FindApprovedAsync(JobId jobId, VariantId variantId, CancellationToken cancellationToken) =>
+            Task.FromResult<EditPlanRevision?>(null);
+        public Task<EditPlanRevision?> GetAsync(RevisionId revisionId, CancellationToken cancellationToken) =>
+            Task.FromResult<EditPlanRevision?>(null);
+        public Task<EditPlanRevision?> FindAsync(JobId jobId, VariantId variantId, string planHash, CancellationToken cancellationToken) =>
+            Task.FromResult<EditPlanRevision?>(null);
+        public Task<EditPlanRevision> SaveAsync(VideoFactory.VideoProduction.Domain.Editing.EditPlan plan, string planHash, decimal actualCostUsd, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 }

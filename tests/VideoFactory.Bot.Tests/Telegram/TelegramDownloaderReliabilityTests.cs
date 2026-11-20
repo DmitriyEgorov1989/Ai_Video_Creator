@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Security.Cryptography;
 using Telegram.Bot;
 using VideoFactory.Bot.Telegram;
 using VideoFactory.VideoProduction.Application.Media;
@@ -12,6 +13,31 @@ namespace VideoFactory.Bot.Tests.Telegram;
 
 public sealed class TelegramDownloaderReliabilityTests
 {
+    [Fact]
+    public async Task DeliverySendsBytesWhoseHashMatchesFinalArtifact()
+    {
+        string path = Path.GetTempFileName();
+        byte[] expected = [0, 1, 2, 255, 8, 13, 21];
+        try
+        {
+            await File.WriteAllBytesAsync(path, expected);
+            CaptureUpload transport = new();
+            using HttpClient http = new(transport);
+            TelegramVideoDelivery delivery = new(new TelegramBotClient(new TelegramBotClientOptions("123456:synthetic-token"), http));
+
+            VideoDeliveryResult result = await delivery.SendAsync(
+                new VideoDeliveryRequest(JobId.New(), VariantId.New(), path, "Готово", 123456),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess);
+            Assert.NotNull(transport.Body);
+            Assert.Equal(
+                Convert.ToHexString(SHA256.HashData(expected)).ToLowerInvariant(),
+                Convert.ToHexString(SHA256.HashData(transport.ExtractFileBytes(expected))).ToLowerInvariant());
+        }
+        finally { File.Delete(path); }
+    }
+
     [Fact]
     public async Task DeliveryPreservesTelegramApiErrorCodeAndMessage()
     {
@@ -34,6 +60,36 @@ public sealed class TelegramDownloaderReliabilityTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
             { Content = new StringContent("""{"ok":false,"error_code":403,"description":"original Telegram diagnostic"}""", Encoding.UTF8, "application/json") });
+    }
+
+    private sealed class CaptureUpload : HttpMessageHandler
+    {
+        public byte[]? Body { get; private set; }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            Body = await request.Content!.ReadAsByteArrayAsync(token);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"ok":true,"result":{"message_id":42}}""", Encoding.UTF8, "application/json")
+            };
+        }
+
+        public byte[] ExtractFileBytes(byte[] expected)
+        {
+            int start = FindSequence(Body!, expected);
+            Assert.True(start >= 0, "The Telegram multipart request did not contain the final MP4 bytes.");
+            return Body!.AsSpan(start, expected.Length).ToArray();
+        }
+
+        private static int FindSequence(byte[] haystack, byte[] needle)
+        {
+            for (int i = 0; i <= haystack.Length - needle.Length; i++)
+            {
+                if (haystack.AsSpan(i, needle.Length).SequenceEqual(needle)) return i;
+            }
+            return -1;
+        }
     }
 
     [Theory]

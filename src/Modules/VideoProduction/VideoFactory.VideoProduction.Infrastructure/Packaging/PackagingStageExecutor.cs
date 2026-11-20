@@ -82,8 +82,21 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             return StageExecutionResult.Retryable("packaging.input_missing", "A verified render output is not available yet.");
         }
 
+        EditPlanRevision? approvedRevision = null;
         try
         {
+            if (planStore is not null)
+            {
+                approvedRevision = job.CurrentApprovedEditPlanRevisionId is null
+                    ? null
+                    : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
+                if (approvedRevision is null
+                    || approvedRevision.JobId != job.JobId
+                    || approvedRevision.VariantId != job.VariantId)
+                {
+                    return StageExecutionResult.Permanent("packaging.plan_missing", "The approved edit plan was not found for this Job.");
+                }
+            }
             byte[] reportBytes = await File.ReadAllBytesAsync(ResolvePath(qa.RelativePath), cancellationToken);
             using JsonDocument report = JsonDocument.Parse(reportBytes);
             if (report.RootElement.ValueKind != JsonValueKind.Object
@@ -96,7 +109,11 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             if (!MatchesId(root, "jobId", job.JobId.Value)
                 || !MatchesId(root, "variantId", job.VariantId.Value)
                 || job.CurrentApprovedEditPlanRevisionId is null
-                || !MatchesId(root, "planRevisionId", job.CurrentApprovedEditPlanRevisionId.Value.Value)
+                 || !MatchesId(root, "planRevisionId", job.CurrentApprovedEditPlanRevisionId.Value.Value)
+                 || (approvedRevision is not null
+                     && (!root.TryGetProperty("planHash", out JsonElement planHash)
+                         || planHash.ValueKind != JsonValueKind.String
+                         || planHash.GetString() != approvedRevision.PlanHash))
                 || !root.TryGetProperty("output", out JsonElement output)
                 || !MatchesId(output, "artifactId", render.ArtifactId.Value)
                 || output.ValueKind != JsonValueKind.Object
@@ -262,11 +279,16 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     schemaVersion = 1,
                     jobId = job.JobId,
                     variantId = job.VariantId,
+                    planRevisionId = job.CurrentApprovedEditPlanRevisionId,
+                    planHash = approvedRevision?.PlanHash,
+                    render = new { artifactId = render.ArtifactId, sha256 = render.Sha256, sizeBytes = render.SizeBytes },
+                    qa = new { artifactId = qa.ArtifactId, sha256 = qa.Sha256, sizeBytes = qa.SizeBytes },
+                    final = new { artifactId = finalArtifact.ArtifactId, sha256 = hash, sizeBytes = finalFile.Length },
                     finalArtifactId = finalArtifact.ArtifactId,
                     qaArtifactId = qa.ArtifactId,
                     sha256 = hash,
                     sizeBytes = finalFile.Length
-                });
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             string manifestTemporary = temporaryPath + ".json";
             try
             {
@@ -297,7 +319,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     Path.GetRelativePath(workspaceRoot, manifestPath).Replace(Path.DirectorySeparatorChar, '/'),
                     manifestHash,
                     manifestFile.Length,
-                    null,
+                    manifestJson,
                     finalArtifact.ArtifactId,
                     "packaging/1",
                     job.JobId),

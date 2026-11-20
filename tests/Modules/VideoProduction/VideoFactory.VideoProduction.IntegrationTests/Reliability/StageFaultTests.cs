@@ -140,12 +140,12 @@ public sealed class StageFaultTests
             Assert.Equal(StageExecutionKind.Completed, (await verification.ExecuteAsync(recovered!, CancellationToken.None)).Kind);
             Assert.Equal(firstReport?.ArtifactId, (await artifacts.FindLatestAsync(created.JobId, "qa-report", CancellationToken.None))?.ArtifactId);
             JobCreationRecord packagingJob = recovered! with { Progress = JobProgress.Restore(JobStatus.Running, ProductionStage.Packaging, ProductionMode.Fast, ProductionMode.Fast, null) };
-            PackagingStageExecutor packaging = new(artifacts, root, 1000);
+            PackagingStageExecutor packaging = new(artifacts, root, 1000, null, null, plans, null, null, 0);
             Assert.Equal(StageExecutionKind.Completed, (await packaging.ExecuteAsync(packagingJob, CancellationToken.None)).Kind);
             Assert.Equal(StageExecutionKind.Completed, (await packaging.ExecuteAsync(packagingJob, CancellationToken.None)).Kind);
             await UpdateAsync("UPDATE jobs SET stage = $stage, heartbeat_at = '2000-01-01T00:00:00Z';", ("$stage", (int)ProductionStage.Delivery));
             Delivery transport = new();
-            DeliveryStageExecutor delivery = new(artifacts, transport, new SqliteDeliveryReceiptStore(cs), root, 123456);
+            DeliveryStageExecutor delivery = new(artifacts, transport, new SqliteDeliveryReceiptStore(cs), root, 123456, plans);
             SequentialJobProcessor DeliverProcessor() => new(new SqliteJobWorkQueue(cs), new SqliteJobStateStore(cs), new SqliteStageAttemptStore(cs), delivery);
             Assert.True(await DeliverProcessor().ProcessNextAsync("delivery-first", TimeSpan.FromSeconds(1), TimeSpan.FromHours(1), 3, CancellationToken.None));
             JobCreationRecord? waiting = await new SqliteJobStateStore(cs).GetAsync(created.JobId, CancellationToken.None);
