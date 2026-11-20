@@ -134,3 +134,30 @@ dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj `
 `TelegramUpdateHandler`, запускает последовательный processor и сохраняет
 байты fake Telegram delivery. Основной сценарий требует локальную модель
 Whisper; отрицательный сценарий повреждённого входа не отправляет MP4.
+
+## Реальная Telegram-приёмка
+
+Для проверки настоящего Bot API и согласованного LLM-провайдера используйте
+`scripts/Run-RealTelegramAcceptance.ps1`. Скрипт не принимает секреты в аргументах,
+не печатает их и сохраняет только технические метрики. Перед запуском задайте
+значения локально через environment variables или `.env`:
+
+```powershell
+$env:Telegram__BotToken = '<local secret>'
+$env:Telegram__AllowedUserId = '123456789'
+$env:AiApi__ApiKey = '<local secret>'
+$env:AiApi__Provider = 'deepseek'
+$env:AiApi__Model = 'deepseek-chat'
+$env:Whisper__PythonPath = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$env:WHISPER_MODEL_PATH = (Resolve-Path .\data\models\whisper-small).Path
+.\scripts\Run-RealTelegramAcceptance.ps1
+```
+
+После сообщения о запуске отправьте боту одно поддерживаемое видео и непустой
+комментарий с разрешённого пользователя. Скрипт отслеживает дерево `dotnet`,
+`node`, `python`, `ffmpeg` и `ffprobe`, а в
+`data/real-telegram-acceptance-report.json` сохраняет время, пиковую RAM,
+CPU-время и максимальный размер каталога `data`. Файл не содержит токенов,
+комментария, содержимого медиа или Telegram file ID. Стоимость LLM и хэши
+скачанного MP4 сверяются по SQLite, manifest и полученному файлу после
+завершения сценария и фиксируются в отчёте без секретов.
