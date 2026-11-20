@@ -58,7 +58,10 @@ public sealed class TelegramToDeliveryAcceptanceTests
         }
 
         JobCreationRecord completed = Assert.IsType<JobCreationRecord>(await fixture.State.GetAsync(fixture.JobId, CancellationToken.None));
-        Assert.Equal(JobStatus.Completed, completed.Progress.Status);
+        StageAttemptRecord? failedAttempt = await fixture.Attempts.GetLatestAsync(
+            fixture.JobId, completed.Progress.Stage, CancellationToken.None);
+        Assert.True(completed.Progress.Status == JobStatus.Completed,
+            $"root={fixture.Root}; stage={completed.Progress.Stage}; error={failedAttempt?.ErrorCode}; message={failedAttempt?.ErrorMessage}; process={fixture.Runner.LastRequest?.FileName} {string.Join(' ', fixture.Runner.LastRequest?.Arguments ?? [])}; stderr={fixture.Runner.LastResult?.StandardError}");
         Assert.Equal(ProductionStage.Delivery, completed.Progress.Stage);
         ArtifactRecord final = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "final-mp4", CancellationToken.None));
         Assert.Single(fixture.Delivery.Files);
@@ -84,11 +87,17 @@ public sealed class TelegramToDeliveryAcceptanceTests
         await using Fixture fixture = await Fixture.CreateAsync(source, "python");
         await fixture.SendTelegramInputAsync();
 
-        Assert.True(await fixture.Processor.ProcessNextAsync(
-            "acceptance-worker", TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(5), 3, CancellationToken.None));
+        for (int attemptNumber = 0; attemptNumber < 3; attemptNumber++)
+        {
+            Assert.True(await fixture.Processor.ProcessNextAsync(
+                "acceptance-worker", TimeSpan.FromMinutes(5), TimeSpan.FromSeconds(5), 3, CancellationToken.None));
+        }
 
         JobCreationRecord failed = Assert.IsType<JobCreationRecord>(await fixture.State.GetAsync(fixture.JobId, CancellationToken.None));
-        Assert.Equal(JobStatus.Failed, failed.Progress.Status);
+        StageAttemptRecord? attempt = await fixture.Attempts.GetLatestAsync(
+            fixture.JobId, failed.Progress.Stage, CancellationToken.None);
+        Assert.True(failed.Progress.Status == JobStatus.Failed,
+            $"stage={failed.Progress.Stage}; error={attempt?.ErrorCode}; message={attempt?.ErrorMessage}");
         Assert.Empty(fixture.Delivery.Files);
     }
 
@@ -99,7 +108,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
             Root = root;
             Source = source;
             ConnectionString = connectionString;
-            Runner = new SystemProcessRunner();
+            Runner = new RecordingProcessRunner();
             Probe = new FfprobeMediaProbe(Runner, "ffprobe");
             Decode = new FfmpegDecodeVerifier(Runner, "ffmpeg");
             Artifacts = new SqliteArtifactStore(connectionString);
@@ -141,7 +150,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
                 TimeSpan.FromMinutes(30), 65_536, 50_000_000, 48_000, "stereo", -16, -1,
                 new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), new PermissiveBudget());
 
-            OutputQualityOptionsProfile qualityProfile = new(1080, 1920, 1, true, "yuv420p", 50_000_000);
+            OutputQualityOptionsProfile qualityProfile = new(1080, 1920, 3, true, "yuv420p", 50_000_000);
             VerificationStageExecutor verification = new(
                 PlanRevisions, Artifacts,
                 new OutputQualityAssurance(Probe, Decode, TimeSpan.FromMinutes(1), 65_536), root, qualityProfile);
@@ -164,7 +173,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public string Source { get; }
         public string ConnectionString { get; }
         public JobId JobId { get; private set; }
-        public IProcessRunner Runner { get; }
+        public RecordingProcessRunner Runner { get; }
         public IMediaProbe Probe { get; }
         public IMediaDecodeVerifier Decode { get; }
         public SqliteArtifactStore Artifacts { get; }
@@ -222,6 +231,21 @@ public sealed class TelegramToDeliveryAcceptanceTests
     private sealed class PermissiveBudget : IStorageBudget
     {
         public Task<StorageBudgetFailure?> CheckAsync(string directory, long additionalBytes, CancellationToken cancellationToken) => Task.FromResult<StorageBudgetFailure?>(null);
+    }
+
+    private sealed class RecordingProcessRunner : IProcessRunner
+    {
+        private readonly SystemProcessRunner inner = new();
+
+        public ProcessStartRequest? LastRequest { get; private set; }
+        public ProcessExecutionResult? LastResult { get; private set; }
+
+        public async Task<ProcessExecutionResult> RunAsync(ProcessStartRequest request, CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            LastResult = await inner.RunAsync(request, cancellationToken);
+            return LastResult;
+        }
     }
 
     private sealed class FixtureDownloader(string root, string source) : ITelegramFileDownloader

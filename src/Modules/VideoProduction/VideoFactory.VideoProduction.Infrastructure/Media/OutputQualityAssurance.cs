@@ -98,7 +98,7 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
         }
 
         if (request.ExpectedPixelFormat is not null &&
-            !string.Equals(video.PixelFormat, request.ExpectedPixelFormat, StringComparison.OrdinalIgnoreCase))
+            !string.Equals(CanonicalPixelFormat(video.PixelFormat), CanonicalPixelFormat(request.ExpectedPixelFormat), StringComparison.OrdinalIgnoreCase))
         {
             return OutputQualityResult.Failed(
                 "media.pixel_format_mismatch",
@@ -130,4 +130,9 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
 
         return OutputQualityResult.Succeeded(video.Width, video.Height, durationFrames);
     }
+
+    private static string? CanonicalPixelFormat(string? pixelFormat) =>
+        string.Equals(pixelFormat, "yuvj420p", StringComparison.OrdinalIgnoreCase)
+            ? "yuv420p"
+            : pixelFormat;
 }

@@ -35,6 +35,28 @@ public sealed class SqliteJobWorkQueueTests
     }
 
     [Fact]
+    public async Task SameWorkerCanClaimItsRunningJobForTheNextStage()
+    {
+        await using TemporarySqliteDatabase database =
+            await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded created = await CreateJobAsync(database);
+        SqliteJobWorkQueue queue = new(database.ConnectionString);
+
+        Assert.NotNull(await queue.TryClaimNextAsync(
+            "worker-1",
+            TimeSpan.FromMinutes(1),
+            CancellationToken.None));
+
+        JobCreationRecord? continued = await queue.TryClaimNextAsync(
+            "worker-1",
+            TimeSpan.FromMinutes(1),
+            CancellationToken.None);
+
+        Assert.NotNull(continued);
+        Assert.Equal(created.JobId, continued.JobId);
+    }
+
+    [Fact]
     public async Task StaleRunningJobIsRecoveredWithSameVariantAndStage()
     {
         await using TemporarySqliteDatabase database =

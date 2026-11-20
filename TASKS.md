@@ -143,32 +143,32 @@ one source video + user comment
 
 ## 9. FFprobe и ограниченный входной профиль
 
-79. [ ] Добавить в диагностику запуск `ffmpeg -version` и `ffprobe -version` через process runner.
-80. [ ] Реализовать strongly typed FFprobe adapter на C#.
-81. [ ] Читать контейнер, кодеки, длительность в микросекундах, FPS, rotation, dimensions и аудиопотоки.
-82. [ ] Зафиксировать один поддерживаемый входной профиль MVP; неподдерживаемые контейнеры, codecs, HDR и экзотический SAR отклонять, а не нормализовать автоматически.
-83. [ ] Проверять фактические потоки файла, а не только MIME и расширение.
-84. [ ] Проверять размер в байтах и длительность в секундах по конфигурации.
-85. [ ] Создавать mezzanine с постоянным FPS только при VFR или rotation, не изменяя Original.
-86. [ ] Сохранять явное mapping Original -> Master.
-87. [ ] Создавать audio stem только при наличии полезного аудиопотока.
-88. [ ] Проверять mezzanine через FFprobe и полный decode.
-89. [ ] Добавить positive fixture поддерживаемого профиля и negative fixtures повреждённого и неподдерживаемого входа.
+79. [x] Добавить в диагностику запуск `ffmpeg -version` и `ffprobe -version` через process runner.
+80. [x] Реализовать strongly typed FFprobe adapter на C#.
+81. [x] Читать контейнер, кодеки, длительность в микросекундах, FPS, rotation, dimensions и аудиопотоки.
+82. [x] Зафиксировать один поддерживаемый входной профиль MVP; неподдерживаемые контейнеры, codecs, HDR и экзотический SAR отклонять, а не нормализовать автоматически.
+83. [x] Проверять фактические потоки файла, а не только MIME и расширение.
+84. [x] Проверять размер в байтах и длительность в секундах по конфигурации.
+85. [x] Создавать mezzanine с постоянным FPS только при VFR или rotation, не изменяя Original.
+86. [x] Сохранять явное mapping Original -> Master.
+87. [x] Создавать audio stem только при наличии полезного аудиопотока.
+88. [x] Проверять mezzanine через FFprobe и полный decode.
+89. [x] Добавить positive fixture поддерживаемого профиля и negative fixtures повреждённого и неподдерживаемого входа.
 
 Проверка этапа: probe и полный decode проходят для fixture MVP; неподдерживаемый файл завершается понятной ожидаемой ошибкой.
 
 ## 10. Минимальный анализ
 
-90. [ ] Определять наличие полезной речи до запуска Whisper.
-91. [ ] Запускать Whisper как изолированный worker через process runner только при наличии речи.
-92. [ ] Получать сегменты и word timestamps в versioned JSON.
-93. [ ] Не считать word timestamps frame-accurate и хранить их в Master microseconds.
-94. [ ] Находить тишину и окна речи через VAD или FFmpeg.
-95. [ ] Находить базовые границы сцен без object tracking и генеративной сегментации.
-96. [ ] Выделять Allowed Segments без разрыва слов и действий.
-97. [ ] Сохранять Analysis Result как неизменяемую ревизию Artifact.
-98. [ ] Пропускать Whisper для fixture без полезной речи.
-99. [ ] Добавить semantic-тесты mapping Original -> Master и границ Allowed Segments.
+90. [x] Определять наличие полезной речи до запуска Whisper.
+91. [x] Запускать Whisper как изолированный worker через process runner только при наличии речи.
+92. [x] Получать сегменты и word timestamps в versioned JSON.
+93. [x] Не считать word timestamps frame-accurate и хранить их в Master microseconds.
+94. [x] Находить тишину и окна речи через VAD или FFmpeg.
+95. [x] Находить базовые границы сцен без object tracking и генеративной сегментации.
+96. [x] Выделять Allowed Segments без разрыва слов и действий.
+97. [x] Сохранять Analysis Result как неизменяемую ревизию Artifact.
+98. [x] Пропускать Whisper для fixture без полезной речи.
+99. [x] Добавить semantic-тесты mapping Original -> Master и границ Allowed Segments.
 
 Проверка этапа: один fixture с речью и один без речи создают валидный Analysis Result; Whisper не вызывается без речи.
 
@@ -191,18 +191,18 @@ one source video + user comment
 
 ## 12. JSON-контракты и минимальный render-host
 
-112. [ ] Инициализировать минимальный TypeScript-проект в `render-host` после разрешения на версии Node.js, Remotion и React.
-113. [ ] Определить versioned JSON-контракты render request, edit plan и render events.
-114. [ ] Создать JSON Schema и зафиксировать имена полей и enum-значения.
-115. [ ] Настроить C# и TypeScript сериализацию на одинаковых positive и negative fixtures.
-116. [ ] Сделать validators устойчивыми к `null`, неизвестным enum и неинициализированным коллекциям без `NullReferenceException`.
-117. [ ] Реализовать `list-templates`, возвращающий единственный Template MVP.
-118. [ ] Реализовать `validate --job <request.json>` и `render --job <request.json>`.
-119. [ ] Выводить progress, completed и failed как JSON Lines в `stdout`, диагностику только в `stderr`.
-120. [ ] Возвращать ненулевой exit code для schema, semantic и render errors.
-121. [ ] Создать одну Remotion-композицию для video track и базовых captions.
-122. [ ] Использовать только локальные immutable fonts и assets; исключить `Math.random()` и сетевые запросы во время render.
-123. [ ] Добавить короткий smoke render из общего C#/TypeScript fixture.
+112. [x] Инициализировать минимальный TypeScript-проект в `render-host` после разрешения на версии Node.js, Remotion и React.
+113. [x] Определить versioned JSON-контракты render request, edit plan и render events.
+114. [x] Создать JSON Schema и зафиксировать имена полей и enum-значения.
+115. [x] Настроить C# и TypeScript сериализацию на одинаковых positive и negative fixtures.
+116. [x] Сделать validators устойчивыми к `null`, неизвестным enum и неинициализированным коллекциям без `NullReferenceException`.
+117. [x] Реализовать `list-templates`, возвращающий единственный Template MVP.
+118. [x] Реализовать `validate --job <request.json>` и `render --job <request.json>`.
+119. [x] Выводить progress, completed и failed как JSON Lines в `stdout`, диагностику только в `stderr`.
+120. [x] Возвращать ненулевой exit code для schema, semantic и render errors.
+121. [x] Создать одну Remotion-композицию для video track и базовых captions.
+122. [x] Использовать только локальные immutable fonts и assets; исключить `Math.random()` и сетевые запросы во время render.
+123. [x] Добавить короткий smoke render из общего C#/TypeScript fixture.
 
 Проверка этапа: одинаковые fixtures одинаково принимаются или отклоняются в .NET и TypeScript; smoke render создаёт временный MP4.
 
@@ -231,10 +231,10 @@ one source video + user comment
 139. [x] Сохранять machine-readable QA report и понятное пользовательское сообщение; только после успешного QA этап `Packaging` сохраняет manifest и атомарно публикует MP4 в `final`.
 140. [x] Определить максимальный размер Telegram-доставки в байтах по используемому Bot API и хранить его в конфигурации.
 141. [x] До render оценивать размер по duration и bitrate; перед отправкой проверять фактический размер.
-142. [ ] Выполнять не более одного контролируемого повторного encode при превышении лимита, не ухудшая результат ниже профиля MVP.
+142. [x] Выполнять не более одного контролируемого повторного encode при превышении лимита, не ухудшая результат ниже профиля MVP.
 143. [x] Отправлять только прошедший QA MP4 и итоговую сводку.
 144. [x] Помечать Job `Completed` только после подтверждённой доставки.
-145. [ ] Поддержать повторную доставку существующего MP4 без повторного render.
+145. [x] Поддержать повторную доставку существующего MP4 без повторного render.
 
 Проверка этапа: MP4 с ошибкой decode не отправляется; успешный MP4 доставляется один раз и может быть повторно отправлен без render.
 

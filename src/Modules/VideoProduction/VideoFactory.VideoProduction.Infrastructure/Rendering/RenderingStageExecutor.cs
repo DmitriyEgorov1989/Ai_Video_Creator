@@ -221,16 +221,26 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         }
 
         string requestJson = BuildRequestJson(job, revision.Plan, sourcePath, audioPath, outputPath, encodingProfile);
-        await File.WriteAllTextAsync(requestPath, requestJson, Encoding.UTF8, cancellationToken);
+        await File.WriteAllTextAsync(requestPath, requestJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken);
 
         RenderHostResult result = await renderHost.RenderAsync(
             new RenderHostRequest(requestPath, outputPath, renderTimeout, maxOutputBytes),
             cancellationToken);
         if (result.Kind != RenderHostResultKind.Succeeded)
         {
+            string message = result.ErrorMessage ?? "Render failed.";
+            if (!string.IsNullOrWhiteSpace(result.StandardError))
+            {
+                message = $"{message}{Environment.NewLine}{result.StandardError}";
+            }
+            if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+            {
+                message = $"{message}{Environment.NewLine}stdout:{Environment.NewLine}{result.StandardOutput}";
+            }
+
             return result.ErrorCode == "process.cancelled"
-                ? StageExecutionResult.Cancelled(result.ErrorCode, result.ErrorMessage)
-                : StageExecutionResult.Retryable(result.ErrorCode ?? "render.failed", result.ErrorMessage ?? "Render failed.");
+                ? StageExecutionResult.Cancelled(result.ErrorCode, message)
+                : StageExecutionResult.Retryable(result.ErrorCode ?? "render.failed", message);
         }
 
         ArtifactId artifactId = ArtifactId.New();
@@ -306,7 +316,12 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                         segmentId = clip.SegmentId.ToString(),
                         mapping = new { },
                         output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
-                        crop = clip.Crop.ToString().ToLowerInvariant()
+                        crop = clip.Crop switch
+                        {
+                            CropPreset.Fit => "fit",
+                            CropPreset.CenterCrop => "centerCrop",
+                            _ => throw new InvalidOperationException($"Unsupported crop preset '{clip.Crop}'.")
+                        }
                     })
                 },
                 audio = new

@@ -56,12 +56,13 @@ public sealed class SqliteJobWorkQueue : IJobWorkQueue
             SELECT job_id
             FROM jobs
             WHERE status = $queuedStatus
-               OR (status = $runningStatus AND
-                   (heartbeat_at IS NULL OR heartbeat_at < $staleBefore))
+             OR (status = $runningStatus AND
+                   (lease_owner = $workerId OR heartbeat_at IS NULL OR heartbeat_at < $staleBefore))
             ORDER BY created_at;
             """;
         select.Parameters.AddWithValue("$queuedStatus", (int)JobStatus.Queued);
         select.Parameters.AddWithValue("$runningStatus", (int)JobStatus.Running);
+        select.Parameters.AddWithValue("$workerId", workerId);
         select.Parameters.AddWithValue("$staleBefore", staleBefore.ToString("O"));
 
         string? jobId = null;
@@ -92,8 +93,8 @@ public sealed class SqliteJobWorkQueue : IJobWorkQueue
             WHERE job_id = $jobId
               AND (
                   status = $queuedStatus
-                  OR (status = $runningStatus AND
-                      (heartbeat_at IS NULL OR heartbeat_at < $staleBefore))
+                   OR (status = $runningStatus AND
+                       (lease_owner = $workerId OR heartbeat_at IS NULL OR heartbeat_at < $staleBefore))
               );
             """;
         update.Parameters.AddWithValue("$queuedStatus", (int)JobStatus.Queued);

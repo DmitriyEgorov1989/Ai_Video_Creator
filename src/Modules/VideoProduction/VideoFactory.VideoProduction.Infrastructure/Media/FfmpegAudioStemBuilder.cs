@@ -44,7 +44,7 @@ public sealed class FfmpegAudioStemBuilder : IAudioStemBuilder
         Directory.CreateDirectory(directory);
         string temporaryPath = Path.Combine(
             directory,
-            $".{Path.GetFileName(request.OutputPath)}.{Guid.NewGuid():N}.tmp");
+            $".{Path.GetFileNameWithoutExtension(request.OutputPath)}.{Guid.NewGuid():N}.tmp{Path.GetExtension(request.OutputPath)}");
 
         try
         {

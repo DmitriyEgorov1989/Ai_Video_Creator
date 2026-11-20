@@ -89,6 +89,7 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
       composition: configuredComposition,
       serveUrl,
       codec: "h264",
+      pixelFormat: "yuv420p",
       videoBitrate: toRemotionBitrate(request.encoding.videoBitrateBitsPerSecond),
       audioBitrate: toRemotionBitrate(request.encoding.audioBitrateBitsPerSecond),
       outputLocation: temporaryOutput,

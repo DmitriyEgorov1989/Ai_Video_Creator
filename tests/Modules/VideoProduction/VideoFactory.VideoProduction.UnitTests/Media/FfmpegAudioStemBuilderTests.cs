@@ -67,6 +67,7 @@ public sealed class FfmpegAudioStemBuilderTests
             Assert.Contains("48000", runner.Request.Arguments);
             Assert.Contains("-channel_layout", runner.Request.Arguments);
             Assert.Contains("stereo", runner.Request.Arguments);
+            Assert.EndsWith(".m4a", runner.Request.Arguments[^1], StringComparison.OrdinalIgnoreCase);
         }
         finally
         {

@@ -69,7 +69,32 @@ public sealed class OutputQualityAssuranceTests
         }
     }
 
-    private static MediaMetadata CreateMetadata() => new(
+    [Fact]
+    public async Task AcceptsDeprecatedYuvj420pAliasForConfiguredYuv420pProfile()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, [1]);
+            OutputQualityAssurance qa = new(
+                new FakeProbe(CreateMetadata("yuvj420p")),
+                new FakeDecode(MediaDecodeResult.Succeeded()),
+                TimeSpan.FromSeconds(5),
+                65_536);
+
+            OutputQualityResult result = await qa.VerifyAsync(
+                new OutputQualityRequest(path, 1080, 1920, new FrameRate(30, 1), 900, 1, true, "yuv420p"),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.ErrorMessage);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static MediaMetadata CreateMetadata(string? pixelFormat = null) => new(
         "mov,mp4,m4a",
         30_000_000,
         ImmutableArray.Create(new VideoStreamMetadata(
@@ -79,7 +104,7 @@ public sealed class OutputQualityAssuranceTests
             1920,
             new FrameRate(30, 1),
             false,
-            null)),
+            null, null, null, pixelFormat)),
         ImmutableArray.Create(new AudioStreamMetadata(1, "aac", 48_000, 2)));
 
     private sealed class FakeProbe(MediaMetadata metadata) : IMediaProbe
