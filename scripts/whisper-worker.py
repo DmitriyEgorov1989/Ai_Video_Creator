@@ -8,9 +8,6 @@ from pathlib import Path
 import sys
 
 
-WORD_BOUNDARY_TOLERANCE_MICROSECONDS = 100_000
-
-
 def transcribe(source, duration_microseconds):
     # Импорт и ленивый генератор библиотеки могут писать диагностику в stdout.
     with redirect_stdout(sys.stderr):
@@ -42,8 +39,20 @@ def transcribe(source, duration_microseconds):
             for segment in segments
         ]
         for segment in document:
+            segment["words"] = [
+                word for word in segment["words"]
+                if word["startMicroseconds"] != word["endMicroseconds"]
+            ]
             if not segment["text"] or not segment["words"]:
                 raise ValueError("Speech segment must contain text and word timings.")
+            segment["startMicroseconds"] = min(
+                segment["startMicroseconds"],
+                min(word["startMicroseconds"] for word in segment["words"]),
+            )
+            segment["endMicroseconds"] = max(
+                segment["endMicroseconds"],
+                max(word["endMicroseconds"] for word in segment["words"]),
+            )
             start = segment["startMicroseconds"]
             end = segment["endMicroseconds"]
             if not 0 <= start < end <= duration_microseconds:
@@ -51,10 +60,6 @@ def transcribe(source, duration_microseconds):
             for word in segment["words"]:
                 if not word["text"]:
                     raise ValueError("Word text cannot be empty.")
-                if start - word["startMicroseconds"] <= WORD_BOUNDARY_TOLERANCE_MICROSECONDS:
-                    word["startMicroseconds"] = max(start, word["startMicroseconds"])
-                if word["endMicroseconds"] - end <= WORD_BOUNDARY_TOLERANCE_MICROSECONDS:
-                    word["endMicroseconds"] = min(end, word["endMicroseconds"])
                 if not start <= word["startMicroseconds"] < word["endMicroseconds"] <= end:
                     raise ValueError("Word interval is outside its segment or empty.")
         return document

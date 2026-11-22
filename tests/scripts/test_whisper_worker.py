@@ -83,7 +83,7 @@ class WhisperModel:
     def test_rejects_invalid_master_intervals_without_publishing_json(self):
         for start, end, word_start, word_end in [
             (-0.1, 3, 1, 2), (1, 26, 1, 2), (2, 2, 2, 2),
-            (1, 3, 0.5, 2), (1, 3, 2, 3.5), (1, 3, 2, 2),
+            (1, 3, -0.5, 2), (1, 3, 2, 25.5), (1, 3, 2, 1),
         ]:
             with self.subTest(interval=(start, end, word_start, word_end)):
                 result = self.run_worker(f'''
@@ -99,24 +99,43 @@ class WhisperModel:
                 self.assertEqual("", result.stdout)
                 self.assertIn("whisper.failed: ValueError:", result.stderr)
 
-    def test_clamps_small_word_boundary_rounding_error_to_segment(self):
+    def test_expands_segment_to_preserve_word_boundaries(self):
         result = self.run_worker('''
 from types import SimpleNamespace as Item
 class WhisperModel:
     def __init__(self, *args, **kwargs):
         pass
     def transcribe(self, *args, **kwargs):
-        word = Item(word=" word", start=0.99995, end=3.00005)
+        word = Item(word=" word", start=0.68, end=3.32)
         return iter([Item(text=" word", start=1, end=3, words=[word])]), None
 ''')
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
-            {"text": "word", "startMicroseconds": 1_000_000,
-             "endMicroseconds": 3_000_000,
-             "words": [{"text": "word", "startMicroseconds": 1_000_000,
-                        "endMicroseconds": 3_000_000}]},
+            {"text": "word", "startMicroseconds": 680_000,
+             "endMicroseconds": 3_320_000,
+             "words": [{"text": "word", "startMicroseconds": 680_000,
+                        "endMicroseconds": 3_320_000}]},
             json.loads(result.stdout)["segments"][0],
+        )
+
+    def test_drops_zero_duration_word_when_segment_keeps_valid_timing(self):
+        result = self.run_worker('''
+from types import SimpleNamespace as Item
+class WhisperModel:
+    def __init__(self, *args, **kwargs):
+        pass
+    def transcribe(self, *args, **kwargs):
+        words = [Item(word=" valid", start=1, end=2),
+                 Item(word=" boundary", start=2, end=2)]
+        return iter([Item(text=" valid boundary", start=1, end=2, words=words)]), None
+''')
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            [{"text": "valid", "startMicroseconds": 1_000_000,
+              "endMicroseconds": 2_000_000}],
+            json.loads(result.stdout)["segments"][0]["words"],
         )
 
     def test_rejects_missing_word_timings_and_empty_text(self):
