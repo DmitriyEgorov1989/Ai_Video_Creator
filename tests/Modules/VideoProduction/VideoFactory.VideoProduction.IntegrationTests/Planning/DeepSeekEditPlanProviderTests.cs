@@ -51,6 +51,11 @@ public sealed class DeepSeekEditPlanProviderTests
         Assert.Contains("/chat/completions", handler.Request.RequestUri!.ToString());
         Assert.DoesNotContain("/var/", handler.Body, StringComparison.Ordinal);
         using JsonDocument request = JsonDocument.Parse(handler.Body);
+        string systemContent = request.RootElement
+            .GetProperty("messages")[0]
+            .GetProperty("content")
+            .GetString()!;
+        Assert.Contains("\"output\":{\"startFrame\":0,\"endFrame\":30}", systemContent, StringComparison.Ordinal);
         string userContent = request.RootElement
             .GetProperty("messages")[1]
             .GetProperty("content")

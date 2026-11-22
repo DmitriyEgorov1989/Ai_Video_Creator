@@ -246,8 +246,12 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
     private static string BuildSystemInstruction() =>
         "Return JSON only. Select video clips only from the supplied allowedSegments. " +
         "Do not invent files, assets, segment IDs, timestamps, templates, or operations. " +
-        "Use schemaVersion 1, crop Fit or CenterCrop, and output frame ranges. " +
-        "The response must contain schemaVersion, seed, videoClips, and captions.";
+        "Use schemaVersion 1, crop Fit or CenterCrop, and integer output frame ranges. " +
+        "Return exactly this shape with no null fields: " +
+        "{\"schemaVersion\":1,\"seed\":123,\"videoClips\":[{\"segmentId\":\"known-id\"," +
+        "\"output\":{\"startFrame\":0,\"endFrame\":30},\"crop\":\"Fit\"}]," +
+        "\"captions\":[{\"text\":\"caption\",\"output\":{\"startFrame\":0,\"endFrame\":30}}]}. " +
+        "Use an empty captions array when captions are disabled.";
 
     private static string BuildUserData(ProviderPlanningRequest request) =>
         JsonSerializer.Serialize(new
