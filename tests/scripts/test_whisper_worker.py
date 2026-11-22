@@ -99,6 +99,26 @@ class WhisperModel:
                 self.assertEqual("", result.stdout)
                 self.assertIn("whisper.failed: ValueError:", result.stderr)
 
+    def test_clamps_small_word_boundary_rounding_error_to_segment(self):
+        result = self.run_worker('''
+from types import SimpleNamespace as Item
+class WhisperModel:
+    def __init__(self, *args, **kwargs):
+        pass
+    def transcribe(self, *args, **kwargs):
+        word = Item(word=" word", start=0.99995, end=3.00005)
+        return iter([Item(text=" word", start=1, end=3, words=[word])]), None
+''')
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            {"text": "word", "startMicroseconds": 1_000_000,
+             "endMicroseconds": 3_000_000,
+             "words": [{"text": "word", "startMicroseconds": 1_000_000,
+                        "endMicroseconds": 3_000_000}]},
+            json.loads(result.stdout)["segments"][0],
+        )
+
     def test_rejects_missing_word_timings_and_empty_text(self):
         for text, words in [(" ", "[]"), ("speech", "None"), ("speech", "[]"),
                             ("speech", '[Item(word=" ", start=1, end=2)]')]:

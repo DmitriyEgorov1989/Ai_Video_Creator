@@ -8,6 +8,9 @@ from pathlib import Path
 import sys
 
 
+WORD_BOUNDARY_TOLERANCE_MICROSECONDS = 100_000
+
+
 def transcribe(source, duration_microseconds):
     # Импорт и ленивый генератор библиотеки могут писать диагностику в stdout.
     with redirect_stdout(sys.stderr):
@@ -48,6 +51,10 @@ def transcribe(source, duration_microseconds):
             for word in segment["words"]:
                 if not word["text"]:
                     raise ValueError("Word text cannot be empty.")
+                if start - word["startMicroseconds"] <= WORD_BOUNDARY_TOLERANCE_MICROSECONDS:
+                    word["startMicroseconds"] = max(start, word["startMicroseconds"])
+                if word["endMicroseconds"] - end <= WORD_BOUNDARY_TOLERANCE_MICROSECONDS:
+                    word["endMicroseconds"] = min(end, word["endMicroseconds"])
                 if not start <= word["startMicroseconds"] < word["endMicroseconds"] <= end:
                     raise ValueError("Word interval is outside its segment or empty.")
         return document
