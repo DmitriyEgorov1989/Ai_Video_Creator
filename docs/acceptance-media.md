@@ -140,7 +140,18 @@ Whisper; отрицательный сценарий повреждённого 
 Для проверки настоящего Bot API и согласованного LLM-провайдера используйте
 `scripts/Run-RealTelegramAcceptance.ps1`. Скрипт не принимает секреты в аргументах,
 не печатает их и сохраняет только технические метрики. Перед запуском задайте
-значения локально через environment variables или `.env`:
+значения локально через environment variables или `.env`. Начните с безопасного
+шаблона:
+
+```powershell
+Copy-Item .\.env.example .\.env
+notepad .\.env
+```
+
+В `.env` укажите токен, разрешённый user ID, провайдера, ключ и модель. Реальные
+значения не должны попадать в Git. `WHISPER__PythonPath` и
+`WHISPER_MODEL_PATH` задаются в текущей PowerShell-сессии, потому что второй
+параметр читает дочерний Python-процесс напрямую:
 
 ```powershell
 $env:Telegram__BotToken = '<local secret>'

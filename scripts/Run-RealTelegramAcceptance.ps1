@@ -14,6 +14,30 @@ function Require-EnvironmentVariable([string] $Name) {
     return $value
 }
 
+$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+
+function Test-DotEnvKey([string] $Name) {
+    $path = Join-Path $root '.env'
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    $normalizedName = $Name.Replace('__', ':')
+    foreach ($line in Get-Content -LiteralPath $path) {
+        $candidate = $line.Trim()
+        if ($candidate.StartsWith('#') -or $candidate -notmatch '=') { continue }
+        $key = $candidate.Substring(0, $candidate.IndexOf('=')).Trim().Replace('__', ':')
+        if ($key -eq $normalizedName) {
+            return -not [string]::IsNullOrWhiteSpace($candidate.Substring($candidate.IndexOf('=') + 1).Trim())
+        }
+    }
+    return $false
+}
+
+function Require-ConfiguredValue([string] $Name) {
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if (-not [string]::IsNullOrWhiteSpace($value)) { return $value }
+    if (Test-DotEnvKey $Name) { return '<configured in .env>' }
+    throw "Required configuration is missing: $Name"
+}
+
 function Get-ProcessTreeIds([int] $RootId) {
     $all = @(Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId)
     $ids = [Collections.Generic.HashSet[int]]::new()
@@ -52,9 +76,11 @@ function Get-DirectoryBytes([string] $Path) {
     return [long]($sum.Sum | ForEach-Object { if ($null -eq $_) { 0 } else { $_ } })
 }
 
-$null = Require-EnvironmentVariable 'Telegram__BotToken'
-$allowedUserId = Require-EnvironmentVariable 'Telegram__AllowedUserId'
-$null = Require-EnvironmentVariable 'AiApi__ApiKey'
+$null = Require-ConfiguredValue 'Telegram__BotToken'
+$allowedUserId = Require-ConfiguredValue 'Telegram__AllowedUserId'
+$null = Require-ConfiguredValue 'AiApi__Provider'
+$null = Require-ConfiguredValue 'AiApi__ApiKey'
+$null = Require-ConfiguredValue 'AiApi__Model'
 $pythonPath = Require-EnvironmentVariable 'Whisper__PythonPath'
 $modelPath = Require-EnvironmentVariable 'WHISPER_MODEL_PATH'
 
@@ -62,7 +88,6 @@ if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw "Whisper P
 if (-not (Test-Path -LiteralPath $modelPath -PathType Container)) { throw "Whisper model directory was not found." }
 if ($TimeoutSeconds -le 0) { throw 'TimeoutSeconds must be positive.' }
 
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $report = [IO.Path]::GetFullPath((Join-Path $root $ReportPath))
 $reportParent = Split-Path -Parent $report
 $null = New-Item -ItemType Directory -Force -Path $reportParent
