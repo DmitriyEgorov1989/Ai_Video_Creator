@@ -63,7 +63,9 @@ function Get-TreeMetrics([int] $RootId) {
             $workingSet += [long]$process.WorkingSet64
             $cpuSeconds += [double]$process.CPU
         }
-        catch [System.ArgumentException] {
+        catch {
+            # Процесс может завершиться между снимком дерева и Get-Process.
+            # Потеря одного дочернего процесса не должна прерывать приёмку.
         }
     }
     return [pscustomobject]@{ WorkingSetBytes = $workingSet; CpuSeconds = $cpuSeconds }
