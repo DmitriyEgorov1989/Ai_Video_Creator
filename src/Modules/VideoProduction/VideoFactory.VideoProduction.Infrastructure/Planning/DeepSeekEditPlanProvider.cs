@@ -163,7 +163,7 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
                 actualCostUsd);
         }
 
-        string? content = choice.Message.Content;
+        string? content = choice.Message?.Content;
         if (string.IsNullOrWhiteSpace(content))
         {
             throw new PlanningProviderException(
@@ -187,14 +187,16 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
 
         try
         {
+            if (plan.VideoClips is null || plan.Captions is null)
+            {
+                throw new FormatException("The provider omitted a required plan collection.");
+            }
+
             return new ProviderPlanResponse(
                 plan.SchemaVersion,
                 plan.Seed,
                 plan.VideoClips.Select(MapVideoClip).ToImmutableArray(),
-                plan.Captions.Select(caption => new ProviderCaption(
-                    caption.Text,
-                    new OutputRange(caption.Output.StartFrame, caption.Output.EndFrame)))
-                    .ToImmutableArray(),
+                plan.Captions.Select(MapCaption).ToImmutableArray(),
                 actualCostUsd);
         }
         catch (Exception exception) when (exception is ArgumentException or FormatException)
@@ -206,8 +208,13 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
         }
     }
 
-    private static ProviderVideoClip MapVideoClip(DeepSeekVideoClip clip)
+    private static ProviderVideoClip MapVideoClip(DeepSeekVideoClip? clip)
     {
+        if (clip?.Output is null)
+        {
+            throw new FormatException("The provider omitted a required video clip value.");
+        }
+
         if (!Guid.TryParse(clip.SegmentId, out Guid segmentGuid))
         {
             throw new FormatException("The provider returned an invalid segment ID.");
@@ -222,6 +229,18 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
             new SegmentId(segmentGuid),
             new OutputRange(clip.Output.StartFrame, clip.Output.EndFrame),
             crop);
+    }
+
+    private static ProviderCaption MapCaption(DeepSeekCaption? caption)
+    {
+        if (caption?.Output is null || string.IsNullOrWhiteSpace(caption.Text))
+        {
+            throw new FormatException("The provider omitted a required caption value.");
+        }
+
+        return new ProviderCaption(
+            caption.Text,
+            new OutputRange(caption.Output.StartFrame, caption.Output.EndFrame));
     }
 
     private static string BuildSystemInstruction() =>
@@ -273,7 +292,7 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
         DeepSeekUsage? Usage);
 
     private sealed record DeepSeekChoice(
-        DeepSeekMessage Message,
+        DeepSeekMessage? Message,
         [property: JsonPropertyName("finish_reason")] string? FinishReason);
 
     private sealed class DeepSeekUsage
@@ -294,15 +313,15 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
     private sealed record DeepSeekPlanDocument(
         int SchemaVersion,
         int Seed,
-        IReadOnlyList<DeepSeekVideoClip> VideoClips,
-        IReadOnlyList<DeepSeekCaption> Captions);
+        IReadOnlyList<DeepSeekVideoClip?>? VideoClips,
+        IReadOnlyList<DeepSeekCaption?>? Captions);
 
     private sealed record DeepSeekVideoClip(
-        string SegmentId,
-        DeepSeekOutputRange Output,
-        string Crop);
+        string? SegmentId,
+        DeepSeekOutputRange? Output,
+        string? Crop);
 
-    private sealed record DeepSeekCaption(string Text, DeepSeekOutputRange Output);
+    private sealed record DeepSeekCaption(string? Text, DeepSeekOutputRange? Output);
 
     private sealed record DeepSeekOutputRange(int StartFrame, int EndFrame);
 }

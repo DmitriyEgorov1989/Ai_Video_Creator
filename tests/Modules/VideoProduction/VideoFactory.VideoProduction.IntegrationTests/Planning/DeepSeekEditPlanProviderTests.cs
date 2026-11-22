@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
@@ -94,6 +95,27 @@ public sealed class DeepSeekEditPlanProviderTests
             CancellationToken.None));
 
         Assert.Contains("invalid JSON", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RejectsNullRequiredPlanMemberAsProviderError()
+    {
+        SegmentId segmentId = SegmentId.New();
+        JsonNode response = JsonNode.Parse(JsonResponse(segmentId))!;
+        JsonNode plan = JsonNode.Parse(response["choices"]![0]!["message"]!["content"]!.GetValue<string>())!;
+        plan["videoClips"]![0]!["output"] = null;
+        response["choices"]![0]!["message"]!["content"] = plan.ToJsonString();
+        CapturingHandler handler = new(response.ToJsonString());
+        using HttpClient client = new(handler) { BaseAddress = new Uri("https://api.deepseek.test/") };
+        DeepSeekEditPlanProvider provider = new(client, new DeepSeekProviderOptions { ApiKey = "test-key" });
+
+        PlanningProviderException exception = await Assert.ThrowsAsync<PlanningProviderException>(() =>
+            provider.CreatePlanAsync(
+                new ProviderPlanningRequest(null, EditTempo.Dynamic, null, false,
+                    [new ProviderSegment(segmentId, 2_000_000)]),
+                CancellationToken.None));
+
+        Assert.Contains("invalid values", exception.Message, StringComparison.Ordinal);
     }
 
     private static string JsonResponse(SegmentId segmentId) => JsonSerializer.Serialize(new
