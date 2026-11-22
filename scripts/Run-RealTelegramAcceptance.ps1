@@ -93,8 +93,9 @@ if ($TimeoutSeconds -le 0) { throw 'TimeoutSeconds must be positive.' }
 $report = [IO.Path]::GetFullPath((Join-Path $root $ReportPath))
 $reportParent = Split-Path -Parent $report
 $null = New-Item -ItemType Directory -Force -Path $reportParent
-$stdoutPath = Join-Path ([IO.Path]::GetTempPath()) "video-factory-real-telegram-$([Guid]::NewGuid().ToString('N')).out.log"
-$stderrPath = Join-Path ([IO.Path]::GetTempPath()) "video-factory-real-telegram-$([Guid]::NewGuid().ToString('N')).err.log"
+$stdoutPath = [IO.Path]::ChangeExtension($report, '.host.out.log')
+$stderrPath = [IO.Path]::ChangeExtension($report, '.host.err.log')
+Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 $dataRoot = Join-Path $root 'data'
 $startedAt = [DateTimeOffset]::UtcNow
 $start = [Diagnostics.Stopwatch]::StartNew()
@@ -122,6 +123,7 @@ try {
         $exitCode = 'timeout'
     }
     else {
+        $process.WaitForExit()
         $process.Refresh()
         $exitCode = $process.ExitCode
     }
@@ -153,6 +155,6 @@ finally {
         note = 'This report contains no tokens, API keys, comments, media contents or Telegram file identifiers.'
     }
     [IO.File]::WriteAllText($report, ($result | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
-    Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
     Write-Host "Acceptance metrics written to $report"
+    Write-Host "Host logs written to $stdoutPath and $stderrPath"
 }
