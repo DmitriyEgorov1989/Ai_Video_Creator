@@ -79,7 +79,7 @@ public static class VideoFactoryHost
             return new RenderHostProcessAdapter(
                 services.GetRequiredService<IProcessRunner>(),
                 remotion.NodePath,
-                remotion.RenderHostPath);
+                Path.GetFullPath(Path.Combine(BuildWorkspaceRoot(services), remotion.RenderHostPath)));
         });
         builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
         builder.Services.AddSingleton<HttpClient>();
