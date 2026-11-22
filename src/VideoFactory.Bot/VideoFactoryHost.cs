@@ -126,7 +126,7 @@ public static class VideoFactoryHost
             return new WhisperProcessTranscriber(
                 services.GetRequiredService<IProcessRunner>(),
                 whisper.PythonPath,
-                whisper.WorkerPath,
+                Path.GetFullPath(Path.Combine(BuildWorkspaceRoot(services), whisper.WorkerPath)),
                 TimeSpan.FromSeconds(timeouts.NormalizeSeconds),
                 timeouts.MaxOutputBytes);
         });
