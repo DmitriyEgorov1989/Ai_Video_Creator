@@ -67,6 +67,11 @@ public sealed class DeepSeekEditPlanProviderTests
             .GetProperty("allowedSegments")[0]
             .GetProperty("id")
             .GetString());
+        Assert.Equal(60, userData.RootElement
+            .GetProperty("allowedSegments")[0]
+            .GetProperty("durationFrames")
+            .GetInt32());
+        Assert.Contains("endFrame - startFrame must equal durationFrames", systemContent, StringComparison.Ordinal);
         Assert.Equal("json_object", request.RootElement
             .GetProperty("response_format")
             .GetProperty("type")

@@ -251,6 +251,8 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
         "{\"schemaVersion\":1,\"seed\":123,\"videoClips\":[{\"segmentId\":\"known-id\"," +
         "\"output\":{\"startFrame\":0,\"endFrame\":30},\"crop\":\"Fit\"}]," +
         "\"captions\":[{\"text\":\"caption\",\"output\":{\"startFrame\":0,\"endFrame\":30}}]}. " +
+        "For every clip, endFrame - startFrame must equal durationFrames of its allowed segment. " +
+        "The first clip starts at frame 0 and every next clip starts at the previous endFrame. " +
         "Use an empty captions array when captions are disabled.";
 
     private static string BuildUserData(ProviderPlanningRequest request) =>
@@ -264,7 +266,10 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
             allowedSegments = request.AllowedSegments.Select(segment => new
             {
                 id = segment.Id.ToString(),
-                durationMicroseconds = segment.DurationMicroseconds
+                durationMicroseconds = segment.DurationMicroseconds,
+                durationFrames = TimelineMath.ToNearestFrameCount(
+                    segment.DurationMicroseconds,
+                    new FrameRate(30, 1))
             }),
             repairAttempt = request.RepairAttempt
         }, JsonOptions);
