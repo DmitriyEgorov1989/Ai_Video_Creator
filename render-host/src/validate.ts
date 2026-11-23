@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { EditPlan, OutputRange, RenderRequest } from "./contracts.js";
+import type { EditPlan, OutputRange, RenderRequest, SourceMapping } from "./contracts.js";
 
 export interface ValidationIssue {
   code: string;
@@ -37,6 +37,35 @@ function validRange(value: unknown, path: string, duration: number, issues: Vali
   const endFrame = value.endFrame as number;
   if (startFrame < 0 || endFrame <= startFrame || endFrame > duration) {
     issues.push(issue("range_out_of_bounds", path, "The range must be inside the output timeline."));
+    return false;
+  }
+  return true;
+}
+
+function validSourceRange(value: unknown, path: string, issues: ValidationIssue[]): boolean {
+  if (!isRecord(value)
+    || !Number.isInteger(value.startMicroseconds)
+    || !Number.isInteger(value.endMicroseconds)
+    || (value.startMicroseconds as number) < 0
+    || (value.endMicroseconds as number) <= (value.startMicroseconds as number)) {
+    issues.push(issue("mapping_invalid", path, "A source range must contain increasing non-negative microsecond boundaries."));
+    return false;
+  }
+  return true;
+}
+
+function validMapping(value: unknown, path: string, issues: ValidationIssue[]): value is SourceMapping {
+  if (!isRecord(value)) {
+    issues.push(issue("mapping_invalid", path, "Source mapping must be an object."));
+    return false;
+  }
+
+  const originalAssetValid = requiredString(value.originalAssetId, `${path}.originalAssetId`, issues);
+  const masterAssetValid = requiredString(value.masterAssetId, `${path}.masterAssetId`, issues);
+  const originalRangeValid = validSourceRange(value.original, `${path}.original`, issues);
+  const masterRangeValid = validSourceRange(value.master, `${path}.master`, issues);
+  if (!originalAssetValid || !masterAssetValid || !originalRangeValid || !masterRangeValid) {
+    issues.push(issue("mapping_invalid", path, "Source mapping must identify valid Original and Master ranges."));
     return false;
   }
   return true;
@@ -91,6 +120,7 @@ function validatePlan(value: unknown, issues: ValidationIssue[]): value is EditP
         return;
       }
       if (requiredString(clip.segmentId, `${path}.segmentId`, issues)) segmentIds.add(clip.segmentId);
+      validMapping(clip.mapping, `${path}.mapping`, issues);
       if (!knownCrops.has(String(clip.crop))) issues.push(issue("enum_unknown", `${path}.crop`, "Unknown crop preset."));
       validRange(clip.output, `${path}.output`, duration, issues);
     });
@@ -166,12 +196,19 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
     });
     const plan = isRecord(value.plan) ? value.plan : undefined;
     const video = plan && isRecord(plan.video) && Array.isArray(plan.video.clips) ? plan.video.clips : [];
+    const videoSegmentIds = new Set<string>();
     video.forEach((clip, index) => {
-      if (isRecord(clip) && typeof clip.segmentId === "string" && !ids.has(clip.segmentId)) issues.push(issue("asset_unknown", `plan.video.clips[${index}].segmentId`, `No asset is registered for segment '${clip.segmentId}'.`));
+      if (isRecord(clip) && typeof clip.segmentId === "string") videoSegmentIds.add(clip.segmentId);
+      const mapping = isRecord(clip) && isRecord(clip.mapping) ? clip.mapping : undefined;
+      if (mapping && typeof mapping.masterAssetId === "string" && !ids.has(mapping.masterAssetId)) {
+        issues.push(issue("asset_unknown", `plan.video.clips[${index}].mapping.masterAssetId`, `No asset is registered for Master '${mapping.masterAssetId}'.`));
+      }
     });
     const audio = plan && isRecord(plan.audio) && Array.isArray(plan.audio.sourceClips) ? plan.audio.sourceClips : [];
     audio.forEach((clip, index) => {
-      if (isRecord(clip) && typeof clip.segmentId === "string" && !ids.has(clip.segmentId)) issues.push(issue("asset_unknown", `plan.audio.sourceClips[${index}].segmentId`, `No asset is registered for segment '${clip.segmentId}'.`));
+      if (isRecord(clip) && typeof clip.segmentId === "string" && !videoSegmentIds.has(clip.segmentId)) {
+        issues.push(issue("segment_unknown", `plan.audio.sourceClips[${index}].segmentId`, `No video clip is registered for segment '${clip.segmentId}'.`));
+      }
     });
   }
   return issues;

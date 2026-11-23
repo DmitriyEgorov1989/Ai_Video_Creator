@@ -20,7 +20,7 @@ const request: RenderRequest = {
   variantId: "smoke-variant",
   outputPath: output,
   encoding: { videoBitrateBitsPerSecond: 4_000_000, audioBitrateBitsPerSecond: 128_000 },
-  assets: [{ id: "segment-1", path: source }],
+  assets: [{ id: "master-1", path: source }],
   plan: {
     schemaVersion: 1,
     jobId: "smoke-job",
@@ -31,7 +31,12 @@ const request: RenderRequest = {
     output: { width: 1080, height: 1920, frameRate: { numerator: 30, denominator: 1 }, durationFrames: 30 },
     template: "dynamic",
     templateProps: { captions: "emphasis", theme: "dark", title: "Smoke" },
-    video: { clips: [{ segmentId: "segment-1", mapping: {}, output: { startFrame: 0, endFrame: 30 }, crop: "centerCrop" }] },
+    video: { clips: [{ segmentId: "segment-1", mapping: {
+      originalAssetId: "original-1",
+      original: { startMicroseconds: 0, endMicroseconds: 1_000_000 },
+      masterAssetId: "master-1",
+      master: { startMicroseconds: 0, endMicroseconds: 1_000_000 },
+    }, output: { startFrame: 0, endFrame: 30 }, crop: "centerCrop" }] },
     audio: { sourceClips: [{ segmentId: "segment-1", output: { startFrame: 0, endFrame: 30 }, gain: 1 }], musicClips: [] },
     captions: { items: [{ text: "Smoke render", output: { startFrame: 0, endFrame: 30 } }] },
     overlays: { items: [] },

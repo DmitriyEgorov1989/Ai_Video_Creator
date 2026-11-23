@@ -10,6 +10,7 @@ using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.VideoProduction.Infrastructure.Rendering;
@@ -174,6 +175,41 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                 "The source artifact file does not exist.");
         }
 
+        Dictionary<ArtifactId, string> masterPaths = [];
+        foreach (ArtifactId masterAssetId in revision.Plan.Video.Clips
+                     .Select(clip => clip.Mapping.MasterAssetId)
+                     .Distinct())
+        {
+            ArtifactRecord? master = await artifactStore.GetAsync(masterAssetId, cancellationToken);
+            if (master is null)
+            {
+                return StageExecutionResult.Permanent(
+                    "render.master_artifact_missing",
+                    "A master artifact required by the edit plan was not found.");
+            }
+
+            string masterPath = ResolveWorkspacePath(master.RelativePath);
+            if (!File.Exists(masterPath))
+            {
+                return StageExecutionResult.Permanent(
+                    "render.master_file_missing",
+                    "A master artifact file required by the edit plan does not exist.");
+            }
+
+            masterPaths.Add(masterAssetId, masterPath);
+        }
+
+        if (masterPaths.Count > 1)
+        {
+            return StageExecutionResult.Permanent(
+                "render.multiple_master_assets_unsupported",
+                "Edit Plan V1 rendering supports one master artifact.");
+        }
+
+        string renderSourcePath = masterPaths.Count == 1
+            ? masterPaths.Values.Single()
+            : sourcePath;
+
         string attemptDirectory = Path.Combine(
             workspaceRoot,
             "data",
@@ -187,7 +223,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         string outputPath = Path.Combine(attemptDirectory, "output.rendering.mp4");
 
         MediaProbeResult probe = await mediaProbe.ProbeAsync(
-            new ProbeRequest(sourcePath, TimeSpan.FromSeconds(30), maxOutputBytes),
+            new ProbeRequest(renderSourcePath, TimeSpan.FromSeconds(30), maxOutputBytes),
             cancellationToken);
         if (!probe.IsSuccess)
         {
@@ -202,7 +238,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             audioPath = Path.Combine(attemptDirectory, "audio-master.m4a");
             AudioStemResult stem = await audioStemBuilder.BuildAsync(
                 new AudioStemRequest(
-                    sourcePath,
+                    renderSourcePath,
                     audioPath,
                     probe.Metadata,
                     TimeSpan.FromMinutes(10),
@@ -220,7 +256,11 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             }
         }
 
-        string requestJson = BuildRequestJson(job, revision.Plan, sourcePath, audioPath, outputPath, encodingProfile);
+        IReadOnlyDictionary<ArtifactId, string> renderAssets = masterPaths.Count == 0
+            ? new Dictionary<ArtifactId, string> { [job.Request.SourceAssetId] = sourcePath }
+            : masterPaths;
+        FrameRate masterFrameRate = probe.Metadata.VideoStreams[0].AverageFrameRate ?? new FrameRate(30, 1);
+        string requestJson = BuildRequestJson(job, revision.Plan, renderAssets, masterFrameRate, audioPath, outputPath, encodingProfile);
         await File.WriteAllTextAsync(requestPath, requestJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken);
 
         RenderHostResult result = await renderHost.RenderAsync(
@@ -273,15 +313,12 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     private static string BuildRequestJson(
         JobCreationRecord job,
         EditPlan plan,
-        string sourcePath,
+        IReadOnlyDictionary<ArtifactId, string> renderAssets,
+        FrameRate sourceFrameRate,
         string? audioPath,
         string outputPath,
         OutputEncodingProfile encodingProfile)
     {
-        string[] segmentIds = plan.Video.Clips
-            .Select(clip => clip.SegmentId.ToString())
-            .Distinct(StringComparer.Ordinal)
-            .ToArray();
         object request = new
         {
             schemaVersion = 1,
@@ -314,7 +351,21 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                     clips = plan.Video.Clips.Select(clip => new
                     {
                         segmentId = clip.SegmentId.ToString(),
-                        mapping = new { },
+                        mapping = new
+                        {
+                            originalAssetId = clip.Mapping.OriginalAssetId.ToString(),
+                            original = new
+                            {
+                                startMicroseconds = clip.Mapping.Original.StartMicroseconds,
+                                endMicroseconds = clip.Mapping.Original.EndMicroseconds
+                            },
+                            masterAssetId = clip.Mapping.MasterAssetId.ToString(),
+                            master = new
+                            {
+                                startMicroseconds = clip.Mapping.Master.StartMicroseconds,
+                                endMicroseconds = clip.Mapping.Master.EndMicroseconds
+                            }
+                        },
                         output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
                         crop = clip.Crop switch
                         {
@@ -337,10 +388,20 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                 captions = new { items = plan.Captions.Items },
                 overlays = new { items = plan.Overlays.Items.OfType<TextOverlay>().Select(item => new { type = "text", text = item.Text, output = item.Output }) }
             },
-            assets = segmentIds.Select(id => new { id, path = sourcePath })
+            assets = renderAssets.Select(asset => new
+                {
+                    id = asset.Key.ToString(),
+                    path = asset.Value,
+                    frameRate = (object?)new { numerator = sourceFrameRate.Numerator, denominator = sourceFrameRate.Denominator }
+                })
                 .Concat(audioPath is null
                     ? []
-                    : [new { id = "__audio_master", path = audioPath }]),
+                    : [new
+                    {
+                        id = "__audio_master",
+                        path = audioPath,
+                        frameRate = (object?)null
+                    }]),
             outputPath,
             encoding = new
             {

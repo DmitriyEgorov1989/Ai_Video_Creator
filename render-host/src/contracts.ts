@@ -7,9 +7,21 @@ export interface OutputRange {
   endFrame: number;
 }
 
+export interface SourceTimeRange {
+  startMicroseconds: number;
+  endMicroseconds: number;
+}
+
+export interface SourceMapping {
+  originalAssetId: string;
+  original: SourceTimeRange;
+  masterAssetId: string;
+  master: SourceTimeRange;
+}
+
 export interface VideoClip {
   segmentId: string;
-  mapping: Record<string, unknown>;
+  mapping: SourceMapping;
   output: OutputRange;
   crop: CropPreset;
 }
@@ -50,6 +62,7 @@ export interface EditPlan {
 export interface RenderAsset {
   id: string;
   path: string;
+  frameRate?: { numerator: number; denominator: number } | null;
 }
 
 export interface RenderRequest {

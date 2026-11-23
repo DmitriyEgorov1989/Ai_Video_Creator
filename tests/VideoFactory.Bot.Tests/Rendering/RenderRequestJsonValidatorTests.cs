@@ -39,7 +39,7 @@ public sealed class RenderRequestJsonValidatorTests
     public async Task RejectsAClipThatIsNotBackedByAnAsset()
     {
         string json = (await ReadFixtureAsync("valid-render-request.json"))
-            .Replace("\"segmentId\": \"segment-1\"", "\"segmentId\": \"unknown-segment\"", StringComparison.Ordinal);
+            .Replace("\"masterAssetId\": \"master-1\"", "\"masterAssetId\": \"unknown-master\"", StringComparison.Ordinal);
 
         IReadOnlyList<RenderRequestJsonValidationIssue> issues = RenderRequestJsonValidator.Validate(json);
 

@@ -12,7 +12,7 @@ function validRequest(): RenderRequest {
     variantId: "variant-1",
     outputPath: "C:/data/output.mp4",
     encoding: { videoBitrateBitsPerSecond: 4_000_000, audioBitrateBitsPerSecond: 128_000 },
-    assets: [{ id: "segment-1", path: "C:/data/source.mp4" }],
+    assets: [{ id: "master-1", path: "C:/data/master.mp4" }],
     plan: {
       schemaVersion: 1,
       jobId: "job-1",
@@ -23,7 +23,19 @@ function validRequest(): RenderRequest {
       output: { width: 1080, height: 1920, frameRate: { numerator: 30, denominator: 1 }, durationFrames: 60 },
       template: "dynamic",
       templateProps: { captions: "emphasis", theme: "dark", title: null },
-      video: { clips: [{ segmentId: "segment-1", mapping: {}, output: { startFrame: 0, endFrame: 60 }, crop: "centerCrop" }] },
+      video: {
+        clips: [{
+          segmentId: "segment-1",
+          mapping: {
+            originalAssetId: "original-1",
+            original: { startMicroseconds: 2_000_000, endMicroseconds: 4_000_000 },
+            masterAssetId: "master-1",
+            master: { startMicroseconds: 2_000_000, endMicroseconds: 4_000_000 },
+          },
+          output: { startFrame: 0, endFrame: 60 },
+          crop: "centerCrop",
+        }],
+      },
       audio: { sourceClips: [], musicClips: [] },
       captions: { items: [] },
       overlays: { items: [] },
@@ -53,11 +65,20 @@ test("rejects ranges outside the output timeline", () => {
   assert.ok(issues.some((item) => item.code === "range_out_of_bounds"));
 });
 
-test("rejects a clip that is not backed by a registered asset", () => {
+test("rejects a clip whose master is not backed by a registered asset", () => {
   const request = validRequest();
-  request.plan.video.clips[0].segmentId = "unknown-segment";
+  request.plan.video.clips[0].mapping.masterAssetId = "unknown-master";
   const issues = validateRenderRequest(request);
   assert.ok(issues.some((item) => item.code === "asset_unknown"));
+});
+
+test("rejects a clip without typed source mapping", () => {
+  const request = validRequest();
+  request.plan.video.clips[0].mapping = {} as typeof request.plan.video.clips[0]["mapping"];
+
+  const issues = validateRenderRequest(request);
+
+  assert.ok(issues.some((item) => item.code === "mapping_invalid"));
 });
 
 test("rejects a plan whose identity differs from the render request", () => {

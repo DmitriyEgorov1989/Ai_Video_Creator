@@ -88,7 +88,7 @@
       "required": ["segmentId", "mapping", "output", "crop"],
       "properties": {
         "segmentId": { "type": "string", "minLength": 1 },
-        "mapping": { "type": "object" },
+        "mapping": { "$ref": "#/$defs/sourceMapping" },
         "output": { "$ref": "#/$defs/range" },
         "crop": { "enum": ["fit", "centerCrop"] }
       }
@@ -101,6 +101,26 @@
         "segmentId": { "type": "string", "minLength": 1 },
         "output": { "$ref": "#/$defs/range" },
         "gain": { "type": "number", "minimum": 0 }
+      }
+    },
+    "sourceMapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["originalAssetId", "original", "masterAssetId", "master"],
+      "properties": {
+        "originalAssetId": { "type": "string", "minLength": 1 },
+        "original": { "$ref": "#/$defs/sourceRange" },
+        "masterAssetId": { "type": "string", "minLength": 1 },
+        "master": { "$ref": "#/$defs/sourceRange" }
+      }
+    },
+    "sourceRange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startMicroseconds", "endMicroseconds"],
+      "properties": {
+        "startMicroseconds": { "type": "integer", "minimum": 0 },
+        "endMicroseconds": { "type": "integer", "minimum": 1 }
       }
     },
     "caption": {

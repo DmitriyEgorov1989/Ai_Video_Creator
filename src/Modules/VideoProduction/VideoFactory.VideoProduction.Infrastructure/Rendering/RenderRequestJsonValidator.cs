@@ -62,14 +62,14 @@ public static class RenderRequestJsonValidator
             ValidatePlan(plan, issues);
         }
 
-        HashSet<string> referencedSegmentIds = new(StringComparer.Ordinal);
+        HashSet<string> referencedAssetIds = new(StringComparer.Ordinal);
         if (!root.TryGetProperty("plan", out JsonElement planForReferences) || planForReferences.ValueKind != JsonValueKind.Object)
         {
             // Структурная ошибка плана уже добавлена выше.
         }
         else
         {
-            CollectReferencedSegmentIds(planForReferences, referencedSegmentIds);
+            CollectReferencedAssetIds(planForReferences, referencedAssetIds);
         }
 
         HashSet<string> assetIds = new(StringComparer.Ordinal);
@@ -90,16 +90,16 @@ public static class RenderRequestJsonValidator
             }
         }
 
-        foreach (string segmentId in referencedSegmentIds)
+        foreach (string assetId in referencedAssetIds)
         {
-            if (!assetIds.Contains(segmentId))
-                issues.Add(new("asset_unknown", "plan", $"No asset is registered for segment '{segmentId}'."));
+            if (!assetIds.Contains(assetId))
+                issues.Add(new("asset_unknown", "plan", $"No asset is registered for asset '{assetId}'."));
         }
 
         return issues;
     }
 
-    private static void CollectReferencedSegmentIds(JsonElement plan, HashSet<string> segmentIds)
+    private static void CollectReferencedAssetIds(JsonElement plan, HashSet<string> assetIds)
     {
         if (plan.ValueKind == JsonValueKind.Object
             && plan.TryGetProperty("video", out JsonElement video)
@@ -109,23 +109,14 @@ public static class RenderRequestJsonValidator
         {
             foreach (JsonElement clip in clips.EnumerateArray())
             {
-                if (clip.TryGetProperty("segmentId", out JsonElement segmentId) && segmentId.ValueKind == JsonValueKind.String)
-                    segmentIds.Add(segmentId.GetString()!);
+                if (clip.TryGetProperty("mapping", out JsonElement mapping)
+                    && mapping.ValueKind == JsonValueKind.Object
+                    && mapping.TryGetProperty("masterAssetId", out JsonElement masterAssetId)
+                    && masterAssetId.ValueKind == JsonValueKind.String)
+                    assetIds.Add(masterAssetId.GetString()!);
             }
         }
 
-        if (plan.ValueKind == JsonValueKind.Object
-            && plan.TryGetProperty("audio", out JsonElement audio)
-            && audio.ValueKind == JsonValueKind.Object
-            && audio.TryGetProperty("sourceClips", out JsonElement sourceClips)
-            && sourceClips.ValueKind == JsonValueKind.Array)
-        {
-            foreach (JsonElement clip in sourceClips.EnumerateArray())
-            {
-                if (clip.TryGetProperty("segmentId", out JsonElement segmentId) && segmentId.ValueKind == JsonValueKind.String)
-                    segmentIds.Add(segmentId.GetString()!);
-            }
-        }
     }
 
     private static void ValidatePlan(JsonElement plan, List<RenderRequestJsonValidationIssue> issues)
@@ -160,7 +151,6 @@ public static class RenderRequestJsonValidator
             CheckEnum(props, "theme", KnownThemes, "plan.templateProps.theme", issues);
         }
 
-        HashSet<string> segmentIds = [];
         if (!plan.TryGetProperty("video", out JsonElement video) || video.ValueKind != JsonValueKind.Object
             || !video.TryGetProperty("clips", out JsonElement clips) || clips.ValueKind != JsonValueKind.Array || clips.GetArrayLength() == 0)
         {
@@ -173,7 +163,7 @@ public static class RenderRequestJsonValidator
             {
                 string path = $"plan.video.clips[{index++}]";
                 string? segmentId = RequiredString(clip, "segmentId", $"{path}.segmentId", issues);
-                if (segmentId is not null) segmentIds.Add(segmentId);
+                ValidateMapping(clip, path, issues);
                 CheckEnum(clip, "crop", KnownCrops, $"{path}.crop", issues);
                 ValidateRange(clip, "output", $"{path}.output", duration, issues);
             }
@@ -194,7 +184,6 @@ public static class RenderRequestJsonValidator
                 {
                     string path = $"plan.audio.sourceClips[{index++}]";
                     string? segmentId = RequiredString(clip, "segmentId", $"{path}.segmentId", issues);
-                    if (segmentId is not null) segmentIds.Add(segmentId);
                     ValidateRange(clip, "output", $"{path}.output", duration, issues);
                 }
             }
@@ -239,6 +228,34 @@ public static class RenderRequestJsonValidator
             issues.Add(new(code, $"plan.{property}.{child}", "Collection must be initialized as an array."));
     }
 
+    private static void ValidateMapping(JsonElement clip, string path, List<RenderRequestJsonValidationIssue> issues)
+    {
+        if (!clip.TryGetProperty("mapping", out JsonElement mapping) || mapping.ValueKind != JsonValueKind.Object)
+        {
+            issues.Add(new("mapping_invalid", $"{path}.mapping", "Source mapping must be an object."));
+            return;
+        }
+
+        RequiredString(mapping, "originalAssetId", $"{path}.mapping.originalAssetId", issues);
+        RequiredString(mapping, "masterAssetId", $"{path}.mapping.masterAssetId", issues);
+        ValidateSourceRange(mapping, "original", $"{path}.mapping.original", issues);
+        ValidateSourceRange(mapping, "master", $"{path}.mapping.master", issues);
+    }
+
+    private static void ValidateSourceRange(JsonElement parent, string property, string path, List<RenderRequestJsonValidationIssue> issues)
+    {
+        if (!parent.TryGetProperty(property, out JsonElement range) || range.ValueKind != JsonValueKind.Object)
+        {
+            issues.Add(new("mapping_invalid", path, "A source range is required."));
+            return;
+        }
+
+        long start = RequiredLong(range, "startMicroseconds", $"{path}.startMicroseconds", issues);
+        long end = RequiredLong(range, "endMicroseconds", $"{path}.endMicroseconds", issues);
+        if (start < 0 || end <= start)
+            issues.Add(new("mapping_invalid", path, "A source range must contain increasing non-negative microsecond boundaries."));
+    }
+
     private static void ValidateRange(JsonElement parent, string property, string path, int duration, List<RenderRequestJsonValidationIssue> issues)
     {
         if (!parent.TryGetProperty(property, out JsonElement range) || range.ValueKind != JsonValueKind.Object)
@@ -275,6 +292,19 @@ public static class RenderRequestJsonValidator
         int value = RequiredInt(parent, property, path, issues);
         if (value <= 0) issues.Add(new("positive_integer", path, "A positive integer is required."));
         return value;
+    }
+
+    private static long RequiredLong(JsonElement parent, string property, string path, List<RenderRequestJsonValidationIssue> issues)
+    {
+        if (!parent.TryGetProperty(property, out JsonElement value)
+            || value.ValueKind != JsonValueKind.Number
+            || !value.TryGetInt64(out long result))
+        {
+            issues.Add(new("mapping_invalid", path, "A non-negative integer microsecond value is required."));
+            return -1;
+        }
+
+        return result;
     }
 
     private static int RequiredInt(JsonElement parent, string property, string path, List<RenderRequestJsonValidationIssue> issues, int? expected = null)
