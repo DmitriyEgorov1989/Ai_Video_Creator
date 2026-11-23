@@ -78,3 +78,33 @@ public interface ISceneBoundaryDetector
         SceneDetectionRequest request,
         CancellationToken cancellationToken);
 }
+
+/// <summary>Запрашивает объективные признаки качества video intervals.</summary>
+public sealed record VideoFeatureAnalysisRequest(
+    string FilePath,
+    IReadOnlyList<AllowedSegment> Segments);
+
+/// <summary>Результат вычисления objective video features.</summary>
+public sealed record VideoFeatureAnalysisResult(
+    bool IsSuccess,
+    IReadOnlyList<SegmentAnalysisFeatures> Features,
+    string? ErrorCode,
+    string? ErrorMessage)
+{
+    /// <summary>Создаёт успешный результат.</summary>
+    public static VideoFeatureAnalysisResult Succeeded(IReadOnlyList<SegmentAnalysisFeatures> features) =>
+        new(true, features, null, null);
+
+    /// <summary>Создаёт результат с ошибкой адаптера.</summary>
+    public static VideoFeatureAnalysisResult Failed(string code, string message) =>
+        new(false, [], code, message);
+}
+
+/// <summary>Вычисляет объективные признаки качества сегментов через внешний adapter.</summary>
+public interface IVideoFeatureAnalyzer
+{
+    /// <summary>Выполняет анализ video intervals без изменения исходного файла.</summary>
+    Task<VideoFeatureAnalysisResult> AnalyzeAsync(
+        VideoFeatureAnalysisRequest request,
+        CancellationToken cancellationToken);
+}

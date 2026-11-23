@@ -85,6 +85,36 @@ public sealed record SpeechSegment(
 /// <param name="Interval">Интервал сцены на временной шкале master-артефакта.</param>
 public sealed record Scene(MasterRange Interval);
 
+/// <summary>Объяснимые признаки качества одного разрешённого сегмента.</summary>
+/// <param name="SegmentId">Идентификатор разрешённого сегмента.</param>
+/// <param name="SemanticRelevance">Семантическая релевантность в диапазоне от 0 до 1.</param>
+/// <param name="Sharpness">Резкость изображения в диапазоне от 0 до 1.</param>
+/// <param name="Composition">Качество композиции в диапазоне от 0 до 1.</param>
+/// <param name="Motion">Информативность движения в диапазоне от 0 до 1.</param>
+/// <param name="AudioEnergy">Энергия звука в диапазоне от 0 до 1.</param>
+/// <param name="Confidence">Уверенность вычисления признаков в диапазоне от 0 до 1.</param>
+/// <param name="DuplicateGroup">Стабильный идентификатор группы дублей или <see langword="null" />.</param>
+public sealed record SegmentAnalysisFeatures(
+    SegmentId SegmentId,
+    decimal SemanticRelevance,
+    decimal Sharpness,
+    decimal Composition,
+    decimal Motion,
+    decimal AudioEnergy,
+    decimal Confidence,
+    string? DuplicateGroup = null);
+
+/// <summary>Дополнительные признаки versioned результата анализа.</summary>
+/// <param name="Segments">Признаки известных сегментов.</param>
+public sealed record AnalysisFeatureSet(ImmutableArray<SegmentAnalysisFeatures> Segments)
+{
+    /// <summary>Версия схемы дополнительных признаков.</summary>
+    public int SchemaVersion { get; init; } = 1;
+
+    /// <summary>Пустой набор признаков для совместимости с Analysis V1.</summary>
+    public static AnalysisFeatureSet Empty => new([]);
+}
+
 /// <summary>
 /// Содержит версионированный результат анализа исходного видео.
 /// </summary>
@@ -104,4 +134,8 @@ public sealed record AnalysisResult(
     ImmutableArray<SpeechSegment> Speech,
     ImmutableArray<MasterRange> Pauses,
     ImmutableArray<Scene> Scenes,
-    ImmutableArray<AllowedSegment> AllowedSegments);
+    ImmutableArray<AllowedSegment> AllowedSegments)
+{
+    /// <summary>Дополнительные признаки Analysis V2; для V1 содержит пустой набор.</summary>
+    public AnalysisFeatureSet Features { get; init; } = AnalysisFeatureSet.Empty;
+}

@@ -9,7 +9,9 @@ namespace VideoFactory.VideoProduction.Application.Editing;
 /// <param name="Settings">Настройки производства; не могут быть <see langword="null" />.</param>
 public sealed record EditingContext(
     AnalysisResult? Analysis,
-    ProductionSettings Settings);
+    ProductionSettings Settings,
+    string? Comment = null,
+    IReadOnlyDictionary<string, EditingDecision>? PreviousDecisions = null);
 
 /// <summary>Статус детерминированного решения editing skill.</summary>
 public enum EditingDecisionStatus
@@ -142,7 +144,7 @@ public sealed class EditingSkillEngine
                     skill.Version,
                     EditingDecisionStatus.Unavailable,
                     [new EditingDecisionReason("skill.analysis_missing", "Analysis is required by the editing skill.")])
-                : skill.Evaluate(context);
+                : skill.Evaluate(context with { PreviousDecisions = decisions });
             result.Add(decisionResult);
             decisions[skill.Id] = decisionResult;
         }

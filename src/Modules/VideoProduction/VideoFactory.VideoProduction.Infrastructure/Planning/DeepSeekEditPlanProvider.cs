@@ -271,6 +271,13 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
                     segment.DurationMicroseconds,
                     new FrameRate(30, 1))
             }),
+            editingDecisions = request.EditingEvaluation?.Decisions.Select(decision => new
+            {
+                skillId = decision.SkillId,
+                version = decision.SkillVersion,
+                status = decision.Status.ToString(),
+                reasons = decision.Reasons.Select(reason => reason.Code)
+            }),
             repairAttempt = request.RepairAttempt
         }, JsonOptions);
 
