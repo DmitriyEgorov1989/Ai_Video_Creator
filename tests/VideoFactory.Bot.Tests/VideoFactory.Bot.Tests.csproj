@@ -16,4 +16,10 @@
   <ItemGroup>
     <ProjectReference Include="../../src/VideoFactory.Bot/VideoFactory.Bot.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Modules/VideoProduction/VideoFactory.VideoProduction.IntegrationTests/Media/MediaMeasurements.cs" Link="Testing/MediaMeasurements.cs" />
+    <Compile Include="../Modules/VideoProduction/VideoFactory.VideoProduction.IntegrationTests/Media/MontageQualityAssertions.cs" Link="Testing/MontageQualityAssertions.cs" />
+    <Compile Include="../Modules/VideoProduction/VideoFactory.VideoProduction.IntegrationTests/Media/MediaOracleContract.cs" Link="Testing/MediaOracleContract.cs" />
+  </ItemGroup>
 </Project>

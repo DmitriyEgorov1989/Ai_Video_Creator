@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/media-oracle.v1.schema.json",
+  "type": "object",
+  "required": ["schemaVersion", "provenance", "tolerances", "fixtures", "markers", "audioWindows", "pauseWindows", "speechWindows", "safeRegions", "repeatGroups", "montageCases"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "provenance": { "type": "string", "minLength": 1 },
+    "tolerances": {
+      "type": "object",
+      "required": ["timeMicroseconds", "frames", "decibels", "frequencyHz", "colorChannel"],
+      "properties": {
+        "timeMicroseconds": { "type": "integer", "minimum": 1 },
+        "frames": { "type": "integer", "minimum": 0 },
+        "decibels": { "type": "number", "minimum": 0 },
+        "frequencyHz": { "type": "number", "minimum": 0 },
+        "colorChannel": { "type": "number", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["file", "sha256", "sizeBytes", "orientation", "fps", "width", "height", "container", "durationMicroseconds", "videoCodec", "audioCodec", "pixelFormat", "sampleRate", "channels"],
+        "properties": {
+          "file": { "type": "string", "pattern": "^[^/\\\\]+$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "sizeBytes": { "type": "integer", "minimum": 1 },
+          "orientation": { "enum": ["portrait", "landscape"] },
+          "fps": { "type": "integer", "minimum": 1 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 },
+          "container": { "type": "string", "minLength": 1 },
+          "durationMicroseconds": { "type": "integer", "minimum": 1 },
+          "videoCodec": { "type": "string", "minLength": 1 },
+          "audioCodec": { "type": "string", "minLength": 1 },
+          "pixelFormat": { "type": "string", "minLength": 1 },
+          "sampleRate": { "type": "integer", "minimum": 1 },
+          "channels": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "markers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "fixture", "sourceTimeMicroseconds", "expectedOutputFrame", "kind", "region", "expectedRgb"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixture": { "type": "string", "minLength": 1 },
+          "sourceTimeMicroseconds": { "type": "integer", "minimum": 0 },
+          "expectedOutputFrame": { "type": "integer", "minimum": 0 },
+          "kind": { "const": "visual" },
+          "region": { "$ref": "#/$defs/region" },
+          "expectedRgb": {
+            "type": "object",
+            "required": ["red", "green", "blue"],
+            "properties": {
+              "red": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "green": { "type": "integer", "minimum": 0, "maximum": 255 },
+              "blue": { "type": "integer", "minimum": 0, "maximum": 255 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "audioWindows": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/timedWindow" }
+    },
+    "pauseWindows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/timedWindow" }
+    },
+    "speechWindows": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/timedWindow" }
+    },
+    "safeRegions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "fixture", "x", "y", "width", "height"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixture": { "type": "string", "minLength": 1 },
+          "x": { "type": "integer", "minimum": 0 },
+          "y": { "type": "integer", "minimum": 0 },
+          "width": { "type": "integer", "minimum": 1 },
+          "height": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "repeatGroups": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "fixtureIds", "startMicroseconds", "endMicroseconds"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixtureIds": { "type": "array", "minItems": 2, "items": { "type": "string", "minLength": 1 } },
+          "startMicroseconds": { "type": "integer", "minimum": 0 },
+          "endMicroseconds": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "montageCases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "fixture", "clips", "removed", "caption", "cropSafeRegion"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "fixture": { "type": "string", "minLength": 1 },
+          "clips": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/montageClip" } },
+          "removed": { "$ref": "#/$defs/removedInterval" },
+          "caption": {
+            "type": "object",
+            "required": ["startFrame", "endFrame", "text"],
+            "properties": {
+              "startFrame": { "type": "integer", "minimum": 0 },
+              "endFrame": { "type": "integer", "minimum": 1 },
+              "text": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": false
+          },
+          "cropSafeRegion": {
+            "type": "object",
+            "required": ["x", "y", "width", "height", "expectedColor"],
+            "properties": {
+              "x": { "type": "integer", "minimum": 0 },
+              "y": { "type": "integer", "minimum": 0 },
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 },
+              "expectedColor": { "enum": ["red", "green", "blue"] }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "$defs": {
+    "region": {
+      "type": "object",
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "timedWindow": {
+      "type": "object",
+      "required": ["id", "fixture", "startMicroseconds", "endMicroseconds"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "fixture": { "type": "string", "minLength": 1 },
+        "startMicroseconds": { "type": "integer", "minimum": 0 },
+        "endMicroseconds": { "type": "integer", "minimum": 1 },
+        "expectedFrequencyHz": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "montageClip": {
+      "type": "object",
+      "required": ["sourceStartMicroseconds", "sourceEndMicroseconds", "outputStartFrame", "outputEndFrame", "expectedColor", "expectedFrequencyHz"],
+      "properties": {
+        "sourceStartMicroseconds": { "type": "integer", "minimum": 0 },
+        "sourceEndMicroseconds": { "type": "integer", "minimum": 1 },
+        "outputStartFrame": { "type": "integer", "minimum": 0 },
+        "outputEndFrame": { "type": "integer", "minimum": 1 },
+        "expectedColor": { "enum": ["red", "green", "blue"] },
+        "expectedFrequencyHz": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "removedInterval": {
+      "type": "object",
+      "required": ["sourceStartMicroseconds", "sourceEndMicroseconds", "color", "frequencyHz"],
+      "properties": {
+        "sourceStartMicroseconds": { "type": "integer", "minimum": 0 },
+        "sourceEndMicroseconds": { "type": "integer", "minimum": 1 },
+        "color": { "enum": ["red", "green", "blue", "yellow"] },
+        "frequencyHz": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

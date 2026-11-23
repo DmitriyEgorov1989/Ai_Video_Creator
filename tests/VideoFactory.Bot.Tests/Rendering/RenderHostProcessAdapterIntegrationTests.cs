@@ -3,6 +3,7 @@ using VideoFactory.VideoProduction.Application.Processes;
 using VideoFactory.VideoProduction.Application.Rendering;
 using VideoFactory.VideoProduction.Infrastructure.Processes;
 using VideoFactory.VideoProduction.Infrastructure.Rendering;
+using VideoFactory.VideoProduction.IntegrationTests.Media;
 
 namespace VideoFactory.Bot.Tests.Rendering;
 
@@ -89,7 +90,7 @@ public sealed class RenderHostProcessAdapterIntegrationTests
         }
     }
 
-    [Fact]
+    [VideoFactory.Bot.Tests.Acceptance.MediaAcceptanceFact]
     public async Task RenderHostProcessAdapter_PreservesVideoAndAudioSourceOrder()
     {
         string repositoryRoot = FindRepositoryRoot();
@@ -98,35 +99,16 @@ public sealed class RenderHostProcessAdapterIntegrationTests
 
         string jobDirectory = Path.Combine(Path.GetTempPath(), $"video-factory-markers-{Guid.NewGuid():N}");
         Directory.CreateDirectory(jobDirectory);
-        string sourcePath = Path.Combine(jobDirectory, "markers.mp4");
+        string mediaRoot = Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!;
+        MediaOracleDocument oracle = await MediaOracleContract.LoadAsync(mediaRoot, CancellationToken.None);
+        MediaOracleMontageCase montageCase = Assert.Single(oracle.MontageCases);
+        string sourcePath = Path.Combine(mediaRoot, montageCase.Fixture);
         string outputPath = Path.Combine(jobDirectory, "output.mp4");
         string requestPath = Path.Combine(jobDirectory, "request.json");
-        string firstFramePath = Path.Combine(jobDirectory, "first.rgb");
-        string secondFramePath = Path.Combine(jobDirectory, "second.rgb");
-        string firstAudioPath = Path.Combine(jobDirectory, "first.pcm");
-        string secondAudioPath = Path.Combine(jobDirectory, "second.pcm");
 
         try
         {
             SystemProcessRunner processRunner = new();
-            ProcessExecutionResult sourceResult = await processRunner.RunAsync(
-                new ProcessStartRequest(
-                    "ffmpeg",
-                    [
-                        "-y",
-                        "-f", "lavfi", "-i", "color=c=red:s=320x568:r=24:d=1",
-                        "-f", "lavfi", "-i", "color=c=blue:s=320x568:r=24:d=1",
-                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
-                        "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=1",
-                        "-filter_complex", "[0:v][1:v]concat=n=2:v=1:a=0[v];[2:a][3:a]concat=n=2:v=0:a=1[a]",
-                        "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        "-r", "24", "-c:a", "aac", sourcePath
-                    ],
-                    TimeSpan.FromSeconds(30),
-                    32_768),
-                CancellationToken.None);
-            Assert.True(sourceResult.IsSuccess, sourceResult.ErrorMessage ?? sourceResult.StandardError);
-
             JsonObject request = JsonNode.Parse(
                 await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "contracts", "fixtures", "valid-render-request.json")))!.AsObject();
             request["outputPath"] = outputPath;
@@ -140,8 +122,8 @@ public sealed class RenderHostProcessAdapterIntegrationTests
             {
                 ["clips"] = new JsonArray
                 {
-                    CreateClip("segment-1", 0, 1_000_000, 0, 30),
-                    CreateClip("segment-2", 1_000_000, 2_000_000, 30, 60),
+                    CreateClip("segment-1", montageCase.Clips[0].SourceStartMicroseconds, montageCase.Clips[0].SourceEndMicroseconds, montageCase.Clips[0].OutputStartFrame, montageCase.Clips[0].OutputEndFrame),
+                    CreateClip("segment-2", montageCase.Clips[1].SourceStartMicroseconds, montageCase.Clips[1].SourceEndMicroseconds, montageCase.Clips[1].OutputStartFrame, montageCase.Clips[1].OutputEndFrame),
                 },
             };
             plan["audio"] = new JsonObject
@@ -152,6 +134,13 @@ public sealed class RenderHostProcessAdapterIntegrationTests
                     new JsonObject { ["segmentId"] = "segment-2", ["output"] = CreateRange(30, 60), ["gain"] = 1 },
                 },
                 ["musicClips"] = new JsonArray(),
+            };
+            plan["captions"] = new JsonObject
+            {
+                ["items"] = new JsonArray
+                {
+                    new JsonObject { ["text"] = montageCase.Caption.Text, ["output"] = CreateRange(montageCase.Caption.StartFrame, montageCase.Caption.EndFrame) },
+                },
             };
             await File.WriteAllTextAsync(requestPath, request.ToJsonString());
 
@@ -164,21 +153,71 @@ public sealed class RenderHostProcessAdapterIntegrationTests
                 result.Kind == RenderHostResultKind.Succeeded,
                 $"{result.ErrorCode}: {result.ErrorMessage}\nstdout:\n{result.StandardOutput}\nstderr:\n{result.StandardError}");
 
-            await ExtractFrameAsync(processRunner, outputPath, firstFramePath, "0.5");
-            await ExtractFrameAsync(processRunner, outputPath, secondFramePath, "1.5");
-            byte[] firstFrame = await File.ReadAllBytesAsync(firstFramePath);
-            byte[] secondFrame = await File.ReadAllBytesAsync(secondFramePath);
-            Assert.Equal(3, firstFrame.Length);
-            Assert.Equal(3, secondFrame.Length);
-            Assert.True(firstFrame[0] > firstFrame[2] * 2, $"Expected red first frame, got RGB({firstFrame[0]}, {firstFrame[1]}, {firstFrame[2]}).");
-            Assert.True(secondFrame[2] > secondFrame[0] * 2, $"Expected blue second frame, got RGB({secondFrame[0]}, {secondFrame[1]}, {secondFrame[2]}).");
+            PixelRegion fullFrame = new(0, 0, 1080, 1920);
+            RgbSample firstFrame = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.5), fullFrame, CancellationToken.None);
+            RgbSample secondFrame = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(1.5), fullFrame, CancellationToken.None);
+            MontageQualityAssertions.RequireDominantColor("first clip", firstFrame, ParseColor(montageCase.Clips[0].ExpectedColor));
+            MontageQualityAssertions.RequireDominantColor("second clip", secondFrame, ParseColor(montageCase.Clips[1].ExpectedColor));
 
-            await ExtractAudioAsync(processRunner, outputPath, firstAudioPath, "0.25");
-            await ExtractAudioAsync(processRunner, outputPath, secondAudioPath, "1.25");
-            int firstZeroCrossings = CountZeroCrossings(await File.ReadAllBytesAsync(firstAudioPath));
-            int secondZeroCrossings = CountZeroCrossings(await File.ReadAllBytesAsync(secondAudioPath));
-            Assert.InRange(firstZeroCrossings, 350, 550);
-            Assert.InRange(secondZeroCrossings, 700, 1_000);
+            RgbSample beforeTransition = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.98), fullFrame, CancellationToken.None);
+            RgbSample afterTransition = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(1.02), fullFrame, CancellationToken.None);
+            RgbSample atTransition = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(1), fullFrame, CancellationToken.None);
+            MontageQualityAssertions.RequireNonBlack("frame before clip boundary", beforeTransition, 10);
+            MontageQualityAssertions.RequireNonBlack("frame at clip boundary", atTransition, 10);
+            MontageQualityAssertions.RequireNonBlack("frame after clip boundary", afterTransition, 10);
+
+            PixelRegion cropSafeRegion = new(montageCase.CropSafeRegion.X, montageCase.CropSafeRegion.Y, montageCase.CropSafeRegion.Width, montageCase.CropSafeRegion.Height);
+            RgbSample retainedFocalMarker = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.25), cropSafeRegion, CancellationToken.None);
+            MontageQualityAssertions.RequireDominantColor(
+                "crop-safe focal marker", retainedFocalMarker, ParseColor(montageCase.CropSafeRegion.ExpectedColor));
+
+            PixelRegion captionRegion = new(50, 1550, 980, 220);
+            RgbSample beforeCaption = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.2), captionRegion, CancellationToken.None);
+            RgbSample visibleCaption = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.5), captionRegion, CancellationToken.None);
+            RgbSample afterCaption = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.9), captionRegion, CancellationToken.None);
+            MontageQualityAssertions.RequireOverlayContrast(
+                "caption start at frame 10", beforeCaption, visibleCaption, beforeCaption.Red * 0.2);
+            MontageQualityAssertions.RequireOverlayContrast(
+                "caption end at frame 20", afterCaption, visibleCaption, afterCaption.Red * 0.2);
+
+            ToneMeasurement firstTone = await MediaMeasurements.MeasureToneAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.25), TimeSpan.FromSeconds(0.5), CancellationToken.None);
+            ToneMeasurement secondTone = await MediaMeasurements.MeasureToneAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(1.25), TimeSpan.FromSeconds(0.5), CancellationToken.None);
+            MontageQualityAssertions.RequireTone("first source interval", firstTone, montageCase.Clips[0].ExpectedFrequencyHz, oracle.Tolerances.FrequencyHz);
+            MontageQualityAssertions.RequireTone("third source interval after removed middle", secondTone, montageCase.Clips[1].ExpectedFrequencyHz, oracle.Tolerances.FrequencyHz);
+
+            string wrongTrimPath = Path.Combine(jobDirectory, "wrong-trim.mp4");
+            request["outputPath"] = wrongTrimPath;
+            request["plan"]!["video"]!["clips"]![1]!["mapping"]!["original"] = CreateTimeRange(montageCase.Removed.SourceStartMicroseconds, montageCase.Removed.SourceEndMicroseconds);
+            request["plan"]!["video"]!["clips"]![1]!["mapping"]!["master"] = CreateTimeRange(montageCase.Removed.SourceStartMicroseconds, montageCase.Removed.SourceEndMicroseconds);
+            await File.WriteAllTextAsync(requestPath, request.ToJsonString());
+            RenderHostResult wrongTrim = await adapter.RenderAsync(new RenderHostRequest(requestPath, wrongTrimPath, TimeSpan.FromMinutes(5), 65_536), CancellationToken.None);
+            Assert.Equal(RenderHostResultKind.Succeeded, wrongTrim.Kind);
+            RgbSample wrongTrimFrame = await MediaMeasurements.SampleRegionAsync(processRunner, wrongTrimPath, TimeSpan.FromSeconds(1.5), fullFrame, CancellationToken.None);
+            ToneMeasurement wrongTrimTone = await MediaMeasurements.MeasureToneAsync(processRunner, wrongTrimPath, TimeSpan.FromSeconds(1.25), TimeSpan.FromSeconds(0.5), CancellationToken.None);
+            Assert.Throws<InvalidDataException>(() => MontageQualityAssertions.RequireDominantColor("wrong trim", wrongTrimFrame, ParseColor(montageCase.Clips[1].ExpectedColor)));
+            Assert.Throws<InvalidDataException>(() => MontageQualityAssertions.RequireTone("audio leakage", wrongTrimTone, montageCase.Clips[1].ExpectedFrequencyHz, oracle.Tolerances.FrequencyHz));
+
+            string wrongOrderPath = Path.Combine(jobDirectory, "wrong-order.mp4");
+            request["outputPath"] = wrongOrderPath;
+            JsonArray clips = request["plan"]!["video"]!["clips"]!.AsArray();
+            clips[0] = CreateClip("segment-1", montageCase.Clips[1].SourceStartMicroseconds, montageCase.Clips[1].SourceEndMicroseconds, 0, 30);
+            clips[1] = CreateClip("segment-2", montageCase.Clips[0].SourceStartMicroseconds, montageCase.Clips[0].SourceEndMicroseconds, 30, 60);
+            await File.WriteAllTextAsync(requestPath, request.ToJsonString());
+            RenderHostResult wrongOrder = await adapter.RenderAsync(new RenderHostRequest(requestPath, wrongOrderPath, TimeSpan.FromMinutes(5), 65_536), CancellationToken.None);
+            Assert.Equal(RenderHostResultKind.Succeeded, wrongOrder.Kind);
+            RgbSample wrongOrderFrame = await MediaMeasurements.SampleRegionAsync(processRunner, wrongOrderPath, TimeSpan.FromSeconds(0.5), fullFrame, CancellationToken.None);
+            Assert.Throws<InvalidDataException>(() => MontageQualityAssertions.RequireDominantColor("wrong order", wrongOrderFrame, ParseColor(montageCase.Clips[0].ExpectedColor)));
         }
         finally
         {
@@ -216,35 +255,13 @@ public sealed class RenderHostProcessAdapterIntegrationTests
         return new JsonObject { ["startMicroseconds"] = startMicroseconds, ["endMicroseconds"] = endMicroseconds };
     }
 
-    private static async Task ExtractFrameAsync(SystemProcessRunner runner, string inputPath, string outputPath, string timestamp)
+    private static DominantColor ParseColor(string value) => value switch
     {
-        ProcessExecutionResult result = await runner.RunAsync(
-            new ProcessStartRequest("ffmpeg", ["-y", "-ss", timestamp, "-i", inputPath, "-frames:v", "1", "-vf", "scale=1:1,format=rgb24", "-f", "rawvideo", outputPath], TimeSpan.FromSeconds(30), 32_768),
-            CancellationToken.None);
-        Assert.True(result.IsSuccess, result.ErrorMessage ?? result.StandardError);
-    }
-
-    private static async Task ExtractAudioAsync(SystemProcessRunner runner, string inputPath, string outputPath, string timestamp)
-    {
-        ProcessExecutionResult result = await runner.RunAsync(
-            new ProcessStartRequest("ffmpeg", ["-y", "-ss", timestamp, "-t", "0.5", "-i", inputPath, "-vn", "-ac", "1", "-ar", "48000", "-f", "s16le", outputPath], TimeSpan.FromSeconds(30), 32_768),
-            CancellationToken.None);
-        Assert.True(result.IsSuccess, result.ErrorMessage ?? result.StandardError);
-    }
-
-    private static int CountZeroCrossings(byte[] pcm)
-    {
-        int count = 0;
-        short previous = BitConverter.ToInt16(pcm, 0);
-        for (int index = 2; index < pcm.Length; index += 2)
-        {
-            short current = BitConverter.ToInt16(pcm, index);
-            if ((previous < 0 && current >= 0) || (previous >= 0 && current < 0)) count++;
-            previous = current;
-        }
-
-        return count;
-    }
+        "red" => DominantColor.Red,
+        "green" => DominantColor.Green,
+        "blue" => DominantColor.Blue,
+        _ => throw new InvalidDataException($"Unsupported oracle color '{value}'."),
+    };
 
     private static string FindRepositoryRoot()
     {

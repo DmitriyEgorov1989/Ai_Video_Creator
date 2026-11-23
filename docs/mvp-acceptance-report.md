@@ -62,3 +62,22 @@ dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj --filte
 Полный набор .NET прошёл без падений: 254 теста прошли, 10 тестов без локальных
 медиа были пропущены в запуске без переменных окружения. Acceptance-запуск с
 `ACCEPTANCE_MEDIA_ROOT` и `WHISPER_TEST_PYTHON` прошёл отдельно.
+
+## Oracle монтажного качества
+
+23 ноября 2026 года добавлен отдельный versioned media oracle для объективной
+проверки монтажных решений. Локально с `ACCEPTANCE_MEDIA_ROOT` проверены:
+
+- portrait и landscape fixtures с 24, 30 и 60 кадрами/с;
+- SHA-256, размеры, FFprobe metadata и полный decode;
+- визуальные markers, RMS/peak dBFS и audio tones 440/660/880 Гц;
+- пропуск запрещённого среднего source-интервала без протекания его звука;
+- порядок клипов, отсутствие чёрного кадра на склейке, caption window и
+  сохранение focal marker после crop;
+- эквивалентность повторных frame/audio observations.
+
+Проверка solution: 287 тестов прошли, 4 теста пропущены. Три Whisper integration
+теста и положительный Telegram-to-delivery acceptance были пропущены из-за
+отсутствующего `WHISPER_TEST_PYTHON`; отрицательный Telegram-сценарий прошёл.
+Render-host: 10 тестов прошли, typecheck, build и smoke render завершились
+успешно. Analysis scores не используются вместо объективных media assertions.

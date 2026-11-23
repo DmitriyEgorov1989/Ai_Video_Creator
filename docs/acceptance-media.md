@@ -39,6 +39,12 @@ FFmpeg с `libx264`, `aac`, `mpeg4` и FFprobe в `PATH`.
 | `corrupt.mp4` | Первые 16 байтов основного файла: усечение внутри первого блока MP4 | `IMediaProbe` возвращает `process.exit_code` с диагностикой FFprobe |
 | `phrase-0.wav`, `phrase-1.wav` | Исходные синтезированные фразы | Источники звука для воспроизведения и диагностики |
 | `manifest.json` | Происхождение, версии инструментов, SHA-256, размеры в байтах, metadata и ожидаемые результаты | Hash и размер соответствуют фактическим файлам |
+| `landscape.mp4` | Синтетический landscape-вариант с тем же содержимым | Проверка безопасного reframe и metadata |
+| `portrait-24fps.mp4`, `portrait-60fps.mp4` | Portrait-варианты с постоянными 24 и 60 кадрами/с | Проверка frame-rate преобразований и допусков |
+| `similar-take-a.mp4`, `similar-take-b.mp4` | Два похожих дубля с различимым marker-ом | Проверка выбора и порядка похожих фрагментов |
+| `tones.mp4` | 10 секунд: 440 Гц на интервале 0–5 секунд и 880 Гц на интервале 5–10 секунд | Проверка порядка и непрерывности audio splice |
+| `montage-source.mp4` | Три маркированных интервала: red/440 Гц, удаляемый yellow/660 Гц, blue/880 Гц | Oracle-driven проверка trim, порядка, audio leakage, captions, black frames и crop |
+| `media-oracle.v1.json` | Версионированные markers, интервалы, hashes и допуски в микросекундах, кадрах и dB | Acceptance oracle для объективных media assertions |
 
 Окна озвучки начинаются на 2-й и 13-й секунде. Их конец вычисляется из длительности
 соответствующего WAV. Паузы: от 0 до 2 секунд, между концом первой фразы и
@@ -70,6 +76,12 @@ dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.Integra
 Между версиями Windows/FFmpeg побайтовое совпадение не гарантируется:
 сравнивайте характеристики, ожидаемые результаты и паспорт новой ревизии.
 Время создания в паспорте при каждом запуске меняется.
+
+`media-oracle.v1.json` является отдельным versioned acceptance-контрактом.
+Он не заменяет `manifest.json`: manifest описывает генерацию и legacy-проверки,
+а oracle описывает наблюдаемые признаки, по которым тесты будут проверять
+монтажное качество. Motion, Sharpness и другие analysis scores не считаются
+доказательством правильного trim, порядка клипов, audio splice или crop.
 
 ## Проверка Preparation через очередь
 

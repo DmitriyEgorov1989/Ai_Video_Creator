@@ -30,6 +30,7 @@ using VideoFactory.VideoProduction.Infrastructure.Queue;
 using VideoFactory.VideoProduction.Infrastructure.Rendering;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 using VideoFactory.VideoProduction.Infrastructure.Processes;
+using VideoFactory.VideoProduction.IntegrationTests.Media;
 
 namespace VideoFactory.Bot.Tests.Acceptance;
 
@@ -95,6 +96,13 @@ public sealed class TelegramToDeliveryAcceptanceTests
         Assert.NotNull(probe.Metadata);
         Assert.Single(probe.Metadata!.VideoStreams);
         Assert.Single(probe.Metadata.AudioStreams);
+        RgbSample middleFrame = await MediaMeasurements.SampleRegionAsync(
+            new SystemProcessRunner(),
+            finalPath,
+            TimeSpan.FromTicks(probe.Metadata.DurationMicroseconds * 5),
+            new PixelRegion(0, 0, 1080, 1920),
+            CancellationToken.None);
+        MontageQualityAssertions.RequireNonBlack("delivered MP4 middle frame", middleFrame, 10);
         MediaDecodeResult decode = await fixture.Decode.VerifyAsync(new MediaDecodeRequest(finalPath, TimeSpan.FromMinutes(2), 65_536), CancellationToken.None);
         Assert.True(decode.IsSuccess, decode.ErrorMessage);
     }
