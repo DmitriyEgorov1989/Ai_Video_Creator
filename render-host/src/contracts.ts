@@ -59,6 +59,21 @@ export interface EditPlan {
   overlays: { items: Array<{ type: "text"; text: string; output: OutputRange }> };
 }
 
+export interface EditPlanV2 {
+  schemaVersion: 2;
+  jobId: string;
+  variantId: string;
+  revisionId: string;
+  analysisRevisionId: string;
+  output: { width: number; height: number; frameRate: { numerator: number; denominator: number }; durationFrames: number };
+  source: { originalAssetId: string; masterAssetId: string };
+  video: { clips: Array<{ sourceAssetId: string; source: SourceTimeRange; master: SourceTimeRange; output: OutputRange; crop: { preset: "fit" | "fill"; focalX: number; focalY: number; zoom: number }; effects: string[] }> };
+  effects: Array<{ type: "speed" | "transition" | "blur"; parameters: { rate?: number; kind?: "cut" | "crossfade" | "dipToBlack"; durationFrames?: number; amount?: number } }>;
+  captions: { words: Array<{ text: string; output: OutputRange }> };
+  audio: { sourceGain: number; musicAssetId?: string | null; musicGain?: number; ducking?: number };
+  skills: Array<{ id: string; version: string; status: "applied" | "skipped" | "rejected" }>;
+}
+
 export interface RenderAsset {
   id: string;
   path: string;

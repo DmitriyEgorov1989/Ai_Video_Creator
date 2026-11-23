@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { EditPlan, OutputRange, RenderRequest, SourceMapping } from "./contracts.js";
+import type { EditPlan, EditPlanV2, OutputRange, RenderRequest, SourceMapping } from "./contracts.js";
 
 export interface ValidationIssue {
   code: string;
@@ -77,7 +77,11 @@ function validatePlan(value: unknown, issues: ValidationIssue[]): value is EditP
     return false;
   }
 
-  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema version 1 is supported."));
+  if (value.schemaVersion === 2) {
+    validatePlanV2(value, issues);
+    return issues.length === 0;
+  }
+  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema versions 1 and 2 are supported."));
   for (const name of ["jobId", "variantId", "revisionId", "analysisRevisionId"]) requiredString(value[name], `plan.${name}`, issues);
   if (!Number.isInteger(value.seed)) issues.push(issue("seed_invalid", "plan.seed", "Seed must be an integer."));
   if (value.template !== "dynamic") issues.push(issue("template_unknown", "plan.template", "Only the dynamic template is supported."));
@@ -157,6 +161,58 @@ function validatePlan(value: unknown, issues: ValidationIssue[]): value is EditP
   return issues.length === 0;
 }
 
+function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[]): void {
+  for (const name of ["jobId", "variantId", "revisionId", "analysisRevisionId"]) requiredString(value[name], `plan.${name}`, issues);
+  const output = value.output;
+  let duration = 0;
+  if (!isRecord(output)) {
+    issues.push(issue("output_null", "plan.output", "Output profile is required."));
+  } else {
+    for (const name of ["width", "height", "durationFrames"]) {
+      if (!Number.isInteger(output[name]) || (output[name] as number) <= 0) issues.push(issue("output_invalid", `plan.output.${name}`, "Must be a positive integer."));
+    }
+    duration = typeof output.durationFrames === "number" ? output.durationFrames : 0;
+  }
+  const source = value.source;
+  if (!isRecord(source)) issues.push(issue("source_invalid", "plan.source", "Source identity is required."));
+  else {
+    requiredString(source.originalAssetId, "plan.source.originalAssetId", issues);
+    requiredString(source.masterAssetId, "plan.source.masterAssetId", issues);
+  }
+  const video = value.video;
+  if (!isRecord(video) || !Array.isArray(video.clips) || video.clips.length === 0) {
+    issues.push(issue("video_empty", "plan.video.clips", "At least one video clip is required."));
+  } else {
+    let expectedStart = 0;
+    video.clips.forEach((clip, index) => {
+      const path = `plan.video.clips[${index}]`;
+      if (!isRecord(clip)) { issues.push(issue("clip_invalid", path, "Video clip must be an object.")); return; }
+      requiredString(clip.sourceAssetId, `${path}.sourceAssetId`, issues);
+      validSourceRange(clip.source, `${path}.source`, issues);
+      validSourceRange(clip.master, `${path}.master`, issues);
+      if (!isRecord(clip.crop) || !["fit", "fill"].includes(String(clip.crop.preset))) issues.push(issue("enum_unknown", `${path}.crop.preset`, "Unknown crop preset."));
+      if (!Array.isArray(clip.effects)) issues.push(issue("effects_invalid", `${path}.effects`, "Clip effects must be an array."));
+      const range = clip.output;
+      if (validRange(range, `${path}.output`, duration, issues)) {
+        if (range.startFrame !== expectedStart) issues.push(issue("video.timeline_not_contiguous", `${path}.output`, "Video clips must be contiguous."));
+        expectedStart = range.endFrame;
+      }
+    });
+    if (expectedStart !== duration) issues.push(issue("video.duration_mismatch", "plan.video.clips", "Video clips must end at output duration."));
+  }
+  const effects = value.effects;
+  if (!Array.isArray(effects)) issues.push(issue("effects_invalid", "plan.effects", "Effects must be an array."));
+  else effects.forEach((effect, index) => {
+    if (!isRecord(effect) || !["speed", "transition", "blur"].includes(String(effect.type)) || !isRecord(effect.parameters)) issues.push(issue("effect_unsupported", `plan.effects[${index}]`, "Effect type and closed parameters are required."));
+    if (isRecord(effect) && ["code", "path", "script"].some((key) => key in effect)) issues.push(issue("effect_code_forbidden", `plan.effects[${index}]`, "Effects cannot contain executable code or paths."));
+  });
+  const captions = value.captions;
+  if (!isRecord(captions) || !Array.isArray(captions.words)) issues.push(issue("captions_invalid", "plan.captions.words", "Caption words must be an array."));
+  else captions.words.forEach((word, index) => { if (!isRecord(word) || !requiredString(word.text, `plan.captions.words[${index}].text`, issues)) return; validRange(word.output, `plan.captions.words[${index}].output`, duration, issues); });
+  if (!isRecord(value.audio) || typeof value.audio.sourceGain !== "number" || value.audio.sourceGain < 0 || value.audio.sourceGain > 4) issues.push(issue("audio_invalid", "plan.audio.sourceGain", "Source gain must be between 0 and 4."));
+  if (!Array.isArray(value.skills)) issues.push(issue("skills_invalid", "plan.skills", "Applied skills must be an array."));
+}
+
 export function validateRenderRequest(value: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   if (!isRecord(value)) return [issue("request_null", "$", "Render request must be an object.")];
@@ -224,4 +280,39 @@ export async function validateAssetFiles(request: RenderRequest): Promise<Valida
     }
   }
   return issues;
+}
+
+/** Converts the versioned contract to the narrow model consumed by the Remotion template. */
+export function normalizeRenderRequest(value: RenderRequest): RenderRequest {
+  const plan = value.plan as unknown as Record<string, unknown>;
+  if (plan.schemaVersion !== 2) return value;
+
+  const v2 = value.plan as unknown as EditPlanV2;
+  const normalized: EditPlan = {
+    schemaVersion: 1,
+    jobId: v2.jobId,
+    variantId: v2.variantId,
+    revisionId: v2.revisionId,
+    analysisRevisionId: v2.analysisRevisionId,
+    seed: 0,
+    output: v2.output,
+    template: "dynamic",
+    templateProps: { captions: v2.captions.words.length === 0 ? "none" : "emphasis", theme: "dark", title: null },
+    video: { clips: v2.video.clips.map((clip) => ({
+      segmentId: clip.sourceAssetId,
+      mapping: {
+        originalAssetId: v2.source.originalAssetId,
+        original: clip.source,
+        masterAssetId: v2.source.masterAssetId,
+        master: clip.master,
+      },
+      output: clip.output,
+      crop: clip.crop.preset === "fit" ? "fit" : "centerCrop",
+    })) },
+    audio: { sourceClips: v2.video.clips.map((clip) => ({ segmentId: clip.sourceAssetId, output: clip.output, gain: v2.audio.sourceGain })), musicClips: [] },
+    captions: { items: v2.captions.words },
+    overlays: { items: [] },
+  };
+
+  return { ...value, plan: normalized };
 }

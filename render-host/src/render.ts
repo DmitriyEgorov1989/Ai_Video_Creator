@@ -8,7 +8,7 @@ import { renderMedia, selectComposition } from "@remotion/renderer";
 import type { RenderRequest } from "./contracts.js";
 import { emit } from "./events.js";
 import { RemotionRoot } from "./entry.js";
-import { validateAssetFiles, validateRenderRequest } from "./validate.js";
+import { normalizeRenderRequest, validateAssetFiles, validateRenderRequest } from "./validate.js";
 
 const renderHostRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -20,6 +20,8 @@ export async function readRenderRequest(path: string): Promise<RenderRequest> {
 export async function renderRequest(request: RenderRequest): Promise<void> {
   const structuralIssues = validateRenderRequest(request);
   if (structuralIssues.length > 0) throw new RenderHostError("request_invalid", formatIssues(structuralIssues));
+
+  request = normalizeRenderRequest(request);
 
   const assetIssues = await validateAssetFiles(request);
   if (assetIssues.length > 0) throw new RenderHostError("asset_invalid", formatIssues(assetIssues));

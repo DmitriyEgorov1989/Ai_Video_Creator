@@ -106,3 +106,34 @@ test("rejects the shared null and enum fixture without throwing", async () => {
   assert.ok(issues.some((item) => item.code === "video_empty"));
   assert.ok(issues.some((item) => item.code === "enum_unknown"));
 });
+
+test("accepts a valid V2 plan with explicit source ranges and skill metadata", () => {
+  const request = validRequest() as unknown as Record<string, unknown>;
+  request.plan = {
+    schemaVersion: 2,
+    jobId: "job-1",
+    variantId: "variant-1",
+    revisionId: "revision-1",
+    analysisRevisionId: "analysis-1",
+    output: { width: 1080, height: 1920, frameRate: { numerator: 30, denominator: 1 }, durationFrames: 60 },
+    source: { originalAssetId: "original-1", masterAssetId: "master-1" },
+    video: { clips: [{ sourceAssetId: "segment-1", source: { startMicroseconds: 0, endMicroseconds: 2_000_000 }, master: { startMicroseconds: 0, endMicroseconds: 2_000_000 }, output: { startFrame: 0, endFrame: 60 }, crop: { preset: "fill", focalX: 0.5, focalY: 0.5, zoom: 1 }, effects: [] }] },
+    effects: [{ type: "speed", parameters: { rate: 1 } }],
+    captions: { words: [{ text: "Hello", output: { startFrame: 0, endFrame: 20 } }] },
+    audio: { sourceGain: 1 },
+    skills: [{ id: "hook-builder", version: "1", status: "applied" }],
+  };
+
+  assert.deepEqual(validateRenderRequest(request), []);
+});
+
+test("rejects V2 executable effect payloads and unknown future versions", () => {
+  const request = validRequest() as unknown as Record<string, unknown>;
+  const plan = request.plan as Record<string, unknown>;
+  plan.schemaVersion = 2;
+  plan.effects = [{ type: "blur", parameters: {}, script: "return 1" }];
+  assert.ok(validateRenderRequest(request).some((item) => item.code === "effect_code_forbidden"));
+
+  plan.schemaVersion = 99;
+  assert.ok(validateRenderRequest(request).some((item) => item.code === "schema_version"));
+});
