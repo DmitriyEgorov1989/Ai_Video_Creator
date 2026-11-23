@@ -109,7 +109,7 @@ public static class VideoFactoryHost
                 TimeSpan.FromSeconds(timeouts.DecodeSeconds),
                 timeouts.MaxOutputBytes);
         });
-        builder.Services.AddSingleton<ISceneBoundaryDetector>(services =>
+         builder.Services.AddSingleton<ISceneBoundaryDetector>(services =>
         {
             FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
@@ -154,6 +154,16 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IMediaProbe>(),
                 services.GetRequiredService<IMediaDecodeVerifier>(),
                 TimeSpan.FromSeconds(timeouts.ProbeSeconds),
+                 timeouts.MaxOutputBytes);
+         });
+         builder.Services.AddSingleton<IVideoFeatureAnalyzer>(services =>
+         {
+             FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+             return new FfmpegVideoFeatureAnalyzer(
+                 services.GetRequiredService<IProcessRunner>(),
+                 ffmpeg.FfmpegPath,
+                 TimeSpan.FromSeconds(timeouts.DecodeSeconds),
                  timeouts.MaxOutputBytes);
          });
          builder.Services.AddSingleton<IControlledVideoEncoder>(services =>

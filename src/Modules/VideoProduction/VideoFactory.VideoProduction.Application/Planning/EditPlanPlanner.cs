@@ -8,6 +8,7 @@ using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Domain.Validation;
+using VideoFactory.VideoProduction.Application.Editing;
 
 namespace VideoFactory.VideoProduction.Application.Planning;
 
@@ -19,6 +20,7 @@ public sealed class EditPlanPlanner
     private readonly IEditPlanRevisionStore revisionStore;
     private readonly IPlanningAttemptStore attemptStore;
     private readonly IPlanningApprovalStore? approvalStore;
+    private readonly EditingSkillEngine editingSkillEngine;
 
     /// <summary>Создаёт planner.</summary>
     public EditPlanPlanner(
@@ -26,13 +28,23 @@ public sealed class EditPlanPlanner
         IPlanningCostPolicy costPolicy,
         IEditPlanRevisionStore revisionStore,
         IPlanningAttemptStore attemptStore,
-        IPlanningApprovalStore? approvalStore = null)
+        IPlanningApprovalStore? approvalStore = null,
+        EditingSkillEngine? editingSkillEngine = null)
     {
         this.provider = provider;
         this.costPolicy = costPolicy;
         this.revisionStore = revisionStore;
         this.attemptStore = attemptStore;
         this.approvalStore = approvalStore;
+        this.editingSkillEngine = editingSkillEngine ?? new EditingSkillEngine(
+        [
+            new SemanticStorySkill(),
+            new HookBuilderSkill(),
+            new SmartCutSkill(),
+            new BestShotSelectorSkill(),
+            new PacingDirectorSkill(),
+            new SpeechTighteningSkill()
+        ]);
     }
 
     /// <summary>Строит план с максимум одной попыткой исправления ответа provider.</summary>
@@ -64,7 +76,18 @@ public sealed class EditPlanPlanner
             return new PlanningResult.Existing(approved);
         }
 
-        ProviderPlanningRequest providerRequest = CreateProviderRequest(request);
+        EditingEvaluation editingEvaluation = editingSkillEngine.Evaluate(
+            new EditingContext(request.Analysis, request.Settings, request.Comment),
+            new EditingSkillConfiguration(
+            [
+                new("semantic-story", true),
+                new("hook-builder", true),
+                new("smart-cut", true),
+                new("best-shot", true),
+                new("pacing-director", true),
+                new("speech-tightening", true)
+            ]));
+        ProviderPlanningRequest providerRequest = CreateProviderRequest(request, editingEvaluation);
         decimal accumulatedActualCostUsd = 0m;
         PlanConstructionException? lastError = null;
         for (int attempt = 0; attempt < 2; attempt++)
@@ -138,10 +161,11 @@ public sealed class EditPlanPlanner
 
             try
             {
-                EditPlan plan = CreatePlan(request, response);
+                AnalysisResult effectiveAnalysis = ApplyEditingEvaluation(request.Analysis, editingEvaluation);
+                EditPlan plan = CreatePlan(request, response, effectiveAnalysis, editingEvaluation);
                 ImmutableArray<ValidationIssue> issues = EditPlanValidator.Validate(
                     plan,
-                    request.Analysis,
+                    effectiveAnalysis,
                     request.Assets,
                     request.Templates);
 
@@ -248,24 +272,53 @@ public sealed class EditPlanPlanner
         return null;
     }
 
-    private static ProviderPlanningRequest CreateProviderRequest(PlanningRequest request) =>
+    private static ProviderPlanningRequest CreateProviderRequest(
+        PlanningRequest request,
+        EditingEvaluation editingEvaluation) =>
         new(
             request.Comment,
             request.Settings.Tempo,
             request.Settings.TargetDurationSeconds,
             request.Settings.CaptionsEnabled,
-            request.Analysis.AllowedSegments
+            ApplyEditingEvaluation(request.Analysis, editingEvaluation).AllowedSegments
                 .Select(segment => new ProviderSegment(
                     segment.Id,
                     segment.Mapping.Master.DurationMicroseconds))
                 .ToImmutableArray(),
             string.Join(
                 Environment.NewLine,
-                request.Analysis.Speech.Select(segment => segment.Text)));
+                request.Analysis.Speech.Select(segment => segment.Text)),
+            0,
+            editingEvaluation);
+
+    private static AnalysisResult ApplyEditingEvaluation(
+        AnalysisResult analysis,
+        EditingEvaluation evaluation)
+    {
+        Dictionary<SegmentId, SourceMapping> mappings = evaluation.Decisions
+            .OfType<SmartCutDecision>()
+            .SelectMany(decision => decision.Edits)
+            .ToDictionary(edit => edit.SegmentId, edit => edit.Mapping);
+        if (mappings.Count == 0)
+        {
+            return analysis;
+        }
+
+        return analysis with
+        {
+            AllowedSegments = analysis.AllowedSegments
+                .Select(segment => mappings.TryGetValue(segment.Id, out SourceMapping? mapping)
+                    ? segment with { Mapping = mapping }
+                    : segment)
+                .ToImmutableArray()
+        };
+    }
 
     private static EditPlan CreatePlan(
         PlanningRequest request,
-        ProviderPlanResponse response)
+        ProviderPlanResponse response,
+        AnalysisResult analysis,
+        EditingEvaluation editingEvaluation)
     {
         if (response.SchemaVersion != 1)
         {
@@ -283,8 +336,13 @@ public sealed class EditPlanPlanner
                 "The fixed MVP template is not available.");
         }
 
-        Dictionary<SegmentId, AllowedSegment> segments = request.Analysis.AllowedSegments
+        Dictionary<SegmentId, AllowedSegment> segments = analysis.AllowedSegments
             .ToDictionary(segment => segment.Id);
+        Dictionary<SegmentId, OutputRange> pacingOutputs = editingEvaluation.Decisions
+            .OfType<PacingDecision>()
+            .Where(decision => decision.Status == EditingDecisionStatus.Applied)
+            .SelectMany(decision => decision.Shots)
+            .ToDictionary(shot => shot.SegmentId, shot => shot.Output);
         List<VideoClip> clips = [];
         foreach (ProviderVideoClip providerClip in response.VideoClips)
         {
@@ -298,7 +356,9 @@ public sealed class EditPlanPlanner
             clips.Add(new VideoClip(
                 segment.Id,
                 segment.Mapping,
-                providerClip.Output,
+                pacingOutputs.TryGetValue(segment.Id, out OutputRange pacedOutput)
+                    ? pacedOutput
+                    : providerClip.Output,
                 providerClip.Crop));
         }
 

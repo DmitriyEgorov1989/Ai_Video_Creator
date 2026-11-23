@@ -75,6 +75,42 @@ public sealed class AnalysisServiceTests
         Assert.NotEmpty(succeeded.Analysis.AllowedSegments);
     }
 
+    [Fact]
+    public async Task AnalysisPopulatesFeaturesFromVideoAnalyzerAndTranscript()
+    {
+        ArtifactId originalId = ArtifactId.New();
+        ArtifactId masterId = ArtifactId.New();
+        SegmentAnalysisFeatures visual = new(
+            SegmentId.New(), 0m, 0.8m, 0.7m, 0.6m, 0.5m, 0.9m);
+        AnalysisService service = new(
+            new FakeAudioActivityDetector(new AudioActivityResult(
+                true, [new MasterRange(0, 2_000_000), new MasterRange(2_000_000, 4_000_000)], [])),
+            new FakeTranscriber(
+            [
+                new SpeechSegment(
+                    "clear useful point",
+                    new MasterRange(0, 2_000_000),
+                    [new WordTiming("clear", new MasterRange(100_000, 300_000))]),
+                new SpeechSegment(
+                    "clear useful point",
+                    new MasterRange(2_000_000, 4_000_000),
+                    [new WordTiming("clear", new MasterRange(2_100_000, 2_300_000))])
+            ]),
+            new FakeSceneDetector([new MasterRange(0, 2_000_000), new MasterRange(2_000_000, 4_000_000)]),
+            new FakeVideoFeatureAnalyzer(visual));
+
+        AnalysisExecutionResult.Succeeded result = Assert.IsType<AnalysisExecutionResult.Succeeded>(
+            await service.AnalyzeAsync(
+                new AnalysisRequest(originalId, masterId, "master.mp4", 4_000_000, 4_000_000),
+                CancellationToken.None));
+
+        SegmentAnalysisFeatures features = result.Analysis.Features.Segments[0];
+        Assert.Equal(result.Analysis.AllowedSegments[0].Id, features.SegmentId);
+        Assert.Equal(0.8m, features.Sharpness);
+        Assert.True(features.SemanticRelevance > 0m);
+        Assert.NotNull(features.DuplicateGroup);
+    }
+
     private sealed class FakeAudioActivityDetector(AudioActivityResult result)
         : IAudioActivityDetector
     {
@@ -105,5 +141,15 @@ public sealed class AnalysisServiceTests
             SceneDetectionRequest request,
             CancellationToken cancellationToken) =>
             Task.FromResult(SceneDetectionResult.Succeeded(scenes));
+    }
+
+    private sealed class FakeVideoFeatureAnalyzer(SegmentAnalysisFeatures result)
+        : IVideoFeatureAnalyzer
+    {
+        public Task<VideoFeatureAnalysisResult> AnalyzeAsync(
+            VideoFeatureAnalysisRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(VideoFeatureAnalysisResult.Succeeded(
+                request.Segments.Select(segment => result with { SegmentId = segment.Id }).ToArray()));
     }
 }

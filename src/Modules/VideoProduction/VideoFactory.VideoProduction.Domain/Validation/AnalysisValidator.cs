@@ -30,6 +30,7 @@ public static class AnalysisValidator
         ValidateCollections(analysis, issues);
         ValidateMasterRanges(analysis, master, issues);
         ValidateSegments(analysis, original, master, issues);
+        ValidateFeatures(analysis, issues);
 
         return [.. issues];
     }
@@ -160,6 +161,40 @@ public static class AnalysisValidator
             if (master is not null)
                 CheckMasterBounds(segment.Mapping.Master, master, $"{path}.mapping.master", issues);
         }
+    }
+
+    private static void ValidateFeatures(AnalysisResult analysis, List<ValidationIssue> issues)
+    {
+        if (analysis.Features.SchemaVersion != 1)
+        {
+            Add(issues, "analysis.features_schema_version", "features.schemaVersion", "Only feature schema version 1 is supported.");
+        }
+
+        HashSet<SegmentId> knownSegments = analysis.AllowedSegments
+            .Select(segment => segment.Id)
+            .ToHashSet();
+        HashSet<SegmentId> featureSegments = [];
+        for (int index = 0; index < analysis.Features.Segments.Length; index++)
+        {
+            SegmentAnalysisFeatures feature = analysis.Features.Segments[index];
+            string path = $"features.segments[{index}]";
+            if (!knownSegments.Contains(feature.SegmentId))
+                Add(issues, "analysis.feature_segment_unknown", $"{path}.segmentId", "Feature refers to an unknown segment.");
+            if (!featureSegments.Add(feature.SegmentId))
+                Add(issues, "analysis.feature_segment_duplicate", $"{path}.segmentId", "Feature segments must be unique.");
+            CheckScore(feature.SemanticRelevance, $"{path}.semanticRelevance", issues);
+            CheckScore(feature.Sharpness, $"{path}.sharpness", issues);
+            CheckScore(feature.Composition, $"{path}.composition", issues);
+            CheckScore(feature.Motion, $"{path}.motion", issues);
+            CheckScore(feature.AudioEnergy, $"{path}.audioEnergy", issues);
+            CheckScore(feature.Confidence, $"{path}.confidence", issues);
+        }
+    }
+
+    private static void CheckScore(decimal value, string path, List<ValidationIssue> issues)
+    {
+        if (value < 0m || value > 1m)
+            Add(issues, "analysis.feature_score_invalid", path, "Feature score must be between 0 and 1.");
     }
 
     private static void CheckMasterBounds(

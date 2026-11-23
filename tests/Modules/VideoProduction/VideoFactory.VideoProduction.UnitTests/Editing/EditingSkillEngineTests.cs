@@ -132,6 +132,104 @@ public sealed class EditingSkillEngineTests
         Assert.Equal(new MasterRange(0, 1_000_000), edit.Mapping.Master);
     }
 
+    [Fact]
+    public void StoryAndHookUseKnownTranscriptSegmentsDeterministically()
+    {
+        ValidPlanFixture fixture = ValidPlanFixture.Create();
+        AnalysisResult analysis = fixture.Analysis with
+        {
+            Speech =
+            [
+                new SpeechSegment(
+                    "Useful opening",
+                    new MasterRange(0, 1_000_000),
+                    [new WordTiming("Useful", new MasterRange(100_000, 400_000)), new WordTiming("opening", new MasterRange(500_000, 900_000))]),
+                new SpeechSegment(
+                    "Useful conclusion",
+                    new MasterRange(3_000_000, 4_000_000),
+                    [new WordTiming("Useful", new MasterRange(3_100_000, 3_400_000)), new WordTiming("conclusion", new MasterRange(3_500_000, 3_900_000))])
+            ],
+            Features = new AnalysisFeatureSet(
+            [
+                new SegmentAnalysisFeatures(fixture.Analysis.AllowedSegments[0].Id, 0.9m, 0.7m, 0.8m, 0.5m, 0.6m, 0.95m),
+                new SegmentAnalysisFeatures(fixture.Analysis.AllowedSegments[1].Id, 0.4m, 0.9m, 0.8m, 0.7m, 0.6m, 0.95m)
+            ])
+        };
+
+        EditingEvaluation evaluation = new EditingSkillEngine(
+        [new SemanticStorySkill(), new HookBuilderSkill()]).Evaluate(
+            new EditingContext(analysis, new ProductionSettings(6, true, false), "Keep the useful point"),
+            new EditingSkillConfiguration(
+            [
+                new("semantic-story", true),
+                new("hook-builder", true)
+            ]));
+
+        SemanticStoryDecision story = Assert.IsType<SemanticStoryDecision>(evaluation.Decisions[0]);
+        HookDecision hook = Assert.IsType<HookDecision>(evaluation.Decisions[1]);
+        Assert.Equal(EditingDecisionStatus.Applied, story.Status);
+        Assert.Equal(fixture.Analysis.AllowedSegments[0].Id, story.Segments[0].SegmentId);
+        Assert.Equal("Useful opening", story.Segments[0].Text);
+        Assert.Equal(fixture.Analysis.AllowedSegments[0].Id, hook.Candidates[0].SegmentId);
+        Assert.Equal(0.9m, hook.Candidates[0].Score);
+    }
+
+    [Fact]
+    public void SmartCutNeverCutsInsideAWordAndPacingIsContiguous()
+    {
+        ValidPlanFixture fixture = ValidPlanFixture.Create();
+        AnalysisResult analysis = fixture.Analysis with
+        {
+            Speech =
+            [new SpeechSegment(
+                "hello world",
+                new MasterRange(500_000, 2_500_000),
+                [new WordTiming("hello", new MasterRange(500_000, 1_000_000)), new WordTiming("world", new MasterRange(1_500_000, 2_500_000))])],
+            Pauses = [new MasterRange(0, 500_000), new MasterRange(2_500_000, 3_000_000)],
+            Features = new AnalysisFeatureSet(
+            [new SegmentAnalysisFeatures(fixture.Analysis.AllowedSegments[0].Id, 0.8m, 0.8m, 0.8m, 0.8m, 0.5m, 0.9m)])
+        };
+
+        EditingEvaluation evaluation = new EditingSkillEngine(
+        [new SemanticStorySkill(), new SmartCutSkill(), new PacingDirectorSkill()]).Evaluate(
+            new EditingContext(analysis, new ProductionSettings(6, true, false)),
+            new EditingSkillConfiguration(
+            [
+                new("semantic-story", true),
+                new("smart-cut", true),
+                new("pacing-director", true)
+            ]));
+
+        SmartCutDecision cut = Assert.IsType<SmartCutDecision>(evaluation.Decisions[1]);
+        SmartCutEdit edit = Assert.Single(cut.Edits);
+        Assert.Equal(new MasterRange(500_000, 2_500_000), edit.Mapping.Master);
+        PacingDecision pacing = Assert.IsType<PacingDecision>(evaluation.Decisions[2]);
+        Assert.Equal(0, pacing.Shots[0].Output.StartFrame);
+        Assert.Equal(pacing.Shots[0].Output.EndFrame, pacing.Shots[1].Output.StartFrame);
+        Assert.Equal(180, pacing.Shots[^1].Output.EndFrame);
+    }
+
+    [Fact]
+    public void BestShotUsesExplainableWeightedScore()
+    {
+        ValidPlanFixture fixture = ValidPlanFixture.Create();
+        AnalysisResult analysis = fixture.Analysis with
+        {
+            Features = new AnalysisFeatureSet(
+            [
+                new SegmentAnalysisFeatures(fixture.Analysis.AllowedSegments[0].Id, 1m, 0m, 0m, 0m, 0m, 1m),
+                new SegmentAnalysisFeatures(fixture.Analysis.AllowedSegments[1].Id, 0m, 1m, 1m, 1m, 0m, 1m)
+            ])
+        };
+
+        BestShotDecision decision = Assert.IsType<BestShotDecision>(
+            new BestShotSelectorSkill().Evaluate(new EditingContext(analysis, new ProductionSettings(null, true, false))));
+
+        Assert.Equal(0.6m, decision.Selections[0].Score);
+        Assert.Equal(fixture.Analysis.AllowedSegments[1].Id, decision.Selections[0].SegmentId);
+        Assert.Equal(EditingDecisionStatus.Applied, decision.Status);
+    }
+
     private sealed class TestSkill : IEditingSkill
     {
         public string Id => "test-enabled";

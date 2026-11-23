@@ -7,6 +7,7 @@ using VideoFactory.VideoProduction.Domain.Media;
 using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Domain.Validation;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Jobs.State;
 
@@ -36,7 +37,8 @@ public sealed record ProviderPlanningRequest(
     bool CaptionsEnabled,
     ImmutableArray<ProviderSegment> AllowedSegments,
     string? ExtractedText = null,
-    int RepairAttempt = 0);
+    int RepairAttempt = 0,
+    EditingEvaluation? EditingEvaluation = null);
 
 /// <summary>Известный provider-у сегмент анализа.</summary>
 public sealed record ProviderSegment(SegmentId Id, long DurationMicroseconds);
