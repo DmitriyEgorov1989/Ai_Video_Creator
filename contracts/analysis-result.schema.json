@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/analysis-result.schema.json",
+  "title": "AnalysisResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["SchemaVersion", "RevisionId", "OriginalAssetId", "MasterAssetId", "Speech", "Pauses", "Scenes", "AllowedSegments"],
+  "properties": {
+    "SchemaVersion": { "enum": [1, 2] },
+    "RevisionId": { "type": "string", "minLength": 1 },
+    "OriginalAssetId": { "type": "string", "minLength": 1 },
+    "MasterAssetId": { "type": "string", "minLength": 1 },
+    "Speech": { "type": "array", "items": { "$ref": "#/$defs/speech" } },
+    "Pauses": { "type": "array", "items": { "$ref": "#/$defs/range" } },
+    "Scenes": { "type": "array", "items": { "type": "object", "required": ["Interval"], "additionalProperties": false, "properties": { "Interval": { "$ref": "#/$defs/range" } } } },
+    "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "required": ["StartMicroseconds", "EndMicroseconds"],
+      "additionalProperties": false,
+      "properties": {
+        "StartMicroseconds": { "type": "integer", "minimum": 0 },
+        "EndMicroseconds": { "type": "integer", "exclusiveMinimum": 0 }
+      }
+    },
+    "word": {
+      "type": "object",
+      "required": ["Text", "Interval"],
+      "additionalProperties": false,
+      "properties": { "Text": { "type": "string", "minLength": 1 }, "Interval": { "$ref": "#/$defs/range" } }
+    },
+    "speech": {
+      "type": "object",
+      "required": ["Text", "Interval", "Words"],
+      "additionalProperties": false,
+      "properties": {
+        "Text": { "type": "string", "minLength": 1 },
+        "Interval": { "$ref": "#/$defs/range" },
+        "Words": { "type": "array", "items": { "$ref": "#/$defs/word" } },
+        "SegmentId": { "type": ["string", "null"] }
+      }
+    },
+    "features": {
+      "type": "object",
+      "required": ["Motion", "Sharpness", "Exposure", "AudioEnergy", "TechnicalValidity", "TechnicalIssues"],
+      "additionalProperties": false,
+      "properties": {
+        "Motion": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Sharpness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Exposure": { "type": "number", "minimum": 0, "maximum": 1 },
+        "AudioEnergy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "TechnicalValidity": { "type": "boolean" },
+        "TechnicalIssues": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "segment": {
+      "type": "object",
+      "required": ["Id", "Mapping"],
+      "additionalProperties": false,
+      "properties": {
+        "Id": { "type": "string", "minLength": 1 },
+        "Mapping": { "type": "object", "required": ["OriginalAssetId", "Original", "MasterAssetId", "Master"], "additionalProperties": false, "properties": { "OriginalAssetId": { "type": "string" }, "Original": { "$ref": "#/$defs/range" }, "MasterAssetId": { "type": "string" }, "Master": { "$ref": "#/$defs/range" } } },
+        "SpeechSegmentIds": { "type": "array", "items": { "type": "string" } },
+        "SceneIndexes": { "type": "array", "items": { "type": "integer", "minimum": 0 } },
+        "Features": { "$ref": "#/$defs/features" },
+        "Confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Reasons": { "type": "array", "items": { "type": "string" } },
+        "IsApproved": { "type": "boolean" }
+      }
+    }
+  }
+}

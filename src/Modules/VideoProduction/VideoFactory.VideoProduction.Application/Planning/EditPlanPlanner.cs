@@ -255,6 +255,7 @@ public sealed class EditPlanPlanner
             request.Settings.TargetDurationSeconds,
             request.Settings.CaptionsEnabled,
             request.Analysis.AllowedSegments
+                .Where(segment => request.Analysis.SchemaVersion < 2 || segment.IsApproved)
                 .Select(segment => new ProviderSegment(
                     segment.Id,
                     segment.Mapping.Master.DurationMicroseconds))
@@ -284,6 +285,7 @@ public sealed class EditPlanPlanner
         }
 
         Dictionary<SegmentId, AllowedSegment> segments = request.Analysis.AllowedSegments
+            .Where(segment => request.Analysis.SchemaVersion < 2 || segment.IsApproved)
             .ToDictionary(segment => segment.Id);
         List<VideoClip> clips = [];
         foreach (ProviderVideoClip providerClip in response.VideoClips)

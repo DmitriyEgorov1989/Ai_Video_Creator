@@ -82,6 +82,16 @@ public static class VideoFactoryHost
                 Path.GetFullPath(Path.Combine(BuildWorkspaceRoot(services), remotion.RenderHostPath)));
         });
         builder.Services.AddSingleton<IAnalysisService, AnalysisService>();
+        builder.Services.AddSingleton<IAnalysisFeatureExtractor>(services =>
+        {
+            FfmpegOptions ffmpeg = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new FfmpegAnalysisFeatureExtractor(
+                services.GetRequiredService<IProcessRunner>(),
+                ffmpeg.FfmpegPath,
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes);
+        });
         builder.Services.AddSingleton<HttpClient>();
         builder.Services.AddSingleton<IEditPlanProvider>(services =>
         {

@@ -47,6 +47,43 @@ public sealed class AnalysisServiceTests
     }
 
     [Fact]
+    public async Task AnalysisV2LinksSegmentEvidenceAndQualityFeatures()
+    {
+        AnalysisService service = new(
+            new FakeAudioActivityDetector(new AudioActivityResult(
+                true,
+                [new MasterRange(1_000_000, 3_000_000)],
+                [new MasterRange(0, 1_000_000)])),
+            new FakeTranscriber(new SpeechSegment[] {
+                new SpeechSegment(
+                    "hello world",
+                    new MasterRange(1_000_000, 3_000_000),
+                    [
+                        new WordTiming("hello", new MasterRange(1_000_000, 1_500_000)),
+                        new WordTiming("world", new MasterRange(1_600_000, 2_000_000))
+                    ]) }),
+            new FakeSceneDetector([new MasterRange(0, 4_000_000)]),
+            new FakeFeatureExtractor(new SegmentQualityFeatures(
+                0.8m, 0.7m, 0.9m, 0.6m, true, [])));
+
+        AnalysisExecutionResult result = await service.AnalyzeAsync(
+            new AnalysisRequest(ArtifactId.New(), ArtifactId.New(), "master.mp4", 4_000_000, 4_000_000),
+            CancellationToken.None);
+
+        AnalysisResult analysis = Assert.IsType<AnalysisExecutionResult.Succeeded>(result).Analysis;
+        AllowedSegment segment = Assert.Single(analysis.AllowedSegments);
+        SpeechSegment speech = Assert.Single(analysis.Speech);
+
+        Assert.Equal(2, analysis.SchemaVersion);
+        Assert.Equal(segment.Id, speech.SegmentId);
+        Assert.Equal(segment.Id, segment.SpeechSegmentIds.Single());
+        Assert.Equal(0.8m, segment.Features.Motion);
+        Assert.Equal(0.9m, segment.Features.Exposure);
+        Assert.True(segment.IsApproved);
+        Assert.Contains("speech-aligned", segment.Reasons);
+    }
+
+    [Fact]
     public async Task InputWithoutUsefulSpeechDoesNotInvokeTranscriber()
     {
         FakeTranscriber transcriber = new([]);
@@ -73,6 +110,27 @@ public sealed class AnalysisServiceTests
         Assert.Empty(succeeded.Analysis.Speech);
         Assert.Empty(transcriber.Calls);
         Assert.NotEmpty(succeeded.Analysis.AllowedSegments);
+    }
+
+    [Fact]
+    public async Task RepeatedSpeechIsRejectedByDeterministicFallback()
+    {
+        AnalysisService service = new(
+            new FakeAudioActivityDetector(new AudioActivityResult(true, [], [])),
+            new FakeTranscriber([
+                new SpeechSegment("same words", new MasterRange(0, 1_000_000), [new WordTiming("same", new MasterRange(0, 500_000))]),
+                new SpeechSegment("same   words", new MasterRange(1_000_000, 2_000_000), [new WordTiming("words", new MasterRange(1_000_000, 1_500_000))])]),
+            new FakeSceneDetector([new MasterRange(0, 2_000_000)]));
+
+        AnalysisResult analysis = Assert.IsType<AnalysisExecutionResult.Succeeded>(await service.AnalyzeAsync(
+            new AnalysisRequest(ArtifactId.New(), ArtifactId.New(), "master.mp4", 2_000_000, 2_000_000),
+            CancellationToken.None)).Analysis;
+
+        AllowedSegment[] segments = analysis.AllowedSegments.ToArray();
+        Assert.Equal(2, segments.Length);
+        Assert.True(segments[0].IsApproved);
+        Assert.False(segments[1].IsApproved);
+        Assert.Contains("duplicate-of:", segments[1].Reasons.Single(reason => reason.StartsWith("duplicate-of:", StringComparison.Ordinal)));
     }
 
     private sealed class FakeAudioActivityDetector(AudioActivityResult result)
@@ -105,5 +163,12 @@ public sealed class AnalysisServiceTests
             SceneDetectionRequest request,
             CancellationToken cancellationToken) =>
             Task.FromResult(SceneDetectionResult.Succeeded(scenes));
+    }
+
+    private sealed class FakeFeatureExtractor(SegmentQualityFeatures features) : IAnalysisFeatureExtractor
+    {
+        public Task<SegmentQualityFeatures> ExtractAsync(
+            FeatureExtractionRequest request,
+            CancellationToken cancellationToken) => Task.FromResult(features);
     }
 }

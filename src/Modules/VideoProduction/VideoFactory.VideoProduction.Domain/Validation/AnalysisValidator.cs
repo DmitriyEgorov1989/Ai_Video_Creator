@@ -16,9 +16,9 @@ public static class AnalysisValidator
         ArgumentNullException.ThrowIfNull(assets);
 
         List<ValidationIssue> issues = [];
-        if (analysis.SchemaVersion != 1)
+        if (analysis.SchemaVersion is not 1 and not 2)
         {
-            Add(issues, "analysis.schema_version", "schemaVersion", "Only analysis schema version 1 is supported.");
+            Add(issues, "analysis.schema_version", "schemaVersion", "Analysis schema version 1 or 2 is supported.");
         }
 
         if (analysis.RevisionId.IsEmpty) Add(issues, "analysis.revision_empty", "revisionId", "Revision ID is required.");
@@ -159,6 +159,33 @@ public static class AnalysisValidator
                 Add(issues, "timeline.original_out_of_bounds", $"{path}.mapping.original", "Original interval exceeds asset duration.");
             if (master is not null)
                 CheckMasterBounds(segment.Mapping.Master, master, $"{path}.mapping.master", issues);
+
+            if (analysis.SchemaVersion >= 2)
+            {
+                if (segment.Features.TechnicalIssues.IsDefault)
+                    Add(issues, "analysis.features_uninitialized", $"{path}.features", "Feature issues collection must be initialized.");
+                if (segment.Confidence is < 0m or > 1m)
+                    Add(issues, "analysis.confidence_out_of_range", $"{path}.confidence", "Confidence must be between 0 and 1.");
+                if (segment.SpeechSegmentIds.IsDefault)
+                    Add(issues, "analysis.speech_links_uninitialized", $"{path}.speechSegmentIds", "Speech links collection must be initialized.");
+                if (segment.SceneIndexes.IsDefault)
+                    Add(issues, "analysis.scene_links_uninitialized", $"{path}.sceneIndexes", "Scene links collection must be initialized.");
+                foreach (int sceneIndex in segment.SceneIndexes)
+                {
+                    if (sceneIndex < 0 || sceneIndex >= analysis.Scenes.Length)
+                        Add(issues, "analysis.scene_link_invalid", $"{path}.sceneIndexes", "Scene link must refer to an existing scene.");
+                }
+
+                HashSet<SegmentId> speechIds = analysis.Speech
+                    .Where(item => item.SegmentId is not null)
+                    .Select(item => item.SegmentId!.Value)
+                    .ToHashSet();
+                foreach (SegmentId speechId in segment.SpeechSegmentIds)
+                {
+                    if (!speechIds.Contains(speechId))
+                        Add(issues, "analysis.speech_link_invalid", $"{path}.speechSegmentIds", "Speech link must refer to an existing speech segment.");
+                }
+            }
         }
     }
 

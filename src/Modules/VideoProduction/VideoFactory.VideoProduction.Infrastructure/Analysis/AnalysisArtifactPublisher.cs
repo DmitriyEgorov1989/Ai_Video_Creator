@@ -61,7 +61,7 @@ public sealed class AnalysisArtifactPublisher : IAnalysisArtifactPublisher
                 succeeded.File.SizeBytes,
                 JsonSerializer.Serialize(new { schemaVersion = analysis.SchemaVersion, analysis.RevisionId }),
                 analysis.MasterAssetId,
-                "analysis-v1",
+                 $"analysis-v{analysis.SchemaVersion}",
                 jobId),
             cancellationToken);
 

@@ -12,16 +12,19 @@ public sealed class AnalysisService : IAnalysisService
     private readonly IAudioActivityDetector activityDetector;
     private readonly IWhisperTranscriber transcriber;
     private readonly ISceneBoundaryDetector sceneDetector;
+    private readonly IAnalysisFeatureExtractor? featureExtractor;
 
     /// <summary>Создаёт сервис анализа.</summary>
     public AnalysisService(
         IAudioActivityDetector activityDetector,
         IWhisperTranscriber transcriber,
-        ISceneBoundaryDetector sceneDetector)
+        ISceneBoundaryDetector sceneDetector,
+        IAnalysisFeatureExtractor? featureExtractor = null)
     {
         this.activityDetector = activityDetector;
         this.transcriber = transcriber;
         this.sceneDetector = sceneDetector;
+        this.featureExtractor = featureExtractor;
     }
 
     /// <inheritdoc />
@@ -79,15 +82,29 @@ public sealed class AnalysisService : IAnalysisService
             allowedRanges = [new MasterRange(0, request.MasterDurationMicroseconds)];
         }
 
+        IReadOnlyList<SpeechSegment> linkedSpeech = speech
+            .Select(item => item with
+            {
+                SegmentId = CreateSegmentId(request.MasterAssetId, item.Interval)
+            })
+            .ToArray();
+
+        ImmutableArray<AllowedSegment> allowedSegments = await CreateAllowedSegmentsAsync(
+            request,
+            allowedRanges,
+            linkedSpeech,
+            scenes.Scenes,
+            cancellationToken);
+
         AnalysisResult analysis = new(
-            1,
-            CreateRevisionId(request, activity, speech, scenes.Scenes),
+            2,
+            CreateRevisionId(request, activity, linkedSpeech, scenes.Scenes, allowedSegments),
             request.OriginalAssetId,
             request.MasterAssetId,
-            speech.ToImmutableArray(),
+            linkedSpeech.ToImmutableArray(),
             activity.Pauses.ToImmutableArray(),
             scenes.Scenes.Select(static interval => new Scene(interval)).ToImmutableArray(),
-            CreateAllowedSegments(request, allowedRanges));
+            allowedSegments);
 
         IReadOnlyList<string> errors = Validate(analysis, request);
         return errors.Count == 0
@@ -97,21 +114,100 @@ public sealed class AnalysisService : IAnalysisService
                 string.Join("; ", errors));
     }
 
-    private static ImmutableArray<AllowedSegment> CreateAllowedSegments(
+    private async Task<ImmutableArray<AllowedSegment>> CreateAllowedSegmentsAsync(
         AnalysisRequest request,
-        IReadOnlyList<MasterRange> ranges)
+        IReadOnlyList<MasterRange> ranges,
+        IReadOnlyList<SpeechSegment> speech,
+        IReadOnlyList<MasterRange> scenes,
+        CancellationToken cancellationToken)
     {
-        return ranges
-            .OrderBy(static range => range.StartMicroseconds)
-            .Select(range => new AllowedSegment(
-                CreateSegmentId(request.MasterAssetId, range),
+        List<AllowedSegment> result = [];
+        Dictionary<string, SegmentId> firstSpeechByText = [];
+        HashSet<SegmentId> duplicateSpeechIds = [];
+        Dictionary<SegmentId, SegmentId> duplicateFirstById = [];
+        foreach (SpeechSegment item in speech)
+        {
+            string key = NormalizeSpeech(item.Text);
+            if (key.Length == 0) continue;
+            SegmentId id = item.SegmentId!.Value;
+            if (firstSpeechByText.TryGetValue(key, out SegmentId firstId))
+            {
+                duplicateSpeechIds.Add(id);
+                duplicateFirstById[id] = firstId;
+            }
+            else
+                firstSpeechByText[key] = id;
+        }
+
+        foreach (MasterRange range in ranges.OrderBy(static range => range.StartMicroseconds))
+        {
+            SegmentId id = CreateSegmentId(request.MasterAssetId, range);
+            ImmutableArray<SegmentId> speechIds = speech
+                .Where(item => Overlaps(item.Interval, range))
+                .Select(item => item.SegmentId!.Value)
+                .ToImmutableArray();
+            ImmutableArray<int> sceneIndexes = scenes
+                .Select((scene, index) => (scene, index))
+                .Where(item => Overlaps(item.scene, range))
+                .Select(item => item.index)
+                .ToImmutableArray();
+            bool duplicate = speechIds.Any(duplicateSpeechIds.Contains);
+            SegmentId? duplicateOf = speechIds
+                .Where(duplicateFirstById.ContainsKey)
+                .Select(id => duplicateFirstById[id])
+                .FirstOrDefault();
+
+            SegmentQualityFeatures features = featureExtractor is null
+                ? SegmentQualityFeatures.Fallback
+                : await featureExtractor.ExtractAsync(
+                    new FeatureExtractionRequest(request.FilePath, range),
+                    cancellationToken);
+            List<string> reasons = [];
+            if (speechIds.Length > 0) reasons.Add("speech-aligned");
+            if (sceneIndexes.Length > 0) reasons.Add("scene-aligned");
+            if (duplicate)
+                reasons.Add(duplicateOf is { } first && !first.IsEmpty ? $"duplicate-of:{first}" : "duplicate-fallback");
+            reasons.AddRange(features.TechnicalIssues);
+
+            result.Add(new AllowedSegment(
+                id,
                 new SourceMapping(
                     request.OriginalAssetId,
                     MapToOriginal(range, request),
                     request.MasterAssetId,
-                    range)))
-            .ToImmutableArray();
+                    range))
+            {
+                SpeechSegmentIds = speechIds,
+                SceneIndexes = sceneIndexes,
+                Features = features.ToSnapshot(),
+                Confidence = CalculateConfidence(features, speechIds.Length > 0, sceneIndexes.Length > 0),
+                Reasons = reasons.Distinct(StringComparer.Ordinal).ToImmutableArray(),
+                IsApproved = features.TechnicalValidity && !duplicate
+            });
+        }
+
+        return [.. result];
     }
+
+    private static decimal CalculateConfidence(
+        SegmentQualityFeatures features,
+        bool hasSpeech,
+        bool hasScene) =>
+        Math.Clamp(
+            (features.Motion + features.Sharpness + features.Exposure + features.AudioEnergy) / 4m
+            + (hasSpeech ? 0.2m : 0m)
+            + (hasScene ? 0.1m : 0m),
+            0m,
+            1m);
+
+    private static bool Overlaps(MasterRange left, MasterRange right) =>
+        left.StartMicroseconds < right.EndMicroseconds
+        && right.StartMicroseconds < left.EndMicroseconds;
+
+    private static string NormalizeSpeech(string text) =>
+        string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+            .Trim()
+            .ToUpperInvariant();
 
     private static OriginalRange MapToOriginal(
         MasterRange range,
@@ -145,7 +241,8 @@ public sealed class AnalysisService : IAnalysisService
         AnalysisRequest request,
         AudioActivityResult activity,
         IReadOnlyList<SpeechSegment> speech,
-        IReadOnlyList<MasterRange> scenes)
+        IReadOnlyList<MasterRange> scenes,
+        IReadOnlyList<AllowedSegment> allowedSegments)
     {
         string input = string.Join(
             "|",
@@ -156,7 +253,10 @@ public sealed class AnalysisService : IAnalysisService
             activity.HasUsefulSpeech,
             string.Join(',', activity.SpeechWindows),
             string.Join(',', speech),
-            string.Join(',', scenes));
+            string.Join(',', scenes),
+            string.Join(',', allowedSegments.Select(static segment =>
+                $"{segment.Id}:{segment.Confidence}:{segment.IsApproved}:{string.Join('|', segment.Reasons)}:" +
+                $"{segment.Features.Motion}:{segment.Features.Sharpness}:{segment.Features.Exposure}:{segment.Features.AudioEnergy}")));
         byte[] bytes = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
         return new RevisionId(new Guid(bytes[..16]));
     }
