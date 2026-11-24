@@ -362,18 +362,30 @@ public sealed class PacingDirectorSkill : IEditingSkill
                 [new("pacing.segments_missing", "Allowed segments are required for pacing.")], [], 0m);
         }
 
+        SmartCutDecision? cut = context.PreviousDecisions?.GetValueOrDefault("smart-cut") as SmartCutDecision;
+        IReadOnlyDictionary<SegmentId, SourceMapping>? effectiveMappings = cut?.Edits
+            .ToDictionary(edit => edit.SegmentId, edit => edit.Mapping);
         int cursor = 0;
+        long selectedDuration = context.Settings.TargetDurationSeconds is int targetSeconds
+            ? targetSeconds * 1_000_000L
+            : new ReelsProfileCatalog().SelectSemanticDurationMicroseconds(analysis, effectiveMappings);
+        long cumulativeDuration = 0;
         ImmutableArray<PacingShot>.Builder shots = ImmutableArray.CreateBuilder<PacingShot>();
         for (int index = 0; index < analysis.AllowedSegments.Length; index++)
         {
+            AllowedSegment segment = analysis.AllowedSegments[index];
+            SourceMapping mapping = effectiveMappings?.GetValueOrDefault(segment.Id) ?? segment.Mapping;
+            if (index > 0 && cumulativeDuration >= selectedDuration)
+                break;
             int duration = TimelineMath.ToNearestFrameCount(
-                analysis.AllowedSegments[index].Mapping.Master.DurationMicroseconds,
+                mapping.Master.DurationMicroseconds,
                 new FrameRate(30, 1));
             OutputRange output = new(cursor, cursor + duration);
-            shots.Add(new(analysis.AllowedSegments[index].Id, output,
+            shots.Add(new(segment.Id, output,
                 index == 0 || context.Settings.Tempo == EditTempo.Dynamic && index % 2 == 1,
                 context.Settings.Tempo == EditTempo.Calm && index % 2 == 0));
             cursor += duration;
+            cumulativeDuration += mapping.Master.DurationMicroseconds;
         }
 
         decimal density = cursor == 0 ? 0m : (analysis.AllowedSegments.Length - 1) / (decimal)cursor;

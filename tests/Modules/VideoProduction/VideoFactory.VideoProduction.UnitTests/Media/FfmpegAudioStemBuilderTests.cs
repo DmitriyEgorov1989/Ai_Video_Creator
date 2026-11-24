@@ -58,11 +58,11 @@ public sealed class FfmpegAudioStemBuilderTests
             IAudioStemBuilder builder = new FfmpegAudioStemBuilder(runner, "ffmpeg");
 
             AudioStemResult result = await builder.BuildAsync(
-                new AudioStemRequest(sourcePath, outputPath, metadata, TimeSpan.FromSeconds(5), 4_096),
+                new AudioStemRequest(sourcePath, outputPath, metadata, TimeSpan.FromSeconds(5), 4_096, Denoise: true),
                 CancellationToken.None);
 
             Assert.True(result.IsCreated);
-            Assert.Contains("loudnorm=I=-16:TP=-1:LRA=11", runner.Request!.Arguments);
+            Assert.Contains("afftdn=nf=-25,loudnorm=I=-16:TP=-1:LRA=11", runner.Request!.Arguments);
             Assert.Contains("-ar", runner.Request.Arguments);
             Assert.Contains("48000", runner.Request.Arguments);
             Assert.Contains("-channel_layout", runner.Request.Arguments);

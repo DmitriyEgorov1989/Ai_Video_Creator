@@ -111,20 +111,32 @@ public static class EditPlanContractDispatcher
                 issues.Add(new ValidationIssue("video.duration_mismatch", "video.clips", "Video clips must end at output duration."));
         }
 
-        ValidateEffects(document.GetProperty("effects"), duration, issues);
+        ValidateEffects(document.GetProperty("effects"), document.GetProperty("skills"), duration, issues);
         ValidateCaptions(document.GetProperty("captions"), duration, issues);
+        ValidateAudio(document.GetProperty("audio"), issues);
     }
 
-    private static void ValidateEffects(JsonElement effects, int duration, List<ValidationIssue> issues)
+    private static void ValidateEffects(JsonElement effects, JsonElement skills, int duration, List<ValidationIssue> issues)
     {
+        HashSet<string> appliedSkills = skills.EnumerateArray()
+            .Where(skill => skill.ValueKind == JsonValueKind.Object
+                && skill.TryGetProperty("status", out JsonElement status)
+                && status.GetString() == "applied"
+                && skill.TryGetProperty("id", out JsonElement id)
+                && id.ValueKind == JsonValueKind.String)
+            .Select(skill => skill.GetProperty("id").GetString()!)
+            .ToHashSet(StringComparer.Ordinal);
+        HashSet<string> ids = new(StringComparer.Ordinal);
+        List<(int Start, int End)> transitions = [];
         foreach (JsonElement effect in effects.EnumerateArray())
         {
             if (effect.ValueKind != JsonValueKind.Object
                 || !effect.TryGetProperty("type", out JsonElement type)
                 || type.ValueKind != JsonValueKind.String
-                || !new[] { "speed", "transition", "blur" }.Contains(type.GetString(), StringComparer.Ordinal))
+                || !new[] { "speed", "transition", "blur", "dynamicZoom", "textHighlight", "visualTransition" }.Contains(type.GetString(), StringComparer.Ordinal))
             {
                 issues.Add(new ValidationIssue("effect.unsupported", "effects", "Effect type is not supported."));
+                continue;
             }
 
             if (effect.TryGetProperty("code", out _)
@@ -133,6 +145,37 @@ public static class EditPlanContractDispatcher
             {
                 issues.Add(new ValidationIssue("effect.code_forbidden", "effects", "Effects cannot contain executable code or paths."));
             }
+
+            if (type.GetString() is not ("dynamicZoom" or "textHighlight" or "visualTransition"))
+                continue;
+            if (!effect.TryGetProperty("id", out JsonElement id)
+                || id.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(id.GetString())
+                || !ids.Add(id.GetString()!))
+                issues.Add(new ValidationIssue("effect.identity", "effects.id", "Enriched effect IDs must be present and unique."));
+            if (!effect.TryGetProperty("sourceSkillId", out JsonElement sourceSkill)
+                || sourceSkill.ValueKind != JsonValueKind.String
+                || !appliedSkills.Contains(sourceSkill.GetString() ?? string.Empty))
+                issues.Add(new ValidationIssue("effect.provenance", "effects.sourceSkillId", "Effect must reference an applied skill."));
+            if (!effect.TryGetProperty("output", out JsonElement output))
+            {
+                issues.Add(new ValidationIssue("effect.output_required", "effects.output", "Enriched effect output is required."));
+                continue;
+            }
+
+            int start = PositiveOrZeroInt(output, "startFrame", "effects.output.startFrame", issues);
+            int end = PositiveInt(output, "endFrame", "effects.output.endFrame", issues);
+            if (end <= start || end > duration)
+                issues.Add(new ValidationIssue("effect.output_invalid", "effects.output", "Effect output must be inside the plan duration."));
+            if (type.GetString() == "visualTransition" && end > start)
+                transitions.Add((start, end));
+        }
+
+        transitions.Sort((left, right) => left.Start.CompareTo(right.Start));
+        for (int index = 1; index < transitions.Count; index++)
+        {
+            if (transitions[index].Start < transitions[index - 1].End)
+                issues.Add(new ValidationIssue("effect.conflict", "effects", "Visual transitions cannot overlap."));
         }
     }
 
@@ -162,6 +205,68 @@ public static class EditPlanContractDispatcher
             {
                 issues.Add(new ValidationIssue("captions.word_output_required", "captions.words.output", "Caption word output range is required."));
             }
+        }
+
+        if (!captions.TryGetProperty("groups", out JsonElement groups))
+            return;
+        if (groups.ValueKind != JsonValueKind.Array)
+        {
+            issues.Add(new ValidationIssue("captions.group_invalid", "captions.groups", "Caption groups must be an array."));
+            return;
+        }
+
+        foreach (JsonElement group in groups.EnumerateArray())
+        {
+            if (group.ValueKind != JsonValueKind.Object
+                || !group.TryGetProperty("text", out JsonElement text)
+                || text.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(text.GetString())
+                || !group.TryGetProperty("maxLines", out JsonElement maxLines)
+                || !maxLines.TryGetInt32(out int lineCount)
+                || lineCount is < 1 or > 2
+                || !HasKnownString(group, "highlight", "none", "activeWord")
+                || !HasKnownString(group, "animation", "none", "fade")
+                || !HasKnownString(group, "placement", "bottomSafe")
+                || !group.TryGetProperty("words", out JsonElement groupWords)
+                || groupWords.ValueKind != JsonValueKind.Array
+                || groupWords.GetArrayLength() == 0
+                || !group.TryGetProperty("output", out JsonElement groupOutput))
+            {
+                issues.Add(new ValidationIssue("captions.group_invalid", "captions.groups", "Caption group must use bounded lines, words and safe presentation values."));
+                continue;
+            }
+
+            int groupStart = PositiveOrZeroInt(groupOutput, "startFrame", "captions.groups.output.startFrame", issues);
+            int groupEnd = PositiveInt(groupOutput, "endFrame", "captions.groups.output.endFrame", issues);
+            if (groupEnd <= groupStart || groupEnd > duration)
+                issues.Add(new ValidationIssue("captions.group_invalid", "captions.groups.output", "Caption group range must be inside the output timeline."));
+        }
+    }
+
+    private static bool HasKnownString(JsonElement value, string property, params string[] known) =>
+        value.TryGetProperty(property, out JsonElement item)
+        && item.ValueKind == JsonValueKind.String
+        && known.Contains(item.GetString(), StringComparer.Ordinal);
+
+    private static void ValidateAudio(JsonElement audio, List<ValidationIssue> issues)
+    {
+        if (!audio.TryGetProperty("sourceGain", out JsonElement sourceGain)
+            || sourceGain.ValueKind != JsonValueKind.Number
+            || !sourceGain.TryGetDecimal(out decimal gain)
+            || gain is < 0 or > 4)
+        {
+            issues.Add(new ValidationIssue("audio.source_gain_invalid", "audio.sourceGain", "Source gain must be between 0 and 4."));
+        }
+
+        if (audio.TryGetProperty("ducking", out JsonElement ducking)
+            && (ducking.ValueKind != JsonValueKind.Number
+                || !ducking.TryGetDecimal(out decimal duckingValue)
+                || duckingValue is < 0 or > 1
+                || !audio.TryGetProperty("musicAssetId", out JsonElement musicAsset)
+                || musicAsset.ValueKind != JsonValueKind.String
+                || string.IsNullOrWhiteSpace(musicAsset.GetString())))
+        {
+            issues.Add(new ValidationIssue("audio.ducking_invalid", "audio.ducking", "Ducking requires a music asset and a value between 0 and 1."));
         }
     }
 

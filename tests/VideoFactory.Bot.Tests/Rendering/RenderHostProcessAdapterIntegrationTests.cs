@@ -10,6 +10,88 @@ namespace VideoFactory.Bot.Tests.Rendering;
 public sealed class RenderHostProcessAdapterIntegrationTests
 {
     [Fact]
+    public async Task RenderHostProcessAdapter_V2FocalCropRetainsSelectedSubject()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string renderHostPath = Path.Combine(repositoryRoot, "render-host", "dist", "cli.js");
+        Assert.True(File.Exists(renderHostPath), $"Build render-host before running this test: {renderHostPath}");
+
+        string jobDirectory = Path.Combine(Path.GetTempPath(), $"video-factory-v2-crop-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(jobDirectory);
+        string sourcePath = Path.Combine(jobDirectory, "source.mp4");
+        string outputPath = Path.Combine(jobDirectory, "output.mp4");
+        string requestPath = Path.Combine(jobDirectory, "request.json");
+
+        try
+        {
+            SystemProcessRunner processRunner = new();
+            ProcessExecutionResult sourceResult = await processRunner.RunAsync(
+                new ProcessStartRequest(
+                    "ffmpeg",
+                    [
+                        "-y", "-f", "lavfi", "-i",
+                        "color=c=0x808080:s=640x360:r=30:d=1,drawbox=x=20:y=130:w=80:h=80:c=lime:t=fill",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1",
+                        "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath
+                    ],
+                    TimeSpan.FromSeconds(30),
+                    32_768),
+                CancellationToken.None);
+            Assert.True(sourceResult.IsSuccess, sourceResult.ErrorMessage ?? sourceResult.StandardError);
+
+            JsonObject request = JsonNode.Parse(
+                await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "contracts", "fixtures", "valid-render-request.json")))!.AsObject();
+            request["outputPath"] = outputPath;
+            request["assets"]!.AsArray()[0]!["path"] = sourcePath;
+            request["assets"]!.AsArray()[0]!["frameRate"] = new JsonObject { ["numerator"] = 30, ["denominator"] = 1 };
+            request["plan"] = CreateV2Plan(
+                new JsonObject { ["preset"] = "fill", ["focalX"] = 0, ["focalY"] = 0.5, ["zoom"] = 1 });
+            await File.WriteAllTextAsync(requestPath, request.ToJsonString());
+
+            RenderHostProcessAdapter adapter = new(processRunner, "node", renderHostPath);
+            RenderHostResult result = await adapter.RenderAsync(
+                new RenderHostRequest(requestPath, outputPath, TimeSpan.FromMinutes(5), 65_536),
+                CancellationToken.None);
+
+            Assert.True(
+                result.Kind == RenderHostResultKind.Succeeded,
+                $"{result.ErrorCode}: {result.ErrorMessage}\nstdout:\n{result.StandardOutput}\nstderr:\n{result.StandardError}");
+            RgbSample subject = await MediaMeasurements.SampleRegionAsync(
+                processRunner,
+                outputPath,
+                TimeSpan.FromSeconds(0.5),
+                new PixelRegion(150, 750, 250, 250),
+                CancellationToken.None);
+            MontageQualityAssertions.RequireDominantColor("V2 focal subject", subject, DominantColor.Green);
+            PixelRegion captionRegion = new(70, 1560, 940, 160);
+            RgbSample beforeCaption = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.05), captionRegion, CancellationToken.None);
+            RgbSample visibleCaption = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.4), captionRegion, CancellationToken.None);
+            MontageQualityAssertions.RequireOverlayContrast("V2 Cyrillic safe caption", beforeCaption, visibleCaption, 20);
+            PixelRegion fullFrame = new(0, 0, 1080, 1920);
+            RgbSample beforeTransition = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.7), fullFrame, CancellationToken.None);
+            RgbSample duringTransition = await MediaMeasurements.SampleRegionAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.83), fullFrame, CancellationToken.None);
+            MontageQualityAssertions.RequireOverlayContrast("V2 visual transition", beforeTransition, duringTransition, 20);
+            ToneMeasurement fadeIn = await MediaMeasurements.MeasureToneAsync(
+                processRunner, outputPath, TimeSpan.Zero, TimeSpan.FromSeconds(0.1), CancellationToken.None);
+            ToneMeasurement steady = await MediaMeasurements.MeasureToneAsync(
+                processRunner, outputPath, TimeSpan.FromSeconds(0.4), TimeSpan.FromSeconds(0.1), CancellationToken.None);
+            MontageQualityAssertions.RequireTone("V2 synchronized source audio", steady, 440, 5);
+            Assert.True(steady.RmsDecibels - fadeIn.RmsDecibels > 3, $"Expected measurable fade-in, observed {fadeIn.RmsDecibels:0.##} dBFS then {steady.RmsDecibels:0.##} dBFS.");
+        }
+        finally
+        {
+            if (Directory.Exists(jobDirectory))
+            {
+                Directory.Delete(jobDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task RenderHostProcessAdapter_CreatesValidMp4ThroughBuiltNodeHost()
     {
         string repositoryRoot = FindRepositoryRoot();
@@ -253,6 +335,88 @@ public sealed class RenderHostProcessAdapterIntegrationTests
     private static JsonObject CreateTimeRange(long startMicroseconds, long endMicroseconds)
     {
         return new JsonObject { ["startMicroseconds"] = startMicroseconds, ["endMicroseconds"] = endMicroseconds };
+    }
+
+    private static JsonObject CreateV2Plan(JsonObject crop)
+    {
+        return new JsonObject
+        {
+            ["schemaVersion"] = 2,
+            ["jobId"] = "job-1",
+            ["variantId"] = "variant-1",
+            ["revisionId"] = "revision-1",
+            ["analysisRevisionId"] = "analysis-1",
+            ["output"] = new JsonObject
+            {
+                ["width"] = 1080,
+                ["height"] = 1920,
+                ["frameRate"] = new JsonObject { ["numerator"] = 30, ["denominator"] = 1 },
+                ["durationFrames"] = 30,
+            },
+            ["source"] = new JsonObject { ["originalAssetId"] = "original-1", ["masterAssetId"] = "master-1" },
+            ["video"] = new JsonObject
+            {
+                ["clips"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["sourceAssetId"] = "master-1",
+                        ["source"] = CreateTimeRange(0, 1_000_000),
+                        ["master"] = CreateTimeRange(0, 1_000_000),
+                        ["output"] = CreateRange(0, 30),
+                        ["crop"] = crop,
+                        ["effects"] = new JsonArray("transition-1"),
+                    },
+                },
+            },
+            ["effects"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["id"] = "transition-1",
+                    ["type"] = "visualTransition",
+                    ["output"] = CreateRange(22, 28),
+                    ["sourceSkillId"] = "visual-director",
+                    ["parameters"] = new JsonObject { ["amount"] = 0.5 },
+                },
+            },
+            ["captions"] = new JsonObject
+            {
+                ["words"] = new JsonArray(),
+                ["groups"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["text"] = "Привет мир",
+                        ["words"] = new JsonArray
+                        {
+                            new JsonObject { ["text"] = "Привет", ["output"] = CreateRange(5, 12) },
+                            new JsonObject { ["text"] = "мир", ["output"] = CreateRange(12, 20) },
+                        },
+                        ["output"] = CreateRange(5, 20),
+                        ["maxLines"] = 2,
+                        ["highlight"] = "activeWord",
+                        ["animation"] = "fade",
+                        ["placement"] = "bottomSafe",
+                    },
+                },
+            },
+            ["audio"] = new JsonObject
+            {
+                ["sourceGain"] = 1,
+                ["targetLoudnessLufs"] = -16,
+                ["truePeakDbtp"] = -1,
+                ["fadeInFrames"] = 6,
+                ["fadeOutFrames"] = 6,
+                ["denoise"] = false,
+            },
+            ["skills"] = new JsonArray
+            {
+                new JsonObject { ["id"] = "visual-director", ["version"] = "1.0.0", ["status"] = "applied" },
+                new JsonObject { ["id"] = "caption-director", ["version"] = "1.0.0", ["status"] = "applied" },
+                new JsonObject { ["id"] = "audio-director", ["version"] = "1.0.0", ["status"] = "applied" },
+            },
+        };
     }
 
     private static DominantColor ParseColor(string value) => value switch

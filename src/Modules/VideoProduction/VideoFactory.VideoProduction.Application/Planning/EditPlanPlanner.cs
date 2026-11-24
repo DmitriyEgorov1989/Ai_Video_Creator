@@ -43,7 +43,11 @@ public sealed class EditPlanPlanner
             new SmartCutSkill(),
             new BestShotSelectorSkill(),
             new PacingDirectorSkill(),
-            new SpeechTighteningSkill()
+            new SpeechTighteningSkill(),
+            new CaptionDirectorSkill(),
+            new VisualDirectorSkill(),
+            new SmartReframeSkill(),
+            new AudioDirectorSkill()
         ]);
     }
 
@@ -76,8 +80,14 @@ public sealed class EditPlanPlanner
             return new PlanningResult.Existing(approved);
         }
 
+        ReelsStyleConfiguration style = new ReelsProfileCatalog().Resolve(ReelsStyle.Auto, request.Analysis);
         EditingEvaluation editingEvaluation = editingSkillEngine.Evaluate(
-            new EditingContext(request.Analysis, request.Settings, request.Comment),
+            new EditingContext(
+                request.Analysis,
+                request.Settings,
+                request.Comment,
+                KnownAssetIds: request.Assets.Keys.Select(id => id.ToString()).ToHashSet(StringComparer.Ordinal),
+                Style: style),
             new EditingSkillConfiguration(
             [
                 new("semantic-story", true),
@@ -85,8 +95,13 @@ public sealed class EditPlanPlanner
                 new("smart-cut", true),
                 new("best-shot", true),
                 new("pacing-director", true),
-                new("speech-tightening", true)
+                new("speech-tightening", true),
+                new("caption-director", true),
+                new("visual-director", true),
+                new("smart-reframe", true),
+                new("audio-director", true)
             ]));
+        ReelsPresentationPlan presentation = ReelsPresentationPlan.FromEvaluation(style, editingEvaluation);
         ProviderPlanningRequest providerRequest = CreateProviderRequest(request, editingEvaluation);
         decimal accumulatedActualCostUsd = 0m;
         PlanConstructionException? lastError = null;
@@ -177,7 +192,7 @@ public sealed class EditPlanPlanner
                             $"{issue.Code} at {issue.Path}")));
                 }
 
-                string planHash = CalculateHash(plan);
+                string planHash = CalculateHash(plan, presentation);
                 EditPlanRevision? existing = await revisionStore.FindAsync(
                     request.JobId,
                     request.VariantId,
@@ -196,6 +211,7 @@ public sealed class EditPlanPlanner
                     plan,
                     planHash,
                     accumulatedActualCostUsd,
+                    presentation,
                     cancellationToken);
 
                 await attemptStore.SaveAsync(
@@ -274,13 +290,18 @@ public sealed class EditPlanPlanner
 
     private static ProviderPlanningRequest CreateProviderRequest(
         PlanningRequest request,
-        EditingEvaluation editingEvaluation) =>
-        new(
+        EditingEvaluation editingEvaluation)
+    {
+        AnalysisResult effectiveAnalysis = ApplyEditingEvaluation(request.Analysis, editingEvaluation);
+        return new(
             request.Comment,
             request.Settings.Tempo,
-            request.Settings.TargetDurationSeconds,
+            request.Settings.TargetDurationSeconds
+                ?? (int)Math.Round(
+                    new ReelsProfileCatalog().SelectSemanticDurationMicroseconds(effectiveAnalysis) / 1_000_000m,
+                    MidpointRounding.AwayFromZero),
             request.Settings.CaptionsEnabled,
-            ApplyEditingEvaluation(request.Analysis, editingEvaluation).AllowedSegments
+            effectiveAnalysis.AllowedSegments
                 .Where(segment => request.Analysis.SchemaVersion < 2 || segment.IsApproved)
                 .Select(segment => new ProviderSegment(
                     segment.Id,
@@ -291,6 +312,7 @@ public sealed class EditPlanPlanner
                 request.Analysis.Speech.Select(segment => segment.Text)),
             0,
             editingEvaluation);
+    }
 
     private static AnalysisResult ApplyEditingEvaluation(
         AnalysisResult analysis,
@@ -436,9 +458,9 @@ public sealed class EditPlanPlanner
         return new RevisionId(new Guid(hash[..16]));
     }
 
-    private static string CalculateHash(EditPlan plan)
+    private static string CalculateHash(EditPlan plan, ReelsPresentationPlan presentation)
     {
-        string canonical = JsonSerializer.Serialize(plan);
+        string canonical = JsonSerializer.Serialize(new { plan, presentation });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
     }
 }

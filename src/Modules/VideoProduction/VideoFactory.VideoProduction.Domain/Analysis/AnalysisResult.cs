@@ -104,12 +104,32 @@ public sealed record SegmentAnalysisFeatures(
     decimal Confidence,
     string? DuplicateGroup = null);
 
+/// <summary>Нормализованное наблюдение объекта для безопасного reframing.</summary>
+/// <param name="SegmentId">Идентификатор разрешённого сегмента.</param>
+/// <param name="MasterTimeMicroseconds">Позиция наблюдения на шкале master в микросекундах.</param>
+/// <param name="X">Левая граница объекта от 0 до 1.</param>
+/// <param name="Y">Верхняя граница объекта от 0 до 1.</param>
+/// <param name="Width">Ширина объекта от 0 до 1.</param>
+/// <param name="Height">Высота объекта от 0 до 1.</param>
+/// <param name="Confidence">Уверенность наблюдения от 0 до 1.</param>
+public sealed record FocalObservation(
+    SegmentId SegmentId,
+    long MasterTimeMicroseconds,
+    decimal X,
+    decimal Y,
+    decimal Width,
+    decimal Height,
+    decimal Confidence);
+
 /// <summary>Дополнительные признаки versioned результата анализа.</summary>
 /// <param name="Segments">Признаки известных сегментов.</param>
 public sealed record AnalysisFeatureSet(ImmutableArray<SegmentAnalysisFeatures> Segments)
 {
     /// <summary>Версия схемы дополнительных признаков.</summary>
     public int SchemaVersion { get; init; } = 1;
+
+    /// <summary>Опциональные наблюдения объектов; пусто, если tracking недоступен.</summary>
+    public ImmutableArray<FocalObservation> FocalObservations { get; init; } = [];
 
     /// <summary>Пустой набор признаков для совместимости с Analysis V1.</summary>
     public static AnalysisFeatureSet Empty => new([]);

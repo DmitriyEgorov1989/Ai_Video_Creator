@@ -206,7 +206,7 @@ public sealed class EditingSkillEngineTests
         PacingDecision pacing = Assert.IsType<PacingDecision>(evaluation.Decisions[2]);
         Assert.Equal(0, pacing.Shots[0].Output.StartFrame);
         Assert.Equal(pacing.Shots[0].Output.EndFrame, pacing.Shots[1].Output.StartFrame);
-        Assert.Equal(180, pacing.Shots[^1].Output.EndFrame);
+        Assert.Equal(150, pacing.Shots[^1].Output.EndFrame);
     }
 
     [Fact]

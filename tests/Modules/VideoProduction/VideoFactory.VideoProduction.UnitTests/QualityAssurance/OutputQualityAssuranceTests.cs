@@ -94,6 +94,94 @@ public sealed class OutputQualityAssuranceTests
         }
     }
 
+    [Fact]
+    public async Task RejectsCodecOutsideInstagramReelsProfile()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, [1]);
+            MediaMetadata metadata = new(
+                "mov,mp4,m4a",
+                30_000_000,
+                [new VideoStreamMetadata(0, "vp9", 1080, 1920, new FrameRate(30, 1), false, null)],
+                [new AudioStreamMetadata(1, "aac", 48_000, 2)]);
+            OutputQualityAssurance qa = new(
+                new FakeProbe(metadata),
+                new FakeDecode(MediaDecodeResult.Succeeded()),
+                TimeSpan.FromSeconds(5),
+                65_536);
+
+            OutputQualityResult result = await qa.VerifyAsync(
+                new OutputQualityRequest(path, 1080, 1920, new FrameRate(30, 1), 900, 1, true,
+                    ExpectedVideoCodec: "h264", ExpectedAudioCodec: "aac"),
+                CancellationToken.None);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal("media.video_codec_mismatch", result.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RejectsFinalOutputWhenMeasuredLoudnessMissesAudioDirectorTarget()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, [1]);
+            OutputQualityAssurance qa = new(
+                new FakeProbe(CreateMetadata()),
+                new FakeDecode(MediaDecodeResult.Succeeded()),
+                TimeSpan.FromSeconds(5),
+                65_536,
+                new FakeAudioQuality(OutputAudioQualityResult.Succeeded(-20m, -1.2m)));
+
+            OutputQualityResult result = await qa.VerifyAsync(
+                new OutputQualityRequest(path, 1080, 1920, new FrameRate(30, 1), 900, 1, true,
+                    ExpectedLoudnessLufs: -16m, LoudnessToleranceLufs: 1m, MaximumTruePeakDbtp: -1m),
+                CancellationToken.None);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal("media.audio_loudness_mismatch", result.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task RejectsFinalOutputWhenMeasuredTruePeakExceedsAudioDirectorLimit()
+    {
+        string path = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllBytes(path, [1]);
+            OutputQualityAssurance qa = new(
+                new FakeProbe(CreateMetadata()),
+                new FakeDecode(MediaDecodeResult.Succeeded()),
+                TimeSpan.FromSeconds(5),
+                65_536,
+                new FakeAudioQuality(OutputAudioQualityResult.Succeeded(-16m, -0.4m)));
+
+            OutputQualityResult result = await qa.VerifyAsync(
+                new OutputQualityRequest(path, 1080, 1920, new FrameRate(30, 1), 900, 1, true,
+                    ExpectedLoudnessLufs: -16m, LoudnessToleranceLufs: 1m, MaximumTruePeakDbtp: -1m),
+                CancellationToken.None);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal("media.audio_true_peak_exceeded", result.ErrorCode);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     private static MediaMetadata CreateMetadata(string? pixelFormat = null) => new(
         "mov,mp4,m4a",
         30_000_000,
@@ -117,5 +205,12 @@ public sealed class OutputQualityAssuranceTests
     {
         public Task<MediaDecodeResult> VerifyAsync(MediaDecodeRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(result);
+    }
+
+    private sealed class FakeAudioQuality(OutputAudioQualityResult result) : IOutputAudioQualityAnalyzer
+    {
+        public Task<OutputAudioQualityResult> AnalyzeAsync(
+            OutputAudioQualityRequest request,
+            CancellationToken cancellationToken) => Task.FromResult(result);
     }
 }

@@ -67,11 +67,30 @@ export interface EditPlanV2 {
   analysisRevisionId: string;
   output: { width: number; height: number; frameRate: { numerator: number; denominator: number }; durationFrames: number };
   source: { originalAssetId: string; masterAssetId: string };
-  video: { clips: Array<{ sourceAssetId: string; source: SourceTimeRange; master: SourceTimeRange; output: OutputRange; crop: { preset: "fit" | "fill"; focalX: number; focalY: number; zoom: number }; effects: string[] }> };
-  effects: Array<{ type: "speed" | "transition" | "blur"; parameters: { rate?: number; kind?: "cut" | "crossfade" | "dipToBlack"; durationFrames?: number; amount?: number } }>;
-  captions: { words: Array<{ text: string; output: OutputRange }> };
-  audio: { sourceGain: number; musicAssetId?: string | null; musicGain?: number; ducking?: number };
+  video: { clips: Array<{ sourceAssetId: string; source: SourceTimeRange; master: SourceTimeRange; output: OutputRange; crop: { preset: "fit" | "fill"; focalX: number; focalY: number; zoom: number; fallback?: "fit" | "center"; keyframes?: Array<{ outputFrame: number; focalX: number; focalY: number; zoom: number }> }; effects: string[] }> };
+  effects: Array<{
+    id?: string;
+    type: "speed" | "transition" | "blur" | "dynamicZoom" | "textHighlight" | "visualTransition";
+    output?: OutputRange;
+    sourceSkillId?: string;
+    parameters: { rate?: number; kind?: "cut" | "crossfade" | "dipToBlack"; durationFrames?: number; amount?: number };
+  }>;
+  captions: {
+    words: Array<{ text: string; output: OutputRange }>;
+    groups?: Array<{
+      text: string;
+      words: Array<{ text: string; output: OutputRange }>;
+      output: OutputRange;
+      maxLines: 1 | 2;
+      highlight: "none" | "activeWord";
+      animation: "none" | "fade";
+      placement: "bottomSafe";
+    }>;
+  };
+  audio: { sourceGain: number; targetLoudnessLufs?: number; truePeakDbtp?: number; fadeInFrames?: number; fadeOutFrames?: number; denoise?: boolean; musicAssetId?: string | null; musicGain?: number; ducking?: number };
   skills: Array<{ id: string; version: string; status: "applied" | "skipped" | "rejected" }>;
+  profile?: "instagram-reels";
+  style?: { requested: "auto" | "expert-clean" | "dynamic-viral" | "cinematic" | "premium-ads"; resolved: "expert-clean" | "dynamic-viral" | "cinematic" | "premium-ads" };
 }
 
 export interface RenderAsset {
@@ -84,7 +103,7 @@ export interface RenderRequest {
   schemaVersion: 1;
   jobId: string;
   variantId: string;
-  plan: EditPlan;
+  plan: EditPlan | EditPlanV2;
   assets: RenderAsset[];
   outputPath: string;
   encoding: {

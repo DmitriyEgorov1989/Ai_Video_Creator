@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Planning;
@@ -21,7 +22,7 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Rendering;
 public sealed class RenderingStageExecutorTests
 {
     [Fact]
-    public async Task SendsTypedMasterMappingAndMasterAssetToRenderHost()
+    public async Task SendsPersistedReelsPresentationAsV2ToRenderHost()
     {
         string root = Path.Combine(Path.GetTempPath(), $"render-mapping-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -67,7 +68,33 @@ public sealed class RenderingStageExecutorTests
                 new CaptionTrack([]),
                 new OverlayTrack([]));
             SqliteEditPlanRevisionStore plans = new(connectionString);
-            await plans.SaveAsync(plan, "plan-hash", 0m, CancellationToken.None);
+            ReelsStyleConfiguration style = new(
+                ReelsStyle.DynamicViral,
+                ReelsStyle.DynamicViral,
+                CaptionHighlightMode.ActiveWord,
+                CaptionAnimation.Fade,
+                0.12m,
+                0.2m,
+                0.15m,
+                6,
+                false);
+            ReelsPresentationPlan presentation = new(
+                style,
+                new CaptionDirectorDecision(
+                    "caption-director", "1.0.0", EditingDecisionStatus.Applied, [],
+                    [new CaptionGroup(
+                        "Привет", [new CaptionWordCue("Привет", new OutputRange(0, 30))],
+                        new OutputRange(0, 30), 2, CaptionHighlightMode.ActiveWord, CaptionAnimation.Fade, CaptionPlacement.BottomSafe)]),
+                new VisualDirectorDecision(
+                    "visual-director", "1.0.0", EditingDecisionStatus.Applied, [],
+                    [new VisualEffectInstruction("zoom-1", VisualEffectKind.DynamicZoom, new OutputRange(0, 60), 0.12m, "visual-director")]),
+                new SmartReframeDecision(
+                    "smart-reframe", "1.0.0", EditingDecisionStatus.Applied, [],
+                    [new ReframeTrack(segmentId, ReframeFallback.Center, [new ReframeKeyframe(0, 0.25m, 0.5m, 1.1m)])]),
+                new AudioDirectorDecision(
+                    "audio-director", "1.0.0", EditingDecisionStatus.Applied, [],
+                    -18m, -2m, 6, 6, true, null, null));
+            await plans.SaveAsync(plan, "plan-hash", 0m, presentation, CancellationToken.None);
 
             await using (SqliteConnection connection = new(connectionString))
             {
@@ -81,11 +108,12 @@ public sealed class RenderingStageExecutorTests
             }
 
             CapturingRenderHost host = new();
+            CapturingAudio audioBuilder = new();
             RenderingStageExecutor executor = new(
                 plans,
                 artifacts,
                 host,
-                new NoAudio(),
+                audioBuilder,
                 new Probe(),
                 root,
                 TimeSpan.FromSeconds(5),
@@ -103,20 +131,30 @@ public sealed class RenderingStageExecutorTests
 
             Assert.Equal(StageExecutionKind.Completed, result.Kind);
             using JsonDocument request = JsonDocument.Parse(Assert.IsType<string>(host.RequestJson));
-            JsonElement clip = request.RootElement.GetProperty("plan").GetProperty("video").GetProperty("clips")[0];
-            JsonElement serializedMapping = clip.GetProperty("mapping");
-            Assert.Equal(originalId.ToString(), serializedMapping.GetProperty("originalAssetId").GetString());
-            Assert.Equal(2_000_000, serializedMapping.GetProperty("original").GetProperty("startMicroseconds").GetInt64());
-            Assert.Equal(4_000_000, serializedMapping.GetProperty("original").GetProperty("endMicroseconds").GetInt64());
-            Assert.Equal(masterId.ToString(), serializedMapping.GetProperty("masterAssetId").GetString());
-            Assert.Equal(2_000_000, serializedMapping.GetProperty("master").GetProperty("startMicroseconds").GetInt64());
-            Assert.Equal(4_000_000, serializedMapping.GetProperty("master").GetProperty("endMicroseconds").GetInt64());
+            JsonElement serializedPlan = request.RootElement.GetProperty("plan");
+            Assert.Equal(2, serializedPlan.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal("instagram-reels", serializedPlan.GetProperty("profile").GetString());
+            Assert.Equal("dynamic-viral", serializedPlan.GetProperty("style").GetProperty("resolved").GetString());
+            JsonElement clip = serializedPlan.GetProperty("video").GetProperty("clips")[0];
+            Assert.Equal(masterId.ToString(), clip.GetProperty("sourceAssetId").GetString());
+            Assert.Equal(2_000_000, clip.GetProperty("source").GetProperty("startMicroseconds").GetInt64());
+            Assert.Equal(4_000_000, clip.GetProperty("master").GetProperty("endMicroseconds").GetInt64());
+            Assert.Equal(0.25m, clip.GetProperty("crop").GetProperty("keyframes")[0].GetProperty("focalX").GetDecimal());
+            Assert.Equal("visual-director", serializedPlan.GetProperty("effects")[0].GetProperty("sourceSkillId").GetString());
+            Assert.Equal("Привет", serializedPlan.GetProperty("captions").GetProperty("groups")[0].GetProperty("text").GetString());
+            Assert.Equal(-18m, serializedPlan.GetProperty("audio").GetProperty("targetLoudnessLufs").GetDecimal());
 
-            JsonElement masterAsset = Assert.Single(request.RootElement.GetProperty("assets").EnumerateArray());
+            JsonElement masterAsset = Assert.Single(
+                request.RootElement.GetProperty("assets").EnumerateArray(),
+                asset => asset.GetProperty("id").GetString() == masterId.ToString());
             Assert.Equal(masterId.ToString(), masterAsset.GetProperty("id").GetString());
             Assert.Equal(Path.GetFullPath(Path.Combine(root, "master.mp4")), masterAsset.GetProperty("path").GetString());
             Assert.Equal(30, masterAsset.GetProperty("frameRate").GetProperty("numerator").GetInt32());
             Assert.Equal(1, masterAsset.GetProperty("frameRate").GetProperty("denominator").GetInt32());
+            Assert.NotNull(audioBuilder.Request);
+            Assert.Equal(-18, audioBuilder.Request.TargetLoudnessLufs);
+            Assert.Equal(-2, audioBuilder.Request.TruePeakDbtp);
+            Assert.True(audioBuilder.Request.Denoise);
         }
         finally
         {
@@ -143,12 +181,18 @@ public sealed class RenderingStageExecutorTests
                 "mp4",
                 5_000_000,
                 [new VideoStreamMetadata(0, "h264", 1080, 1920, new FrameRate(30, 1), false, 0)],
-                [])));
+                [new AudioStreamMetadata(1, "aac", 48_000, 2)])));
     }
 
-    private sealed class NoAudio : IAudioStemBuilder
+    private sealed class CapturingAudio : IAudioStemBuilder
     {
-        public Task<AudioStemResult> BuildAsync(AudioStemRequest request, CancellationToken cancellationToken) =>
-            throw new InvalidOperationException("The fixture has no audio stream.");
+        public AudioStemRequest? Request { get; private set; }
+
+        public async Task<AudioStemResult> BuildAsync(AudioStemRequest request, CancellationToken cancellationToken)
+        {
+            Request = request;
+            await File.WriteAllBytesAsync(request.OutputPath, [3], cancellationToken);
+            return AudioStemResult.Created(request.OutputPath);
+        }
     }
 }

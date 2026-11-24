@@ -9,7 +9,7 @@
     "schemaVersion": { "const": 1 },
     "jobId": { "type": "string", "minLength": 1 },
     "variantId": { "type": "string", "minLength": 1 },
-    "plan": { "$ref": "edit-plan.schema.json" },
+    "plan": { "oneOf": [{ "$ref": "edit-plan.schema.json" }, { "$ref": "edit-plan.v2.schema.json" }] },
     "assets": {
       "type": "array",
       "items": {

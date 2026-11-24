@@ -13,7 +13,8 @@
     "Speech": { "type": "array", "items": { "$ref": "#/$defs/speech" } },
     "Pauses": { "type": "array", "items": { "$ref": "#/$defs/range" } },
     "Scenes": { "type": "array", "items": { "type": "object", "required": ["Interval"], "additionalProperties": false, "properties": { "Interval": { "$ref": "#/$defs/range" } } } },
-    "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } }
+    "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } },
+    "Features": { "$ref": "#/$defs/analysisFeatures" }
   },
   "$defs": {
     "range": {
@@ -53,6 +54,45 @@
         "AudioEnergy": { "type": "number", "minimum": 0, "maximum": 1 },
         "TechnicalValidity": { "type": "boolean" },
         "TechnicalIssues": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "segmentAnalysis": {
+      "type": "object",
+      "required": ["SegmentId", "SemanticRelevance", "Sharpness", "Composition", "Motion", "AudioEnergy", "Confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "SegmentId": { "type": "string", "minLength": 1 },
+        "SemanticRelevance": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Sharpness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Composition": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Motion": { "type": "number", "minimum": 0, "maximum": 1 },
+        "AudioEnergy": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "DuplicateGroup": { "type": ["string", "null"] }
+      }
+    },
+    "focalObservation": {
+      "type": "object",
+      "required": ["SegmentId", "MasterTimeMicroseconds", "X", "Y", "Width", "Height", "Confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "SegmentId": { "type": "string", "minLength": 1 },
+        "MasterTimeMicroseconds": { "type": "integer", "minimum": 0 },
+        "X": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "Width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "Height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "Confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "analysisFeatures": {
+      "type": "object",
+      "required": ["SchemaVersion", "Segments"],
+      "additionalProperties": false,
+      "properties": {
+        "SchemaVersion": { "const": 1 },
+        "Segments": { "type": "array", "items": { "$ref": "#/$defs/segmentAnalysis" } },
+        "FocalObservations": { "type": "array", "items": { "$ref": "#/$defs/focalObservation" } }
       }
     },
     "segment": {

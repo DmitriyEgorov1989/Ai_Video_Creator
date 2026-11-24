@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
@@ -20,7 +22,10 @@ namespace VideoFactory.VideoProduction.Infrastructure.Rendering;
 /// </summary>
 public sealed class RenderingStageExecutor : IJobStageExecutor
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
     private readonly IEditPlanRevisionStore planStore;
     private readonly IArtifactStore artifactStore;
     private readonly IRenderHostAdapter renderHost;
@@ -235,6 +240,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         string? audioPath = null;
         if (probe.Metadata!.AudioStreams.Length > 0)
         {
+            AudioDirectorDecision? audioDecision = revision.Presentation?.Audio;
             audioPath = Path.Combine(attemptDirectory, "audio-master.m4a");
             AudioStemResult stem = await audioStemBuilder.BuildAsync(
                 new AudioStemRequest(
@@ -245,8 +251,9 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                     maxOutputBytes,
                     AudioSampleRate,
                     AudioChannelLayout,
-                    AudioLoudnessLufs,
-                    AudioTruePeakDbtp),
+                    audioDecision is null ? AudioLoudnessLufs : (double)audioDecision.TargetLoudnessLufs,
+                    audioDecision is null ? AudioTruePeakDbtp : (double)audioDecision.TruePeakDbtp,
+                    audioDecision?.Denoise ?? false),
                 cancellationToken);
             if (!stem.IsCreated)
             {
@@ -260,7 +267,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             ? new Dictionary<ArtifactId, string> { [job.Request.SourceAssetId] = sourcePath }
             : masterPaths;
         FrameRate masterFrameRate = probe.Metadata.VideoStreams[0].AverageFrameRate ?? new FrameRate(30, 1);
-        string requestJson = BuildRequestJson(job, revision.Plan, renderAssets, masterFrameRate, audioPath, outputPath, encodingProfile);
+        string requestJson = BuildRequestJson(job, revision, renderAssets, masterFrameRate, audioPath, outputPath, encodingProfile);
         await File.WriteAllTextAsync(requestPath, requestJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken);
 
         RenderHostResult result = await renderHost.RenderAsync(
@@ -312,82 +319,23 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
 
     private static string BuildRequestJson(
         JobCreationRecord job,
-        EditPlan plan,
+        EditPlanRevision revision,
         IReadOnlyDictionary<ArtifactId, string> renderAssets,
         FrameRate sourceFrameRate,
         string? audioPath,
         string outputPath,
         OutputEncodingProfile encodingProfile)
     {
+        EditPlan plan = revision.Plan;
+        object serializedPlan = revision.Presentation is null
+            ? BuildV1Plan(plan)
+            : BuildV2Plan(plan, revision.Presentation);
         object request = new
         {
             schemaVersion = 1,
             jobId = job.JobId.ToString(),
             variantId = job.VariantId.ToString(),
-            plan = new
-            {
-                schemaVersion = plan.SchemaVersion,
-                jobId = plan.JobId.ToString(),
-                variantId = plan.VariantId.ToString(),
-                revisionId = plan.RevisionId.ToString(),
-                analysisRevisionId = plan.AnalysisRevisionId.ToString(),
-                seed = plan.Seed,
-                output = new
-                {
-                    width = plan.Output.Width,
-                    height = plan.Output.Height,
-                    frameRate = new { numerator = plan.Output.FrameRate.Numerator, denominator = plan.Output.FrameRate.Denominator },
-                    durationFrames = plan.Output.DurationFrames
-                },
-                template = plan.Template.ToString().ToLowerInvariant(),
-                templateProps = new
-                {
-                    captions = plan.TemplateProps.Captions.ToString().ToLowerInvariant(),
-                    theme = plan.TemplateProps.Theme.ToString().ToLowerInvariant(),
-                    title = plan.TemplateProps.Title
-                },
-                video = new
-                {
-                    clips = plan.Video.Clips.Select(clip => new
-                    {
-                        segmentId = clip.SegmentId.ToString(),
-                        mapping = new
-                        {
-                            originalAssetId = clip.Mapping.OriginalAssetId.ToString(),
-                            original = new
-                            {
-                                startMicroseconds = clip.Mapping.Original.StartMicroseconds,
-                                endMicroseconds = clip.Mapping.Original.EndMicroseconds
-                            },
-                            masterAssetId = clip.Mapping.MasterAssetId.ToString(),
-                            master = new
-                            {
-                                startMicroseconds = clip.Mapping.Master.StartMicroseconds,
-                                endMicroseconds = clip.Mapping.Master.EndMicroseconds
-                            }
-                        },
-                        output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
-                        crop = clip.Crop switch
-                        {
-                            CropPreset.Fit => "fit",
-                            CropPreset.CenterCrop => "centerCrop",
-                            _ => throw new InvalidOperationException($"Unsupported crop preset '{clip.Crop}'.")
-                        }
-                    })
-                },
-                audio = new
-                {
-                    sourceClips = plan.Audio.SourceClips.Select(clip => new
-                    {
-                        segmentId = clip.SegmentId.ToString(),
-                        output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
-                        gain = clip.Gain
-                    }),
-                    musicClips = Array.Empty<object>()
-                },
-                captions = new { items = plan.Captions.Items },
-                overlays = new { items = plan.Overlays.Items.OfType<TextOverlay>().Select(item => new { type = "text", text = item.Text, output = item.Output }) }
-            },
+            plan = serializedPlan,
             assets = renderAssets.Select(asset => new
                 {
                     id = asset.Key.ToString(),
@@ -411,4 +359,189 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         };
         return JsonSerializer.Serialize(request, JsonOptions);
     }
+
+    private static object BuildV1Plan(EditPlan plan) => new
+    {
+        schemaVersion = plan.SchemaVersion,
+        jobId = plan.JobId.ToString(),
+        variantId = plan.VariantId.ToString(),
+        revisionId = plan.RevisionId.ToString(),
+        analysisRevisionId = plan.AnalysisRevisionId.ToString(),
+        seed = plan.Seed,
+        output = new
+        {
+            width = plan.Output.Width,
+            height = plan.Output.Height,
+            frameRate = new { numerator = plan.Output.FrameRate.Numerator, denominator = plan.Output.FrameRate.Denominator },
+            durationFrames = plan.Output.DurationFrames
+        },
+        template = plan.Template.ToString().ToLowerInvariant(),
+        templateProps = new
+        {
+            captions = plan.TemplateProps.Captions.ToString().ToLowerInvariant(),
+            theme = plan.TemplateProps.Theme.ToString().ToLowerInvariant(),
+            title = plan.TemplateProps.Title
+        },
+        video = new
+        {
+            clips = plan.Video.Clips.Select(clip => new
+            {
+                segmentId = clip.SegmentId.ToString(),
+                mapping = new
+                {
+                    originalAssetId = clip.Mapping.OriginalAssetId.ToString(),
+                    original = new { startMicroseconds = clip.Mapping.Original.StartMicroseconds, endMicroseconds = clip.Mapping.Original.EndMicroseconds },
+                    masterAssetId = clip.Mapping.MasterAssetId.ToString(),
+                    master = new { startMicroseconds = clip.Mapping.Master.StartMicroseconds, endMicroseconds = clip.Mapping.Master.EndMicroseconds }
+                },
+                output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
+                crop = clip.Crop switch
+                {
+                    CropPreset.Fit => "fit",
+                    CropPreset.CenterCrop => "centerCrop",
+                    _ => throw new InvalidOperationException($"Unsupported crop preset '{clip.Crop}'.")
+                }
+            })
+        },
+        audio = new
+        {
+            sourceClips = plan.Audio.SourceClips.Select(clip => new
+            {
+                segmentId = clip.SegmentId.ToString(),
+                output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
+                gain = clip.Gain
+            }),
+            musicClips = Array.Empty<object>()
+        },
+        captions = new { items = plan.Captions.Items },
+        overlays = new { items = plan.Overlays.Items.OfType<TextOverlay>().Select(item => new { type = "text", text = item.Text, output = item.Output }) }
+    };
+
+    private static object BuildV2Plan(EditPlan plan, ReelsPresentationPlan presentation)
+    {
+        VideoClip firstClip = plan.Video.Clips[0];
+        VisualEffectInstruction[] effects = presentation.Visuals?.Effects.ToArray() ?? [];
+        CaptionGroup[] groups = presentation.Captions?.Groups.ToArray() ?? [];
+        AudioDirectorDecision? audio = presentation.Audio;
+        return new
+        {
+            schemaVersion = 2,
+            jobId = plan.JobId.ToString(),
+            variantId = plan.VariantId.ToString(),
+            revisionId = plan.RevisionId.ToString(),
+            analysisRevisionId = plan.AnalysisRevisionId.ToString(),
+            profile = "instagram-reels",
+            style = new
+            {
+                requested = StyleName(presentation.Style.RequestedStyle),
+                resolved = StyleName(presentation.Style.ResolvedStyle)
+            },
+            output = new
+            {
+                width = plan.Output.Width,
+                height = plan.Output.Height,
+                frameRate = new { numerator = plan.Output.FrameRate.Numerator, denominator = plan.Output.FrameRate.Denominator },
+                durationFrames = plan.Output.DurationFrames
+            },
+            source = new
+            {
+                originalAssetId = firstClip.Mapping.OriginalAssetId.ToString(),
+                masterAssetId = firstClip.Mapping.MasterAssetId.ToString()
+            },
+            video = new
+            {
+                clips = plan.Video.Clips.Select(clip =>
+                {
+                    ReframeTrack? track = presentation.Reframe?.Tracks.FirstOrDefault(item => item.SegmentId == clip.SegmentId);
+                    ReframeKeyframe? firstKeyframe = track?.Keyframes.FirstOrDefault();
+                    return new
+                    {
+                        sourceAssetId = clip.Mapping.MasterAssetId.ToString(),
+                        source = new { startMicroseconds = clip.Mapping.Original.StartMicroseconds, endMicroseconds = clip.Mapping.Original.EndMicroseconds },
+                        master = new { startMicroseconds = clip.Mapping.Master.StartMicroseconds, endMicroseconds = clip.Mapping.Master.EndMicroseconds },
+                        output = new { startFrame = clip.Output.StartFrame, endFrame = clip.Output.EndFrame },
+                        crop = new
+                        {
+                            preset = track?.Fallback == ReframeFallback.Fit ? "fit" : "fill",
+                            focalX = firstKeyframe?.FocalX ?? 0.5m,
+                            focalY = firstKeyframe?.FocalY ?? 0.5m,
+                            zoom = firstKeyframe?.Zoom ?? 1m,
+                            fallback = track?.Fallback == ReframeFallback.Fit ? "fit" : "center",
+                            keyframes = track?.Keyframes.Select(keyframe => new
+                            {
+                                outputFrame = keyframe.OutputFrame,
+                                focalX = keyframe.FocalX,
+                                focalY = keyframe.FocalY,
+                                zoom = keyframe.Zoom
+                            }) ?? []
+                        },
+                        effects = effects.Where(effect => effect.Output.StartFrame < clip.Output.EndFrame && clip.Output.StartFrame < effect.Output.EndFrame).Select(effect => effect.Id)
+                    };
+                })
+            },
+            effects = effects.Select(effect => new
+            {
+                id = effect.Id,
+                type = effect.Kind switch
+                {
+                    VisualEffectKind.DynamicZoom => "dynamicZoom",
+                    VisualEffectKind.TextHighlight => "textHighlight",
+                    VisualEffectKind.VisualTransition => "visualTransition",
+                    _ => throw new InvalidOperationException($"Unsupported visual effect '{effect.Kind}'.")
+                },
+                output = new { startFrame = effect.Output.StartFrame, endFrame = effect.Output.EndFrame },
+                sourceSkillId = effect.SourceSkillId,
+                parameters = new { amount = effect.Strength }
+            }),
+            captions = new
+            {
+                words = groups.SelectMany(group => group.Words).Select(word => new { text = word.Text, output = new { startFrame = word.Output.StartFrame, endFrame = word.Output.EndFrame } }),
+                groups = groups.Select(group => new
+                {
+                    text = group.Text,
+                    words = group.Words.Select(word => new { text = word.Text, output = new { startFrame = word.Output.StartFrame, endFrame = word.Output.EndFrame } }),
+                    output = new { startFrame = group.Output.StartFrame, endFrame = group.Output.EndFrame },
+                    maxLines = group.MaxLines,
+                    highlight = group.Highlight == CaptionHighlightMode.ActiveWord ? "activeWord" : "none",
+                    animation = group.Animation == CaptionAnimation.Fade ? "fade" : "none",
+                    placement = "bottomSafe"
+                })
+            },
+            audio = new
+            {
+                sourceGain = plan.Audio.SourceClips.IsEmpty ? 1m : plan.Audio.SourceClips[0].Gain,
+                targetLoudnessLufs = audio?.TargetLoudnessLufs ?? -16m,
+                truePeakDbtp = audio?.TruePeakDbtp ?? -1m,
+                fadeInFrames = audio?.FadeInFrames ?? 0,
+                fadeOutFrames = audio?.FadeOutFrames ?? 0,
+                denoise = audio?.Denoise ?? false,
+                musicAssetId = audio?.MusicAssetId,
+                musicGain = audio?.MusicAssetId is null ? (decimal?)null : 1m,
+                ducking = audio?.Ducking
+            },
+            skills = new EditingDecision?[] { presentation.Captions, presentation.Visuals, presentation.Reframe, presentation.Audio }
+                .Where(decision => decision is not null)
+                .Select(decision => new
+                {
+                    id = decision!.SkillId,
+                    version = decision.SkillVersion,
+                    status = decision.Status switch
+                    {
+                        EditingDecisionStatus.Applied => "applied",
+                        EditingDecisionStatus.Skipped => "skipped",
+                        _ => "rejected"
+                    }
+                })
+        };
+    }
+
+    private static string StyleName(ReelsStyle style) => style switch
+    {
+        ReelsStyle.Auto => "auto",
+        ReelsStyle.ExpertClean => "expert-clean",
+        ReelsStyle.DynamicViral => "dynamic-viral",
+        ReelsStyle.Cinematic => "cinematic",
+        ReelsStyle.PremiumAds => "premium-ads",
+        _ => throw new ArgumentOutOfRangeException(nameof(style))
+    };
 }

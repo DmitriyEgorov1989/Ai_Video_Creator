@@ -38,6 +38,9 @@ public sealed class AnalysisArtifactPublisherTests
             {
                 Features = new AnalysisFeatureSet(
                 [new SegmentAnalysisFeatures(segmentId, 0.8m, 0.7m, 0.6m, 0.5m, 0.4m, 0.9m, "dup-1")])
+                {
+                    FocalObservations = [new FocalObservation(segmentId, 500_000, 0.4m, 0.3m, 0.2m, 0.4m, 0.9m)]
+                }
             };
             MemoryArtifactStore store = new();
             AnalysisArtifactPublisher publisher = new(new LocalArtifactStorage(workspace), store);
@@ -50,6 +53,7 @@ public sealed class AnalysisArtifactPublisherTests
             string path = Path.Combine(workspace, record.RelativePath.Replace('/', Path.DirectorySeparatorChar));
             AnalysisResult restored = JsonSerializer.Deserialize<AnalysisResult>(await File.ReadAllTextAsync(path))!;
             Assert.Equal(0.8m, Assert.Single(restored.Features.Segments).SemanticRelevance);
+            Assert.Equal(0.4m, Assert.Single(restored.Features.FocalObservations).X);
             Assert.Equal("analysis-v2", record.ToolVersion);
 
             using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(path));

@@ -327,6 +327,38 @@ public interface IPlanningAttemptStore
     Task SaveAsync(PlanningAttemptRecord attempt, CancellationToken cancellationToken);
 }
 
+/// <summary>Сохраняемые решения оформления поверх корректного semantic timeline.</summary>
+/// <param name="Style">Запрошенный и разрешённый Reels style.</param>
+/// <param name="Captions">Решение Caption Director или <see langword="null"/>.</param>
+/// <param name="Visuals">Решение Visual Director или <see langword="null"/>.</param>
+/// <param name="Reframe">Решение Smart Reframe или <see langword="null"/>.</param>
+/// <param name="Audio">Решение Audio Director или <see langword="null"/>.</param>
+public sealed record ReelsPresentationPlan(
+    ReelsStyleConfiguration Style,
+    CaptionDirectorDecision? Captions,
+    VisualDirectorDecision? Visuals,
+    SmartReframeDecision? Reframe,
+    AudioDirectorDecision? Audio)
+{
+    /// <summary>Создаёт presentation из результатов единого skill engine.</summary>
+    /// <param name="style">Разрешённые параметры style.</param>
+    /// <param name="evaluation">Результаты editing skills.</param>
+    /// <returns>Типизированные решения directors; отсутствующие решения представлены <see langword="null"/>.</returns>
+    public static ReelsPresentationPlan FromEvaluation(
+        ReelsStyleConfiguration style,
+        EditingEvaluation evaluation)
+    {
+        ArgumentNullException.ThrowIfNull(style);
+        ArgumentNullException.ThrowIfNull(evaluation);
+        return new(
+            style,
+            evaluation.Decisions.OfType<CaptionDirectorDecision>().SingleOrDefault(),
+            evaluation.Decisions.OfType<VisualDirectorDecision>().SingleOrDefault(),
+            evaluation.Decisions.OfType<SmartReframeDecision>().SingleOrDefault(),
+            evaluation.Decisions.OfType<AudioDirectorDecision>().SingleOrDefault());
+    }
+}
+
 /// <summary>Неизменяемая сохранённая ревизия монтажного плана.</summary>
 public sealed record EditPlanRevision(
     RevisionId RevisionId,
@@ -334,7 +366,8 @@ public sealed record EditPlanRevision(
     VariantId VariantId,
     string PlanHash,
     EditPlan Plan,
-    decimal ActualCostUsd);
+    decimal ActualCostUsd,
+    ReelsPresentationPlan? Presentation = null);
 
 /// <summary>Результат поиска или сохранения ревизии плана.</summary>
 public interface IEditPlanRevisionStore
@@ -367,6 +400,15 @@ public interface IEditPlanRevisionStore
         string planHash,
         decimal actualCostUsd,
         CancellationToken cancellationToken);
+
+    /// <summary>Сохраняет timeline и опциональные presentation decisions одной неизменяемой ревизией.</summary>
+    Task<EditPlanRevision> SaveAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        CancellationToken cancellationToken) =>
+        SaveAsync(plan, planHash, actualCostUsd, cancellationToken);
 }
 
 /// <summary>Результат построения монтажного плана.</summary>

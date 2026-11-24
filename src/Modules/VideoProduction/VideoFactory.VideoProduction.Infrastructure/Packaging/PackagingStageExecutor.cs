@@ -164,7 +164,11 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 OutputQualityResult encodedQa = await qualityAssurance.VerifyAsync(
                     new OutputQualityRequest(encodedPath, qualityProfile.ExpectedWidth, qualityProfile.ExpectedHeight,
                         revision.Plan.Output.FrameRate, revision.Plan.Output.DurationFrames, qualityProfile.DurationToleranceFrames,
-                        qualityProfile.RequireAudio, qualityProfile.ExpectedPixelFormat), cancellationToken);
+                        qualityProfile.RequireAudio, qualityProfile.ExpectedPixelFormat,
+                        ExpectedVideoCodec: "h264", ExpectedAudioCodec: "aac",
+                        ExpectedLoudnessLufs: revision.Presentation?.Audio?.TargetLoudnessLufs,
+                        LoudnessToleranceLufs: 1m,
+                        MaximumTruePeakDbtp: revision.Presentation?.Audio?.TruePeakDbtp), cancellationToken);
                 long encodedSize = new FileInfo(encodedPath).Length;
                 if (!encodedQa.IsSuccess)
                     return StageExecutionResult.Permanent("packaging.encode_qa_failed", encodedQa.ErrorMessage ?? "Controlled encode did not pass QA.");

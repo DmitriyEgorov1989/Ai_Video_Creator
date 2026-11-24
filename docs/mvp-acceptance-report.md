@@ -76,8 +76,30 @@ dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj --filte
   сохранение focal marker после crop;
 - эквивалентность повторных frame/audio observations.
 
-Проверка solution: 287 тестов прошли, 4 теста пропущены. Три Whisper integration
+Проверка solution: 308 тестов прошли, 4 теста пропущены. Три Whisper integration
 теста и положительный Telegram-to-delivery acceptance были пропущены из-за
 отсутствующего `WHISPER_TEST_PYTHON`; отрицательный Telegram-сценарий прошёл.
-Render-host: 10 тестов прошли, typecheck, build и smoke render завершились
+Render-host: 14 тестов прошли, typecheck, build и smoke render завершились
 успешно. Analysis scores не используются вместо объективных media assertions.
+
+## Reels directors
+
+24 ноября 2026 года Edit Plan V2 расширен контролируемыми presentation
+decisions и доведён без потерь от planning revision до render-host:
+
+- Caption Director сохраняет Unicode word timings, семантические группы,
+  максимум две строки, active-word highlight, fade и нижнюю safe zone;
+- Visual Director создаёт только закрытые zoom/highlight/transition effects с
+  идентификатором исходного skill; конфликтующие transitions отклоняются;
+- Smart Reframe исполняет сглаженные focal keyframes, ограничивает скачок crop
+  и использует явный `fit` fallback без focal observations;
+- Audio Director задаёт speech loudness/true peak, fades и optional FFmpeg
+  denoise; ducking принимается только с известным music asset;
+- профиль `instagram-reels` фиксирует 1080x1920, 30 FPS и H.264/AAC, а пять
+  styles детерминированно различаются параметрами тех же directors.
+
+Production revision сохраняет resolved style и typed decisions в существующем
+`plan_json` без миграции SQLite. Старые V1 и V2 документы продолжают читаться;
+revision без presentation по-прежнему рендерится через V1 path. При отсутствии
+CV observations Smart Reframe не заявляет tracking и безопасно показывает
+источник через fallback.

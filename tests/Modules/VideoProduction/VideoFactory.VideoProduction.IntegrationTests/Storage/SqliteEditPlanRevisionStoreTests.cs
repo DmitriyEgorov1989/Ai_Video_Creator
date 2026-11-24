@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using Microsoft.Data.Sqlite;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Analysis;
@@ -15,6 +16,30 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Storage;
 
 public sealed class SqliteEditPlanRevisionStoreTests
 {
+    [Fact]
+    public async Task ReelsPresentationIsRestoredWithApprovedPlanWithoutMigration()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded job = await CreateJobAsync(database);
+        EditPlan plan = CreatePlan(job);
+        ReelsStyleConfiguration style = new ReelsProfileCatalog().Resolve(
+            ReelsStyle.ExpertClean,
+            new AnalysisResult(
+                1,
+                plan.AnalysisRevisionId,
+                plan.Video.Clips[0].Mapping.OriginalAssetId,
+                plan.Video.Clips[0].Mapping.MasterAssetId,
+                [], [], [], []));
+        ReelsPresentationPlan presentation = new(style, null, null, null, null);
+        SqliteEditPlanRevisionStore store = new(database.ConnectionString);
+
+        await store.SaveAsync(plan, "presentation-hash", 0m, presentation, CancellationToken.None);
+        EditPlanRevision? restored = await store.GetAsync(plan.RevisionId, CancellationToken.None);
+
+        Assert.NotNull(restored);
+        Assert.Equal(ReelsStyle.ExpertClean, restored.Presentation?.Style.ResolvedStyle);
+    }
+
     [Fact]
     public async Task SamePlanHashIsRestoredWithoutCreatingSecondRevision()
     {

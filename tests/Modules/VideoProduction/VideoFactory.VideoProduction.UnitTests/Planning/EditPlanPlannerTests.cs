@@ -1,10 +1,12 @@
 using System.Collections.Immutable;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Analysis;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Domain.Templates;
+using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.UnitTests.Fixtures;
 
 namespace VideoFactory.VideoProduction.UnitTests.Planning;
@@ -139,13 +141,34 @@ public sealed class EditPlanPlannerTests
         Assert.Equal(0.4m, fixture.Attempts.Attempts[0].ActualCostUsd);
     }
 
+    [Fact]
+    public async Task ProviderTargetDurationUsesEffectiveSmartCutMappings()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Request = fixture.Request with
+        {
+            Settings = new ProductionSettings(null, true, false)
+        };
+        fixture.Planner = new EditPlanPlanner(
+            fixture.Provider,
+            fixture.CostPolicy,
+            fixture.Store,
+            fixture.Attempts,
+            editingSkillEngine: new EditingSkillEngine([new FixedSmartCutSkill(fixture.Analysis)]));
+
+        await fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None);
+
+        Assert.Equal(2, fixture.Provider.LastTargetDurationSeconds);
+        Assert.All(fixture.Provider.LastAllowedSegments, segment => Assert.Equal(1_000_000, segment.DurationMicroseconds));
+    }
+
     private sealed class PlanningFixture
     {
         public required ValidPlanFixture Source { get; init; }
         public required TestProvider Provider { get; init; }
         public required InMemoryRevisionStore Store { get; init; }
         public required InMemoryAttemptStore Attempts { get; init; }
-        public required PlanningRequest Request { get; init; }
+        public required PlanningRequest Request { get; set; }
         public EditPlanPlanner Planner { get; set; } = null!;
         public required TestCostPolicy CostPolicy { get; init; }
         public AnalysisResult Analysis => Source.Analysis;
@@ -192,6 +215,8 @@ public sealed class EditPlanPlannerTests
         public int CreatePlanCount { get; private set; }
         public int EstimateCostCount { get; private set; }
         public int LastRepairAttempt { get; private set; }
+        public int? LastTargetDurationSeconds { get; private set; }
+        public ImmutableArray<ProviderSegment> LastAllowedSegments { get; private set; } = [];
 
         public TestProvider(EditPlan plan)
         {
@@ -213,6 +238,8 @@ public sealed class EditPlanPlannerTests
             CancellationToken cancellationToken)
         {
             EstimateCostCount++;
+            LastTargetDurationSeconds = request.TargetDurationSeconds;
+            LastAllowedSegments = request.AllowedSegments;
             return NetworkFailure == "estimate"
                 ? throw new HttpRequestException("original integration diagnostic")
                 : Task.FromResult(new PlanningCostEstimate(
@@ -241,6 +268,28 @@ public sealed class EditPlanPlannerTests
 
             return Task.FromResult(response with { ActualCostUsd = ActualCostUsd });
         }
+    }
+
+    private sealed class FixedSmartCutSkill(AnalysisResult analysis) : IEditingSkill
+    {
+        public string Id => "smart-cut";
+        public string Version => "test";
+        public ImmutableArray<string> Prerequisites => [];
+
+        public EditingDecision Evaluate(EditingContext context) => new SmartCutDecision(
+            Id,
+            Version,
+            EditingDecisionStatus.Applied,
+            [],
+            analysis.AllowedSegments.Select(segment => new SmartCutEdit(
+                segment.Id,
+                segment.Mapping with
+                {
+                    Master = new MasterRange(
+                        segment.Mapping.Master.StartMicroseconds,
+                        segment.Mapping.Master.StartMicroseconds + 1_000_000)
+                },
+                "test-boundary")).ToImmutableArray());
     }
 
     private sealed class TestCostPolicy(decimal limit) : IPlanningCostPolicy

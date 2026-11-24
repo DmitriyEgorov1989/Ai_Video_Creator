@@ -25,6 +25,10 @@
 Результаты локальной приёмки и измерения ресурсов зафиксированы в [отчёте MVP](docs/mvp-acceptance-report.md).
 Воспроизводимые synthetic fixtures и media oracle дополнительно проверяют
 source trim, порядок video/audio, чёрные кадры, timing captions и crop-safe marker.
+Edit Plan V2 также сохраняет и исполняет детерминированные Caption, Visual,
+Smart Reframe и Audio decisions. Профиль `instagram-reels` фиксирует
+1080x1920, 30 FPS и H.264/AAC; styles `auto`, `expert-clean`, `dynamic-viral`,
+`cinematic` и `premium-ads` настраивают одни и те же editing skills.
 
 ## Режимы работы
 

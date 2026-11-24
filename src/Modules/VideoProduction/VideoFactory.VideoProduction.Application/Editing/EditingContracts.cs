@@ -7,11 +7,19 @@ namespace VideoFactory.VideoProduction.Application.Editing;
 /// <summary>Контекст, доступный одному editing skill.</summary>
 /// <param name="Analysis">Результат анализа или <see langword="null" />, если анализ ещё недоступен.</param>
 /// <param name="Settings">Настройки производства; не могут быть <see langword="null" />.</param>
+/// <param name="Comment">Пользовательская инструкция или <see langword="null" />, если она отсутствует.</param>
+/// <param name="PreviousDecisions">Предыдущие решения по идентификаторам skills или <see langword="null" />.</param>
+/// <param name="MusicAssetId">Выбранный идентификатор music asset или <see langword="null" />.</param>
+/// <param name="KnownAssetIds">Известные идентификаторы assets или <see langword="null" />, если список недоступен.</param>
+/// <param name="Style">Разрешённые параметры Reels style или <see langword="null" /> для defaults.</param>
 public sealed record EditingContext(
     AnalysisResult? Analysis,
     ProductionSettings Settings,
     string? Comment = null,
-    IReadOnlyDictionary<string, EditingDecision>? PreviousDecisions = null);
+    IReadOnlyDictionary<string, EditingDecision>? PreviousDecisions = null,
+    string? MusicAssetId = null,
+    IReadOnlySet<string>? KnownAssetIds = null,
+    ReelsStyleConfiguration? Style = null);
 
 /// <summary>Статус детерминированного решения editing skill.</summary>
 public enum EditingDecisionStatus

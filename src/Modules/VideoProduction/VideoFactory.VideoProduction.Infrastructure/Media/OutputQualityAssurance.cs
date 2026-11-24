@@ -9,6 +9,7 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
 {
     private readonly IMediaProbe mediaProbe;
     private readonly IMediaDecodeVerifier decodeVerifier;
+    private readonly IOutputAudioQualityAnalyzer? audioQualityAnalyzer;
     private readonly TimeSpan defaultProbeTimeout;
     private readonly int defaultMaxOutputBytes;
 
@@ -17,7 +18,8 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
         IMediaProbe mediaProbe,
         IMediaDecodeVerifier decodeVerifier,
         TimeSpan defaultProbeTimeout,
-        int defaultMaxOutputBytes)
+        int defaultMaxOutputBytes,
+        IOutputAudioQualityAnalyzer? audioQualityAnalyzer = null)
     {
         this.mediaProbe = mediaProbe ?? throw new ArgumentNullException(nameof(mediaProbe));
         this.decodeVerifier = decodeVerifier ?? throw new ArgumentNullException(nameof(decodeVerifier));
@@ -25,6 +27,7 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
         if (defaultMaxOutputBytes <= 0) throw new ArgumentOutOfRangeException(nameof(defaultMaxOutputBytes));
         this.defaultProbeTimeout = defaultProbeTimeout;
         this.defaultMaxOutputBytes = defaultMaxOutputBytes;
+        this.audioQualityAnalyzer = audioQualityAnalyzer;
     }
 
     /// <inheritdoc />
@@ -83,6 +86,22 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
         }
 
         VideoStreamMetadata video = metadata.VideoStreams[0];
+        if (request.ExpectedVideoCodec is not null
+            && !string.Equals(video.Codec, request.ExpectedVideoCodec, StringComparison.OrdinalIgnoreCase))
+        {
+            return OutputQualityResult.Failed(
+                "media.video_codec_mismatch",
+                $"Expected video codec '{request.ExpectedVideoCodec}', got '{video.Codec}'.");
+        }
+
+        if (request.ExpectedAudioCodec is not null
+            && metadata.AudioStreams.Any(stream => !string.Equals(stream.Codec, request.ExpectedAudioCodec, StringComparison.OrdinalIgnoreCase)))
+        {
+            return OutputQualityResult.Failed(
+                "media.audio_codec_mismatch",
+                $"Expected audio codec '{request.ExpectedAudioCodec}'.");
+        }
+
         if (video.Width != request.ExpectedWidth || video.Height != request.ExpectedHeight)
         {
             return OutputQualityResult.Failed(
@@ -126,6 +145,45 @@ public sealed class OutputQualityAssurance : IOutputQualityAssurance
             return OutputQualityResult.Failed(
                 decode.ErrorCode ?? "media.decode_failed",
                 decode.ErrorMessage ?? "FFmpeg could not fully decode the output file.");
+        }
+
+        if (request.ExpectedLoudnessLufs is not null || request.MaximumTruePeakDbtp is not null)
+        {
+            if (audioQualityAnalyzer is null)
+            {
+                return OutputQualityResult.Failed(
+                    "media.audio_quality_analyzer_missing",
+                    "Final audio quality targets require an audio quality analyzer.");
+            }
+
+            OutputAudioQualityResult audio = await audioQualityAnalyzer.AnalyzeAsync(
+                new OutputAudioQualityRequest(
+                    request.FilePath,
+                    request.ProbeTimeout ?? defaultProbeTimeout,
+                    request.MaxOutputBytes ?? defaultMaxOutputBytes),
+                cancellationToken);
+            if (!audio.IsSuccess)
+            {
+                return OutputQualityResult.Failed(
+                    audio.ErrorCode ?? "media.audio_quality_measurement_failed",
+                    audio.ErrorMessage ?? "FFmpeg could not measure final audio quality.");
+            }
+
+            if (request.ExpectedLoudnessLufs is not null
+                && Math.Abs(audio.IntegratedLoudnessLufs!.Value - request.ExpectedLoudnessLufs.Value) > request.LoudnessToleranceLufs)
+            {
+                return OutputQualityResult.Failed(
+                    "media.audio_loudness_mismatch",
+                    $"Expected loudness within {request.LoudnessToleranceLufs} LU of {request.ExpectedLoudnessLufs} LUFS, got {audio.IntegratedLoudnessLufs} LUFS.");
+            }
+
+            if (request.MaximumTruePeakDbtp is decimal maximumTruePeak
+                && audio.TruePeakDbtp!.Value > maximumTruePeak)
+            {
+                return OutputQualityResult.Failed(
+                    "media.audio_true_peak_exceeded",
+                    $"Expected true peak at or below {maximumTruePeak} dBTP, got {audio.TruePeakDbtp} dBTP.");
+            }
         }
 
         return OutputQualityResult.Succeeded(video.Width, video.Height, durationFrames);

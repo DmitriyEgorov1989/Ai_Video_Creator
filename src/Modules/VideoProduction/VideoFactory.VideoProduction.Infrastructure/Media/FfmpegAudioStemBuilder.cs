@@ -55,7 +55,7 @@ public sealed class FfmpegAudioStemBuilder : IAudioStemBuilder
                         "-y", "-i", request.SourcePath,
                         "-map", "0:a:0",
                         "-vn",
-                        "-af", $"loudnorm=I={request.TargetLoudnessLufs:0.###}:TP={request.TruePeakDbtp:0.###}:LRA=11",
+                        "-af", $"{(request.Denoise ? "afftdn=nf=-25," : string.Empty)}loudnorm=I={request.TargetLoudnessLufs:0.###}:TP={request.TruePeakDbtp:0.###}:LRA=11",
                         "-ar", request.TargetSampleRate.ToString(System.Globalization.CultureInfo.InvariantCulture),
                         "-ac", request.ChannelLayout == "mono" ? "1" : "2",
                         "-channel_layout", request.ChannelLayout,

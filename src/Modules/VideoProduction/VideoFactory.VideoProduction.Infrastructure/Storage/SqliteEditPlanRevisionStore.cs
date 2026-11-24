@@ -80,6 +80,15 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         EditPlan plan,
         string planHash,
         decimal actualCostUsd,
+        CancellationToken cancellationToken) =>
+        await SaveAsync(plan, planHash, actualCostUsd, null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<EditPlanRevision> SaveAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -94,8 +103,11 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
             plan.VariantId,
             planHash,
             plan,
-            actualCostUsd);
-        string planJson = JsonSerializer.Serialize(plan, JsonOptions);
+            actualCostUsd,
+            presentation);
+        string planJson = presentation is null
+            ? JsonSerializer.Serialize(plan, JsonOptions)
+            : JsonSerializer.Serialize(new StoredPlanDocument(plan, presentation), JsonOptions);
 
         await using SqliteConnection connection = new(connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -179,16 +191,22 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
             return null;
         }
 
-        EditPlan plan = JsonSerializer.Deserialize<EditPlan>(
-            reader.GetString(5),
-            JsonOptions) ?? throw new InvalidOperationException("Stored edit plan JSON is null.");
+        string planJson = reader.GetString(5);
+        using JsonDocument document = JsonDocument.Parse(planJson);
+        StoredPlanDocument? stored = document.RootElement.TryGetProperty("plan", out _)
+            ? JsonSerializer.Deserialize<StoredPlanDocument>(planJson, JsonOptions)
+            : null;
+        EditPlan plan = stored?.Plan
+            ?? JsonSerializer.Deserialize<EditPlan>(planJson, JsonOptions)
+            ?? throw new InvalidOperationException("Stored edit plan JSON is null.");
         return new EditPlanRevision(
             new RevisionId(Guid.Parse(reader.GetString(0))),
             new JobId(Guid.Parse(reader.GetString(1))),
             new VariantId(Guid.Parse(reader.GetString(2))),
             reader.GetString(4),
             plan,
-            decimal.Parse(reader.GetString(6), System.Globalization.CultureInfo.InvariantCulture));
+            decimal.Parse(reader.GetString(6), System.Globalization.CultureInfo.InvariantCulture),
+            stored?.Presentation);
     }
 
     private const string SelectSql = """
@@ -196,4 +214,6 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
                plan_hash, plan_json, actual_cost_usd
         FROM edit_plan_revisions
         """;
+
+    private sealed record StoredPlanDocument(EditPlan Plan, ReelsPresentationPlan Presentation);
 }

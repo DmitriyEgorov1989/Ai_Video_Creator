@@ -160,11 +160,14 @@ public static class VideoFactoryHost
          {
             ProcessTimeoutOptions timeouts = services
                 .GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
-            return new OutputQualityAssurance(
-                services.GetRequiredService<IMediaProbe>(),
-                services.GetRequiredService<IMediaDecodeVerifier>(),
-                TimeSpan.FromSeconds(timeouts.ProbeSeconds),
-                 timeouts.MaxOutputBytes);
+             return new OutputQualityAssurance(
+                 services.GetRequiredService<IMediaProbe>(),
+                 services.GetRequiredService<IMediaDecodeVerifier>(),
+                 TimeSpan.FromSeconds(timeouts.ProbeSeconds),
+                  timeouts.MaxOutputBytes,
+                  new FfmpegOutputAudioQualityAnalyzer(
+                      services.GetRequiredService<IProcessRunner>(),
+                      services.GetRequiredService<IOptions<FfmpegOptions>>().Value.FfmpegPath));
          });
          builder.Services.AddSingleton<IVideoFeatureAnalyzer>(services =>
          {

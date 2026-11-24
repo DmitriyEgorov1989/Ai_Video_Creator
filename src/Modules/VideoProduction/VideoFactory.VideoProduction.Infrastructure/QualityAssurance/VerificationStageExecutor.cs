@@ -70,7 +70,12 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
                 revision.Plan.Output.DurationFrames,
                 profile.DurationToleranceFrames,
                 profile.RequireAudio,
-                profile.ExpectedPixelFormat),
+                profile.ExpectedPixelFormat,
+                ExpectedVideoCodec: "h264",
+                ExpectedAudioCodec: "aac",
+                ExpectedLoudnessLufs: revision.Presentation?.Audio?.TargetLoudnessLufs,
+                LoudnessToleranceLufs: 1m,
+                MaximumTruePeakDbtp: revision.Presentation?.Audio?.TruePeakDbtp),
             cancellationToken);
 
         ArtifactId reportId = ArtifactId.New();
