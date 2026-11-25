@@ -159,3 +159,29 @@ public sealed record AnalysisResult(
     /// <summary>Дополнительные признаки Analysis V2; для V1 содержит пустой набор.</summary>
     public AnalysisFeatureSet Features { get; init; } = AnalysisFeatureSet.Empty;
 }
+
+/// <summary>Содержит результат анализа одного Original/Master источника в Analysis V3.</summary>
+/// <param name="OriginalAssetId">Идентификатор Original-артефакта.</param>
+/// <param name="MasterAssetId">Идентификатор соответствующего Master-артефакта.</param>
+/// <param name="Speech">Речь на локальной шкале Master; коллекция и элементы не могут быть <see langword="null"/>.</param>
+/// <param name="Pauses">Паузы на локальной шкале Master.</param>
+/// <param name="Scenes">Сцены на локальной шкале Master; элементы не могут быть <see langword="null"/>.</param>
+/// <param name="Features">Признаки сегментов этого источника; не может быть <see langword="null"/>.</param>
+public sealed record AnalysisSource(
+    ArtifactId OriginalAssetId,
+    ArtifactId MasterAssetId,
+    ImmutableArray<SpeechSegment> Speech,
+    ImmutableArray<MasterRange> Pauses,
+    ImmutableArray<Scene> Scenes,
+    AnalysisFeatureSet Features);
+
+/// <summary>Содержит агрегированный source-scoped результат Analysis V3.</summary>
+/// <param name="SchemaVersion">Версия схемы; для этого контракта равна <c>3</c>.</param>
+/// <param name="RevisionId">Идентификатор агрегированной ревизии.</param>
+/// <param name="Sources">Непустой упорядоченный набор результатов источников.</param>
+/// <param name="AllowedSegments">Глобально уникальные разрешённые сегменты всех источников.</param>
+public sealed record MultiSourceAnalysisResult(
+    int SchemaVersion,
+    RevisionId RevisionId,
+    ImmutableArray<AnalysisSource> Sources,
+    ImmutableArray<AllowedSegment> AllowedSegments);

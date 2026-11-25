@@ -11,6 +11,41 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Storage;
 public sealed class SqliteJobCreationStoreTests
 {
     [Fact]
+    public async Task OrderedSourcesAndPresentationSettingsSurviveNewStoreInstance()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        ArtifactId first = ArtifactId.New();
+        ArtifactId second = ArtifactId.New();
+        SqliteArtifactStore artifacts = new(database.ConnectionString);
+        await artifacts.RegisterAsync(
+            new ArtifactRecord(first, "OriginalVideo", "intake/first.bin", "aaa", 3, "{}", null, "test"),
+            CancellationToken.None);
+        await artifacts.RegisterAsync(
+            new ArtifactRecord(second, "OriginalVideo", "intake/second.bin", "bbb", 3, "{}", null, "test"),
+            CancellationToken.None);
+        CreateJobUseCase createJob = new(new SqliteJobCreationStore(database.ConnectionString));
+
+        CreateJobResult.Succeeded created = Assert.IsType<CreateJobResult.Succeeded>(
+            await createJob.ExecuteAsync(new CreateJobCommand(
+                [first, second],
+                "Собери обзор",
+                new ProductionSettings(
+                    30,
+                    captionsEnabled: true,
+                    musicEnabled: false,
+                    EditTempo.Calm,
+                    RequestedReelsStyle.Cinematic))));
+
+        JobCreationRecord? restored = await new SqliteJobStateStore(database.ConnectionString)
+            .GetAsync(created.JobId, CancellationToken.None);
+
+        Assert.NotNull(restored);
+        Assert.Equal([first, second], restored.Request.SourceAssetIds.ToArray());
+        Assert.Equal(EditTempo.Calm, restored.Request.Settings.Tempo);
+        Assert.Equal(RequestedReelsStyle.Cinematic, restored.Request.Settings.RequestedStyle);
+    }
+
+    [Fact]
     public async Task ArtifactRegistrationRejectsPathTraversal()
     {
         await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
@@ -140,6 +175,37 @@ public sealed class SqliteJobCreationStoreTests
 
         CreateJobResult.Rejected rejected = Assert.IsType<CreateJobResult.Rejected>(result);
         Assert.Equal(CreateJobErrorCode.SourceArtifactNotFound, rejected.Error.Code);
+    }
+
+    [Fact]
+    public async Task SourceOwnedByAnotherJobCannotBeReassignedByAnOverlappingRequest()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        ArtifactId first = ArtifactId.New();
+        ArtifactId second = ArtifactId.New();
+        SqliteArtifactStore artifacts = new(database.ConnectionString);
+        await artifacts.RegisterAsync(
+            new ArtifactRecord(first, "OriginalVideo", "intake/first.bin", "aaa", 3, "{}", null, "test"),
+            CancellationToken.None);
+        await artifacts.RegisterAsync(
+            new ArtifactRecord(second, "OriginalVideo", "intake/second.bin", "bbb", 3, "{}", null, "test"),
+            CancellationToken.None);
+        CreateJobUseCase createJob = new(new SqliteJobCreationStore(database.ConnectionString));
+        CreateJobResult.Succeeded existing = Assert.IsType<CreateJobResult.Succeeded>(
+            await createJob.ExecuteAsync(new CreateJobCommand(
+                first,
+                "Первое задание",
+                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false))));
+
+        CreateJobResult.Rejected rejected = Assert.IsType<CreateJobResult.Rejected>(
+            await createJob.ExecuteAsync(new CreateJobCommand(
+                [first, second],
+                "Пересекающееся задание",
+                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false))));
+
+        Assert.Equal(CreateJobErrorCode.SourceArtifactNotFound, rejected.Error.Code);
+        ArtifactRecord? stored = await artifacts.GetAsync(first, CancellationToken.None);
+        Assert.Equal(existing.JobId, stored?.JobId);
     }
 
     [Fact]

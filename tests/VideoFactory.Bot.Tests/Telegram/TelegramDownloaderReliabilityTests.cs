@@ -109,7 +109,12 @@ public sealed class TelegramDownloaderReliabilityTests
             TelegramFileDownloader downloader = new(bot, root, new Budget(fault == "disk"), new Probe(),
                 new MediaInputProfile { MaxFileBytes = 4 });
             TelegramDownloadResult.Rejected result = Assert.IsType<TelegramDownloadResult.Rejected>(
-                await downloader.DownloadAsync(new TelegramMediaInput("file", "unique", 3, "video/mp4", "video.mp4"), CancellationToken.None));
+                await downloader.DownloadAsync(
+                    new TelegramMediaInput("file", "unique", 3, "video/mp4", "video.mp4"),
+                    "jobs/intake/test/original.bin",
+                    4,
+                    (_, _) => Task.FromResult<long?>(null),
+                    CancellationToken.None));
             Assert.Equal(expectedCode, result.Code);
             Assert.DoesNotContain("synthetic-token", result.Message);
             Assert.Empty(Directory.GetFiles(root, "*", SearchOption.AllDirectories));

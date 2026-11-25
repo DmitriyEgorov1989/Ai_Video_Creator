@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Media;
@@ -12,6 +13,7 @@ using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Domain.Media;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
@@ -89,8 +91,13 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     {
         ArgumentNullException.ThrowIfNull(job);
         string directory = SafeFileTree.Resolve(workspaceRoot, $"data/jobs/{job.JobId}");
-        ArtifactRecord? source = await artifactStore.GetAsync(job.Request.SourceAssetId, cancellationToken);
-        long sourceSize = source?.SizeBytes ?? 0;
+        List<ArtifactRecord> jobSources = [];
+        foreach (ArtifactId sourceId in job.Request.SourceAssetIds)
+        {
+            ArtifactRecord? sourceArtifact = await artifactStore.GetAsync(sourceId, cancellationToken);
+            if (sourceArtifact is not null) jobSources.Add(sourceArtifact);
+        }
+        long sourceSize = jobSources.Sum(source => source.SizeBytes ?? 0);
         EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null ? null
             : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
         ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
@@ -98,8 +105,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             && existing.ParentArtifactId == job.Request.SourceAssetId && existing.MetadataJson is not null)
         {
             using JsonDocument metadata = JsonDocument.Parse(existing.MetadataJson);
-            if (metadata.RootElement.TryGetProperty("planRevisionId", out JsonElement id)
-                && id.GetString() == revision.RevisionId.ToString())
+            if (MatchesRenderKey(metadata.RootElement, revision, jobSources))
             {
                 string path = ResolveWorkspacePath(existing.RelativePath);
                 if (File.Exists(path))
@@ -200,20 +206,15 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                     "render.master_file_missing",
                     "A master artifact file required by the edit plan does not exist.");
             }
+            if (!await IsArtifactIntactAsync(master, masterPath, cancellationToken))
+            {
+                return StageExecutionResult.Permanent(
+                    "render.master_file_changed",
+                    "A master artifact file no longer matches its registered size and SHA-256.");
+            }
 
             masterPaths.Add(masterAssetId, masterPath);
         }
-
-        if (masterPaths.Count > 1)
-        {
-            return StageExecutionResult.Permanent(
-                "render.multiple_master_assets_unsupported",
-                "Edit Plan V1 rendering supports one master artifact.");
-        }
-
-        string renderSourcePath = masterPaths.Count == 1
-            ? masterPaths.Values.Single()
-            : sourcePath;
 
         string attemptDirectory = Path.Combine(
             workspaceRoot,
@@ -227,47 +228,57 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         string requestPath = Path.Combine(attemptDirectory, "request.json");
         string outputPath = Path.Combine(attemptDirectory, "output.rendering.mp4");
 
-        MediaProbeResult probe = await mediaProbe.ProbeAsync(
-            new ProbeRequest(renderSourcePath, TimeSpan.FromSeconds(30), maxOutputBytes),
-            cancellationToken);
-        if (!probe.IsSuccess)
-        {
-            return StageExecutionResult.Retryable(
-                probe.ErrorCode ?? "render.source_probe_failed",
-                probe.ErrorMessage ?? "Source probe failed.");
-        }
-
-        string? audioPath = null;
-        if (probe.Metadata!.AudioStreams.Length > 0)
-        {
-            AudioDirectorDecision? audioDecision = revision.Presentation?.Audio;
-            audioPath = Path.Combine(attemptDirectory, "audio-master.m4a");
-            AudioStemResult stem = await audioStemBuilder.BuildAsync(
-                new AudioStemRequest(
-                    renderSourcePath,
-                    audioPath,
-                    probe.Metadata,
-                    TimeSpan.FromMinutes(10),
-                    maxOutputBytes,
-                    AudioSampleRate,
-                    AudioChannelLayout,
-                    audioDecision is null ? AudioLoudnessLufs : (double)audioDecision.TargetLoudnessLufs,
-                    audioDecision is null ? AudioTruePeakDbtp : (double)audioDecision.TruePeakDbtp,
-                    audioDecision?.Denoise ?? false),
-                cancellationToken);
-            if (!stem.IsCreated)
-            {
-                return StageExecutionResult.Retryable(
-                    stem.ErrorCode ?? "render.audio_stem_failed",
-                    stem.ErrorMessage ?? "Audio stem was not created.");
-            }
-        }
-
         IReadOnlyDictionary<ArtifactId, string> renderAssets = masterPaths.Count == 0
             ? new Dictionary<ArtifactId, string> { [job.Request.SourceAssetId] = sourcePath }
             : masterPaths;
-        FrameRate masterFrameRate = probe.Metadata.VideoStreams[0].AverageFrameRate ?? new FrameRate(30, 1);
-        string requestJson = BuildRequestJson(job, revision, renderAssets, masterFrameRate, audioPath, outputPath, encodingProfile);
+        Dictionary<ArtifactId, RenderSource> renderSources = [];
+        foreach ((ArtifactId assetId, string renderSourcePath) in renderAssets)
+        {
+            MediaProbeResult probe = await mediaProbe.ProbeAsync(
+                new ProbeRequest(renderSourcePath, TimeSpan.FromSeconds(30), maxOutputBytes),
+                cancellationToken);
+            if (!probe.IsSuccess)
+            {
+                return StageExecutionResult.Retryable(
+                    probe.ErrorCode ?? "render.source_probe_failed",
+                    probe.ErrorMessage ?? "Source probe failed.");
+            }
+
+            MediaMetadata metadata = probe.Metadata!;
+            string? audioPath = null;
+            if (metadata.AudioStreams.Length > 0)
+            {
+                AudioDirectorDecision? audioDecision = revision.Presentation?.Audio;
+                audioPath = Path.Combine(attemptDirectory, $"audio-{assetId}.m4a");
+                AudioStemResult stem = await audioStemBuilder.BuildAsync(
+                    new AudioStemRequest(
+                        renderSourcePath,
+                        audioPath,
+                        metadata,
+                        TimeSpan.FromMinutes(10),
+                        maxOutputBytes,
+                        AudioSampleRate,
+                        AudioChannelLayout,
+                        audioDecision is null ? AudioLoudnessLufs : (double)audioDecision.TargetLoudnessLufs,
+                        audioDecision is null ? AudioTruePeakDbtp : (double)audioDecision.TruePeakDbtp,
+                        audioDecision?.Denoise ?? false),
+                    cancellationToken);
+                if (!stem.IsCreated)
+                {
+                    return StageExecutionResult.Retryable(
+                        stem.ErrorCode ?? "render.audio_stem_failed",
+                        stem.ErrorMessage ?? "Audio stem was not created.");
+                }
+            }
+
+            renderSources.Add(assetId, new RenderSource(
+                renderSourcePath,
+                audioPath,
+                metadata.VideoStreams[0].AverageFrameRate ?? new FrameRate(30, 1),
+                metadata.DurationMicroseconds));
+        }
+
+        string requestJson = BuildRequestJson(job, revision, renderSources, outputPath, encodingProfile);
         await File.WriteAllTextAsync(requestPath, requestJson, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), cancellationToken);
 
         RenderHostResult result = await renderHost.RenderAsync(
@@ -296,13 +307,29 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         FileInfo output = new(outputPath);
         await using FileStream outputStream = new(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         string hash = Convert.ToHexString(await SHA256.HashDataAsync(outputStream, cancellationToken)).ToLowerInvariant();
+        List<object> sourceLineage = [];
+        foreach (ArtifactId sourceId in job.Request.SourceAssetIds)
+        {
+            ArtifactRecord? sourceArtifact = await artifactStore.GetAsync(sourceId, cancellationToken);
+            if (sourceArtifact is not null)
+                sourceLineage.Add(new { artifactId = sourceId.ToString(), sourceArtifact.Sha256 });
+        }
         ArtifactRecord record = new(
             artifactId,
             "render-output",
             relativePath,
             hash,
             output.Length,
-            JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId, planRevisionId = revision.RevisionId.ToString(), durationFrames = result.DurationFrames }, JsonOptions),
+            JsonSerializer.Serialize(new
+            {
+                jobId = job.JobId,
+                variantId = job.VariantId,
+                planRevisionId = revision.RevisionId.ToString(),
+                revision.PlanHash,
+                rendererConfig = RendererConfigKey(),
+                sources = sourceLineage,
+                durationFrames = result.DurationFrames
+            }, JsonOptions),
             job.Request.SourceAssetId,
             "remotion-render-host",
             job.JobId);
@@ -317,37 +344,109 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         return SafeFileTree.Resolve(workspaceRoot, relativePath);
     }
 
+    private static async Task<bool> IsArtifactIntactAsync(
+        ArtifactRecord artifact,
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (artifact.SizeBytes is not > 0 || string.IsNullOrWhiteSpace(artifact.Sha256)
+            || new FileInfo(path).Length != artifact.SizeBytes)
+            return false;
+        await using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        string hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken));
+        return string.Equals(hash, artifact.Sha256, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool MatchesRenderKey(
+        JsonElement metadata,
+        EditPlanRevision revision,
+        IReadOnlyList<ArtifactRecord> sources)
+    {
+        if (!metadata.TryGetProperty("planHash", out JsonElement planHash)
+            || planHash.GetString() != revision.PlanHash
+            || !metadata.TryGetProperty("rendererConfig", out JsonElement rendererConfig)
+            || rendererConfig.GetString() != RendererConfigKey()
+            || !metadata.TryGetProperty("sources", out JsonElement storedSources)
+            || storedSources.ValueKind != JsonValueKind.Array
+            || storedSources.GetArrayLength() != sources.Count)
+            return false;
+
+        return storedSources.EnumerateArray().Zip(sources).All(pair =>
+            pair.First.TryGetProperty("artifactId", out JsonElement id)
+            && id.GetString() == pair.Second.ArtifactId.ToString()
+            && pair.First.TryGetProperty("sha256", out JsonElement hash)
+            && hash.GetString() == pair.Second.Sha256);
+    }
+
+    private string RendererConfigKey() => string.Join(
+        '|',
+        encodingProfile.VideoBitrateBitsPerSecond,
+        encodingProfile.AudioBitrateBitsPerSecond,
+        AudioSampleRate,
+        AudioChannelLayout,
+        AudioLoudnessLufs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        AudioTruePeakDbtp.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
     private static string BuildRequestJson(
         JobCreationRecord job,
         EditPlanRevision revision,
-        IReadOnlyDictionary<ArtifactId, string> renderAssets,
-        FrameRate sourceFrameRate,
-        string? audioPath,
+        IReadOnlyDictionary<ArtifactId, RenderSource> renderSources,
         string outputPath,
         OutputEncodingProfile encodingProfile)
     {
         EditPlan plan = revision.Plan;
         object serializedPlan = revision.Presentation is null
             ? BuildV1Plan(plan)
-            : BuildV2Plan(plan, revision.Presentation);
+            : plan.SchemaVersion == 3
+                ? BuildV3Plan(plan, revision.Presentation, renderSources)
+                : BuildV2Plan(plan, revision.Presentation);
+        if (plan.SchemaVersion == 3)
+        {
+            object v2Request = new
+            {
+                schemaVersion = 2,
+                jobId = job.JobId.ToString(),
+                variantId = job.VariantId.ToString(),
+                plan = serializedPlan,
+                assets = renderSources.Select(asset => new
+                {
+                    sourceAssetId = asset.Key.ToString(),
+                    videoPath = asset.Value.VideoPath,
+                    audioPath = asset.Value.AudioPath,
+                    frameRate = new { numerator = asset.Value.FrameRate.Numerator, denominator = asset.Value.FrameRate.Denominator }
+                }),
+                outputPath,
+                encoding = new
+                {
+                    videoBitrateBitsPerSecond = encodingProfile.VideoBitrateBitsPerSecond,
+                    audioBitrateBitsPerSecond = encodingProfile.AudioBitrateBitsPerSecond
+                }
+            };
+            return JsonSerializer.Serialize(v2Request, new JsonSerializerOptions(JsonOptions)
+            {
+                DefaultIgnoreCondition = JsonIgnoreCondition.Never
+            });
+        }
+
+        RenderSource? legacySource = renderSources.Values.SingleOrDefault();
         object request = new
         {
             schemaVersion = 1,
             jobId = job.JobId.ToString(),
             variantId = job.VariantId.ToString(),
             plan = serializedPlan,
-            assets = renderAssets.Select(asset => new
+            assets = renderSources.Select(asset => new
                 {
                     id = asset.Key.ToString(),
-                    path = asset.Value,
-                    frameRate = (object?)new { numerator = sourceFrameRate.Numerator, denominator = sourceFrameRate.Denominator }
+                    path = asset.Value.VideoPath,
+                    frameRate = (object?)new { numerator = asset.Value.FrameRate.Numerator, denominator = asset.Value.FrameRate.Denominator }
                 })
-                .Concat(audioPath is null
+                .Concat(legacySource?.AudioPath is null
                     ? []
                     : [new
                     {
                         id = "__audio_master",
-                        path = audioPath,
+                        path = legacySource.AudioPath,
                         frameRate = (object?)null
                     }]),
             outputPath,
@@ -358,6 +457,25 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             }
         };
         return JsonSerializer.Serialize(request, JsonOptions);
+    }
+
+    private static JsonNode BuildV3Plan(
+        EditPlan plan,
+        ReelsPresentationPlan presentation,
+        IReadOnlyDictionary<ArtifactId, RenderSource> renderSources)
+    {
+        JsonObject document = JsonSerializer.SerializeToNode(BuildV2Plan(plan, presentation), JsonOptions)!.AsObject();
+        document["schemaVersion"] = 3;
+        document.Remove("source");
+        document["sources"] = JsonSerializer.SerializeToNode(
+            plan.Sources.Select(source => new
+                {
+                    originalAssetId = source.OriginalAssetId.ToString(),
+                    masterAssetId = source.MasterAssetId.ToString(),
+                    durationMicroseconds = renderSources[source.MasterAssetId].DurationMicroseconds
+                }),
+            JsonOptions);
+        return document;
     }
 
     private static object BuildV1Plan(EditPlan plan) => new
@@ -544,4 +662,10 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         ReelsStyle.PremiumAds => "premium-ads",
         _ => throw new ArgumentOutOfRangeException(nameof(style))
     };
+
+    private sealed record RenderSource(
+        string VideoPath,
+        string? AudioPath,
+        FrameRate FrameRate,
+        long DurationMicroseconds);
 }

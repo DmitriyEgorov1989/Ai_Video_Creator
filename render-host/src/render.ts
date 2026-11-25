@@ -36,17 +36,37 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
   try {
     await mkdir(assetDirectory, { recursive: true });
     const assetFiles = new Map<string, string>();
-    const renderRequestWithUrls: RenderRequest = {
-      ...request,
-      assets: await Promise.all(request.assets.map(async (asset, index) => {
-        const extension = basename(asset.path).match(/\.[a-zA-Z0-9]+$/)?.[0] ?? ".media";
-        const fileName = `${index}-${asset.id.replace(/[^a-zA-Z0-9._-]/g, "_")}${extension}`;
-        const targetPath = join(assetDirectory, fileName);
-        await copyFile(asset.path, targetPath);
-        assetFiles.set(`/${fileName}`, targetPath);
-        return { ...asset, path: `__asset_url__/${fileName}` };
-      })),
-    };
+    const renderRequestWithUrls: RenderRequest = request.schemaVersion === 2
+      ? {
+        ...request,
+        assets: await Promise.all(request.assets.map(async (asset, index) => {
+          const safeId = asset.sourceAssetId.replace(/[^a-zA-Z0-9._-]/g, "_");
+          const videoName = `${index}-${safeId}-video${basename(asset.videoPath).match(/\.[a-zA-Z0-9]+$/)?.[0] ?? ".media"}`;
+          const videoTarget = join(assetDirectory, videoName);
+          await copyFile(asset.videoPath, videoTarget);
+          assetFiles.set(`/${videoName}`, videoTarget);
+          let audioUrl: string | null = null;
+          if (asset.audioPath) {
+            const audioName = `${index}-${safeId}-audio${basename(asset.audioPath).match(/\.[a-zA-Z0-9]+$/)?.[0] ?? ".media"}`;
+            const audioTarget = join(assetDirectory, audioName);
+            await copyFile(asset.audioPath, audioTarget);
+            assetFiles.set(`/${audioName}`, audioTarget);
+            audioUrl = `__asset_url__/${audioName}`;
+          }
+          return { ...asset, videoPath: `__asset_url__/${videoName}`, audioPath: audioUrl };
+        })),
+      }
+      : {
+        ...request,
+        assets: await Promise.all(request.assets.map(async (asset, index) => {
+          const extension = basename(asset.path).match(/\.[a-zA-Z0-9]+$/)?.[0] ?? ".media";
+          const fileName = `${index}-${asset.id.replace(/[^a-zA-Z0-9._-]/g, "_")}${extension}`;
+          const targetPath = join(assetDirectory, fileName);
+          await copyFile(asset.path, targetPath);
+          assetFiles.set(`/${fileName}`, targetPath);
+          return { ...asset, path: `__asset_url__/${fileName}` };
+        })),
+      };
     assetServer = createServer((incoming, response) => {
       const filePath = assetFiles.get(new URL(incoming.url ?? "/", "http://localhost").pathname);
       if (!filePath) {
@@ -58,7 +78,14 @@ export async function renderRequest(request: RenderRequest): Promise<void> {
     await new Promise<void>((resolveServer) => assetServer?.listen(0, "127.0.0.1", resolveServer));
     const address = assetServer.address();
     if (!address || typeof address === "string") throw new RenderHostError("asset_server_failed", "Could not start the local asset server.");
-    for (const asset of renderRequestWithUrls.assets) asset.path = `http://127.0.0.1:${address.port}${asset.path.replace("__asset_url__", "")}`;
+    if (renderRequestWithUrls.schemaVersion === 2) {
+      for (const asset of renderRequestWithUrls.assets) {
+        asset.videoPath = `http://127.0.0.1:${address.port}${asset.videoPath.replace("__asset_url__", "")}`;
+        if (asset.audioPath) asset.audioPath = `http://127.0.0.1:${address.port}${asset.audioPath.replace("__asset_url__", "")}`;
+      }
+    } else {
+      for (const asset of renderRequestWithUrls.assets) asset.path = `http://127.0.0.1:${address.port}${asset.path.replace("__asset_url__", "")}`;
+    }
     emit({ type: "progress", stage: "bundle", percent: 0 });
     const serveUrl = await withRemotionDiagnosticsOnStderr(() => bundle({
       entryPoint: join(renderHostRoot, "src", "entry.tsx"),

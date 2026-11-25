@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/edit-plan.v3.schema.json",
+  "title": "EditPlanV3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "variantId", "revisionId", "analysisRevisionId", "output", "sources", "video", "effects", "captions", "audio", "skills"],
+  "properties": {
+    "schemaVersion": { "const": 3 },
+    "jobId": { "type": "string", "minLength": 1 },
+    "variantId": { "type": "string", "minLength": 1 },
+    "revisionId": { "type": "string", "minLength": 1 },
+    "analysisRevisionId": { "type": "string", "minLength": 1 },
+    "output": { "type": "object", "additionalProperties": false, "required": ["width", "height", "frameRate", "durationFrames"], "properties": { "width": { "type": "integer", "minimum": 1 }, "height": { "type": "integer", "minimum": 1 }, "frameRate": { "$ref": "#/$defs/frameRate" }, "durationFrames": { "type": "integer", "minimum": 1 } } },
+    "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/source" } },
+    "video": { "type": "object", "additionalProperties": false, "required": ["clips"], "properties": { "clips": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/clip" } } } },
+    "effects": { "type": "array", "items": { "$ref": "#/$defs/effect" } },
+    "captions": { "type": "object", "additionalProperties": false, "required": ["words"], "properties": { "words": { "type": "array", "items": { "$ref": "#/$defs/word" } }, "groups": { "type": "array", "items": { "$ref": "#/$defs/captionGroup" } } } },
+    "audio": { "type": "object", "additionalProperties": false, "required": ["sourceGain"], "properties": { "sourceGain": { "type": "number", "minimum": 0, "maximum": 4 }, "targetLoudnessLufs": { "type": "number", "maximum": 0 }, "truePeakDbtp": { "type": "number", "maximum": 0 }, "fadeInFrames": { "type": "integer", "minimum": 0 }, "fadeOutFrames": { "type": "integer", "minimum": 0 }, "denoise": { "type": "boolean" }, "musicAssetId": { "type": ["string", "null"] }, "musicGain": { "type": "number", "minimum": 0, "maximum": 4 }, "ducking": { "type": "number", "minimum": 0, "maximum": 1 } } },
+    "skills": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["id", "version", "status"], "properties": { "id": { "type": "string", "minLength": 1 }, "version": { "type": "string", "minLength": 1 }, "status": { "enum": ["applied", "skipped", "rejected"] } } } },
+    "profile": { "const": "instagram-reels" },
+    "style": { "type": "object", "additionalProperties": false, "required": ["requested", "resolved"], "properties": { "requested": { "enum": ["auto", "expert-clean", "dynamic-viral", "cinematic", "premium-ads"] }, "resolved": { "enum": ["expert-clean", "dynamic-viral", "cinematic", "premium-ads"] } } }
+  },
+  "$defs": {
+    "frameRate": { "type": "object", "additionalProperties": false, "required": ["numerator", "denominator"], "properties": { "numerator": { "type": "integer", "minimum": 1 }, "denominator": { "type": "integer", "minimum": 1 } } },
+    "source": { "type": "object", "additionalProperties": false, "required": ["originalAssetId", "masterAssetId", "durationMicroseconds"], "properties": { "originalAssetId": { "type": "string", "minLength": 1 }, "masterAssetId": { "type": "string", "minLength": 1 }, "durationMicroseconds": { "type": "integer", "minimum": 1 } } },
+    "range": { "type": "object", "additionalProperties": false, "required": ["startFrame", "endFrame"], "properties": { "startFrame": { "type": "integer", "minimum": 0 }, "endFrame": { "type": "integer", "minimum": 1 } } },
+    "sourceRange": { "type": "object", "additionalProperties": false, "required": ["startMicroseconds", "endMicroseconds"], "properties": { "startMicroseconds": { "type": "integer", "minimum": 0 }, "endMicroseconds": { "type": "integer", "minimum": 1 } } },
+    "clip": { "type": "object", "additionalProperties": false, "required": ["sourceAssetId", "source", "master", "output", "crop", "effects"], "properties": { "sourceAssetId": { "type": "string", "minLength": 1 }, "source": { "$ref": "#/$defs/sourceRange" }, "master": { "$ref": "#/$defs/sourceRange" }, "output": { "$ref": "#/$defs/range" }, "crop": { "type": "object", "additionalProperties": false, "required": ["preset", "focalX", "focalY", "zoom"], "properties": { "preset": { "enum": ["fit", "fill"] }, "focalX": { "type": "number", "minimum": 0, "maximum": 1 }, "focalY": { "type": "number", "minimum": 0, "maximum": 1 }, "zoom": { "type": "number", "minimum": 1, "maximum": 4 }, "fallback": { "enum": ["fit", "center"] }, "keyframes": { "type": "array", "items": { "$ref": "#/$defs/cropKeyframe" } } } }, "effects": { "type": "array", "items": { "type": "string", "minLength": 1 } } } },
+    "effect": { "type": "object", "additionalProperties": false, "required": ["type", "parameters"], "properties": { "id": { "type": "string", "minLength": 1 }, "type": { "enum": ["speed", "transition", "blur", "dynamicZoom", "textHighlight", "visualTransition"] }, "output": { "$ref": "#/$defs/range" }, "sourceSkillId": { "type": "string", "minLength": 1 }, "parameters": { "type": "object", "additionalProperties": false, "properties": { "rate": { "type": "number", "minimum": 0.25, "maximum": 4 }, "kind": { "enum": ["cut", "crossfade", "dipToBlack"] }, "durationFrames": { "type": "integer", "minimum": 1 }, "amount": { "type": "number", "minimum": 0, "maximum": 1 } } } } },
+    "word": { "type": "object", "additionalProperties": false, "required": ["text", "output"], "properties": { "text": { "type": "string", "minLength": 1 }, "output": { "$ref": "#/$defs/range" } } },
+    "captionGroup": { "type": "object", "additionalProperties": false, "required": ["text", "words", "output", "maxLines", "highlight", "animation", "placement"], "properties": { "text": { "type": "string", "minLength": 1 }, "words": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/word" } }, "output": { "$ref": "#/$defs/range" }, "maxLines": { "type": "integer", "minimum": 1, "maximum": 2 }, "highlight": { "enum": ["none", "activeWord"] }, "animation": { "enum": ["none", "fade"] }, "placement": { "const": "bottomSafe" } } },
+    "cropKeyframe": { "type": "object", "additionalProperties": false, "required": ["outputFrame", "focalX", "focalY", "zoom"], "properties": { "outputFrame": { "type": "integer", "minimum": 0 }, "focalX": { "type": "number", "minimum": 0, "maximum": 1 }, "focalY": { "type": "number", "minimum": 0, "maximum": 1 }, "zoom": { "type": "number", "minimum": 1, "maximum": 4 } } }
+  }
+}

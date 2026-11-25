@@ -29,6 +29,7 @@ using VideoFactory.VideoProduction.Infrastructure.Planning;
 using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Events;
+using VideoFactory.VideoProduction.Application.TelegramIntake;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -269,7 +270,13 @@ public static class VideoFactoryHost
         builder.Services.AddSingleton<TelegramBotClient>(services =>
             new TelegramBotClient(
                 services.GetRequiredService<IOptions<TelegramOptions>>().Value.BotToken));
-        builder.Services.AddSingleton<ITelegramIntakeSessionStore, InMemoryTelegramIntakeSessionStore>();
+        builder.Services.AddSingleton<ITelegramIntakeStore>(services =>
+            new SqliteTelegramIntakeStore(BuildConnectionString(services)));
+        builder.Services.AddHostedService(services =>
+            new TelegramIntakeRecoveryService(
+                services.GetRequiredService<ITelegramIntakeStore>(),
+                BuildWorkspaceRoot(services),
+                services.GetRequiredService<ILogger<TelegramIntakeRecoveryService>>()));
         builder.Services.AddSingleton<ITelegramFileDownloader>(services =>
             new TelegramFileDownloader(
                 services.GetRequiredService<TelegramBotClient>(),
@@ -288,23 +295,19 @@ public static class VideoFactoryHost
                  services.GetRequiredService<IJobStateStore>(),
                  services.GetRequiredService<ITelegramResponder>()));
          builder.Services.AddSingleton<IVideoDelivery, TelegramVideoDelivery>();
-        builder.Services.AddSingleton<ICreateJobUseCase>(services =>
-            new CreateJobUseCaseAdapter(
-                new CreateJobUseCase(
-                    services.GetRequiredService<IJobCreationStore>(),
-                    services.GetRequiredService<IJobSignal>())));
         builder.Services.AddSingleton(services => new TelegramUpdateHandler(
             services.GetRequiredService<IOptions<TelegramOptions>>().Value,
             services.GetRequiredService<IOptions<LimitsOptions>>().Value,
             services.GetRequiredService<ITelegramFileDownloader>(),
             services.GetRequiredService<IArtifactStore>(),
-            services.GetRequiredService<ICreateJobUseCase>(),
-             services.GetRequiredService<ITelegramIntakeSessionStore>(),
+              services.GetRequiredService<ITelegramIntakeStore>(),
              services.GetRequiredService<ITelegramResponder>(),
                services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
                services.GetRequiredService<PlanningApprovalUseCase>(),
-               services.GetRequiredService<CancelJobUseCase>(),
-               services.GetRequiredService<RepeatDeliveryUseCase>()));
+                services.GetRequiredService<CancelJobUseCase>(),
+                services.GetRequiredService<RepeatDeliveryUseCase>(),
+                services.GetRequiredService<IJobSignal>(),
+                BuildWorkspaceRoot(services)));
          builder.Services.AddHostedService<TelegramPollingService>();
          builder.Services.AddHostedService<TelegramJobNotificationWorker>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>

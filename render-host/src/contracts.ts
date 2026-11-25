@@ -93,13 +93,24 @@ export interface EditPlanV2 {
   style?: { requested: "auto" | "expert-clean" | "dynamic-viral" | "cinematic" | "premium-ads"; resolved: "expert-clean" | "dynamic-viral" | "cinematic" | "premium-ads" };
 }
 
+export interface EditPlanSourceV3 {
+  originalAssetId: string;
+  masterAssetId: string;
+  durationMicroseconds: number;
+}
+
+export type EditPlanV3 = Omit<EditPlanV2, "schemaVersion" | "source"> & {
+  schemaVersion: 3;
+  sources: EditPlanSourceV3[];
+};
+
 export interface RenderAsset {
   id: string;
   path: string;
   frameRate?: { numerator: number; denominator: number } | null;
 }
 
-export interface RenderRequest {
+export interface RenderRequestV1 {
   schemaVersion: 1;
   jobId: string;
   variantId: string;
@@ -111,6 +122,28 @@ export interface RenderRequest {
     audioBitrateBitsPerSecond: number;
   };
 }
+
+export interface RenderSourceAssetV2 {
+  sourceAssetId: string;
+  videoPath: string;
+  audioPath?: string | null;
+  frameRate: { numerator: number; denominator: number };
+}
+
+export interface RenderRequestV2 {
+  schemaVersion: 2;
+  jobId: string;
+  variantId: string;
+  plan: EditPlanV3;
+  assets: RenderSourceAssetV2[];
+  outputPath: string;
+  encoding: {
+    videoBitrateBitsPerSecond: number;
+    audioBitrateBitsPerSecond: number;
+  };
+}
+
+export type RenderRequest = RenderRequestV1 | RenderRequestV2;
 
 export interface ProgressEvent {
   type: "progress";

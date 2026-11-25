@@ -98,22 +98,21 @@ public sealed class SemanticStorySkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        AnalysisResult? analysis = context.Analysis;
-        if (analysis is null)
+        if (context.Analysis is null && context.MultiSourceAnalysis is null)
         {
             return new SemanticStoryDecision(Id, Version, EditingDecisionStatus.Unavailable,
                 [new("story.analysis_missing", "Analysis is required to build a story.")], []);
         }
 
-        List<StorySegment> segments = analysis.AllowedSegments
+        List<StorySegment> segments = context.AllowedSegments
             .Select((segment, index) =>
             {
-                string text = string.Join(' ', analysis.Speech
-                    .Where(speech => speech.Interval.Intersects(segment.Mapping.Master))
-                    .Select(speech => speech.Text));
+                string text = string.Join(' ', context.WordsFor(segment.Mapping)
+                    .Where(word => word.Interval.Intersects(segment.Mapping.Master))
+                    .Select(word => word.Text));
                 StoryRole role = index == 0
                     ? StoryRole.Hook
-                    : index == analysis.AllowedSegments.Length - 1
+                    : index == context.AllowedSegments.Length - 1
                         ? StoryRole.Conclusion
                         : index % 2 == 0 ? StoryRole.Value : StoryRole.Context;
                 return new StorySegment(segment.Id, role, text);
@@ -146,7 +145,7 @@ public sealed class HookBuilderSkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Analysis is null)
+        if (context.Analysis is null && context.MultiSourceAnalysis is null)
         {
             return new HookDecision(Id, Version, EditingDecisionStatus.Unavailable,
                 [new("hook.analysis_missing", "Analysis is required to build hooks.")], []);
@@ -159,7 +158,7 @@ public sealed class HookBuilderSkill : IEditingSkill
                 [new("hook.story_missing", "Semantic Story must be applied before Hook Builder.")], []);
         }
 
-        Dictionary<SegmentId, SegmentAnalysisFeatures> features = context.Analysis.Features.Segments
+        Dictionary<SegmentId, SegmentAnalysisFeatures> features = context.SegmentFeatures
             .ToDictionary(item => item.SegmentId);
         ImmutableArray<HookCandidate> candidates = story.Segments
             .Where(segment => segment.Role == StoryRole.Hook || segment.Role == StoryRole.Context)
@@ -197,21 +196,20 @@ public sealed class SmartCutSkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        AnalysisResult? analysis = context.Analysis;
-        if (analysis is null)
+        if (context.Analysis is null && context.MultiSourceAnalysis is null)
         {
             return new SmartCutDecision(Id, Version, EditingDecisionStatus.Unavailable,
                 [new("cut.analysis_missing", "Analysis is required for Smart Cut.")], []);
         }
 
-        ImmutableHashSet<string> duplicateGroups = analysis.Features.Segments
+        ImmutableHashSet<string> duplicateGroups = context.SegmentFeatures
             .Where(feature => feature.DuplicateGroup is not null)
             .GroupBy(feature => feature.DuplicateGroup!, StringComparer.Ordinal)
             .Where(group => group.Count() > 1)
             .Select(group => group.Key)
             .ToImmutableHashSet(StringComparer.Ordinal);
-        ImmutableArray<SmartCutEdit> edits = analysis.AllowedSegments
-            .Select(segment => CreateEdit(segment, analysis, duplicateGroups))
+        ImmutableArray<SmartCutEdit> edits = context.AllowedSegments
+            .Select(segment => CreateEdit(segment, context, duplicateGroups))
             .Where(edit => edit is not null)
             .Select(edit => edit!)
             .ToImmutableArray();
@@ -222,11 +220,10 @@ public sealed class SmartCutSkill : IEditingSkill
 
     private static SmartCutEdit? CreateEdit(
         AllowedSegment segment,
-        AnalysisResult analysis,
+        EditingContext context,
         ImmutableHashSet<string> duplicateGroups)
     {
-        WordTiming[] words = analysis.Speech
-            .SelectMany(speech => speech.Words)
+        WordTiming[] words = context.WordsFor(segment.Mapping)
             .Where(word => segment.Mapping.Master.Contains(word.Interval))
             .OrderBy(word => word.Interval.StartMicroseconds)
             .ToArray();
@@ -237,12 +234,13 @@ public sealed class SmartCutSkill : IEditingSkill
 
         long start = segment.Mapping.Master.StartMicroseconds;
         long end = segment.Mapping.Master.EndMicroseconds;
-        if (IsPauseCovered(start, words[0].Interval.StartMicroseconds, analysis.Pauses))
+        ImmutableArray<MasterRange> pauses = context.PausesFor(segment.Mapping.MasterAssetId);
+        if (IsPauseCovered(start, words[0].Interval.StartMicroseconds, pauses))
         {
             start = words[0].Interval.StartMicroseconds;
         }
 
-        if (IsPauseCovered(words[^1].Interval.EndMicroseconds, end, analysis.Pauses))
+        if (IsPauseCovered(words[^1].Interval.EndMicroseconds, end, pauses))
         {
             end = words[^1].Interval.EndMicroseconds;
         }
@@ -259,7 +257,7 @@ public sealed class SmartCutSkill : IEditingSkill
                 segment.Mapping.Original.StartMicroseconds + start - segment.Mapping.Master.StartMicroseconds,
                 segment.Mapping.Original.EndMicroseconds - segment.Mapping.Master.EndMicroseconds + end)
         };
-        string reason = analysis.Features.Segments.Any(feature =>
+        string reason = context.SegmentFeatures.Any(feature =>
             feature.SegmentId == segment.Id && feature.DuplicateGroup is not null
             && duplicateGroups.Contains(feature.DuplicateGroup))
             ? "duplicate-boundary"
@@ -314,13 +312,13 @@ public sealed class BestShotSelectorSkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Analysis is null || context.Analysis.Features.Segments.IsEmpty)
+        if (context.SegmentFeatures.IsEmpty)
         {
             return new BestShotDecision(Id, Version, EditingDecisionStatus.Unavailable,
                 [new("shot.features_missing", "Visual quality features are required for Best Shot.")], []);
         }
 
-        ImmutableArray<BestShotSelection> selections = context.Analysis.Features.Segments
+        ImmutableArray<BestShotSelection> selections = context.SegmentFeatures
             .Select(feature => new BestShotSelection(
                 feature.SegmentId,
                 feature.SemanticRelevance * 0.4m
@@ -356,7 +354,7 @@ public sealed class PacingDirectorSkill : IEditingSkill
     {
         ArgumentNullException.ThrowIfNull(context);
         AnalysisResult? analysis = context.Analysis;
-        if (analysis is null || analysis.AllowedSegments.IsEmpty)
+        if ((analysis is null && context.MultiSourceAnalysis is null) || context.AllowedSegments.IsEmpty)
         {
             return new PacingDecision(Id, Version, EditingDecisionStatus.Unavailable,
                 [new("pacing.segments_missing", "Allowed segments are required for pacing.")], [], 0m);
@@ -368,12 +366,14 @@ public sealed class PacingDirectorSkill : IEditingSkill
         int cursor = 0;
         long selectedDuration = context.Settings.TargetDurationSeconds is int targetSeconds
             ? targetSeconds * 1_000_000L
-            : new ReelsProfileCatalog().SelectSemanticDurationMicroseconds(analysis, effectiveMappings);
+            : analysis is null
+                ? context.AllowedSegments.Sum(segment => segment.Mapping.Master.DurationMicroseconds)
+                : new ReelsProfileCatalog().SelectSemanticDurationMicroseconds(analysis, effectiveMappings);
         long cumulativeDuration = 0;
         ImmutableArray<PacingShot>.Builder shots = ImmutableArray.CreateBuilder<PacingShot>();
-        for (int index = 0; index < analysis.AllowedSegments.Length; index++)
+        for (int index = 0; index < context.AllowedSegments.Length; index++)
         {
-            AllowedSegment segment = analysis.AllowedSegments[index];
+            AllowedSegment segment = context.AllowedSegments[index];
             SourceMapping mapping = effectiveMappings?.GetValueOrDefault(segment.Id) ?? segment.Mapping;
             if (index > 0 && cumulativeDuration >= selectedDuration)
                 break;
@@ -388,7 +388,7 @@ public sealed class PacingDirectorSkill : IEditingSkill
             cumulativeDuration += mapping.Master.DurationMicroseconds;
         }
 
-        decimal density = cursor == 0 ? 0m : (analysis.AllowedSegments.Length - 1) / (decimal)cursor;
+        decimal density = cursor == 0 ? 0m : (context.AllowedSegments.Length - 1) / (decimal)cursor;
         return new PacingDecision(Id, Version, EditingDecisionStatus.Applied,
             [new("pacing.contiguous_timeline", "Pacing creates a contiguous output timeline in frames.")], shots.ToImmutable(), density);
     }

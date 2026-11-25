@@ -42,7 +42,7 @@ public sealed class SpeechTighteningSkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (context.Analysis is null)
+        if (context.Analysis is null && context.MultiSourceAnalysis is null)
         {
             return new SpeechTighteningDecision(
                 Id,
@@ -52,11 +52,10 @@ public sealed class SpeechTighteningSkill : IEditingSkill
                 []);
         }
 
-        AnalysisResult analysis = context.Analysis;
         ImmutableArray<SpeechTighteningEdit>.Builder edits = ImmutableArray.CreateBuilder<SpeechTighteningEdit>();
-        foreach (AllowedSegment segment in analysis.AllowedSegments)
+        foreach (AllowedSegment segment in context.AllowedSegments)
         {
-            SpeechTighteningEdit? edit = CreateEdit(segment, analysis);
+            SpeechTighteningEdit? edit = CreateEdit(segment, context);
             if (edit is not null)
             {
                 edits.Add(edit);
@@ -76,11 +75,10 @@ public sealed class SpeechTighteningSkill : IEditingSkill
 
     private static SpeechTighteningEdit? CreateEdit(
         AllowedSegment segment,
-        AnalysisResult analysis)
+        EditingContext context)
     {
         SourceMapping mapping = segment.Mapping;
-        WordTiming[] words = analysis.Speech
-            .SelectMany(speech => speech.Words)
+        WordTiming[] words = context.WordsFor(mapping)
             .Where(word => mapping.Master.Contains(word.Interval))
             .OrderBy(word => word.Interval.StartMicroseconds)
             .ToArray();
@@ -91,12 +89,13 @@ public sealed class SpeechTighteningSkill : IEditingSkill
 
         long start = mapping.Master.StartMicroseconds;
         long end = mapping.Master.EndMicroseconds;
-        if (IsPauseCovered(start, words[0].Interval.StartMicroseconds, analysis.Pauses))
+        ImmutableArray<MasterRange> pauses = context.PausesFor(mapping.MasterAssetId);
+        if (IsPauseCovered(start, words[0].Interval.StartMicroseconds, pauses))
         {
             start = words[0].Interval.StartMicroseconds;
         }
 
-        if (IsPauseCovered(words[^1].Interval.EndMicroseconds, end, analysis.Pauses))
+        if (IsPauseCovered(words[^1].Interval.EndMicroseconds, end, pauses))
         {
             end = words[^1].Interval.EndMicroseconds;
         }

@@ -81,6 +81,8 @@ public sealed class PackagingSafetyTests
             Task.FromResult(Records.Find(record => record.ArtifactId == id));
         public Task<ArtifactRecord?> FindLatestAsync(JobId id, string type, CancellationToken token) =>
             Task.FromResult(Records.FindLast(record => record.JobId == id && record.ArtifactType == type));
+        public Task<IReadOnlyList<ArtifactRecord>> ListAsync(JobId id, string type, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<ArtifactRecord>>(Records.Where(record => record.JobId == id && record.ArtifactType == type).ToArray());
         public Task<ArtifactRegistrationResult> RegisterAsync(ArtifactRecord record, CancellationToken token)
         {
             if (FailNextFinalRegistration && record.ArtifactType == "final-mp4")

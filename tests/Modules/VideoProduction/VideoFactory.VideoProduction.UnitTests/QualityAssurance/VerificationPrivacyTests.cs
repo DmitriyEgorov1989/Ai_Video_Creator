@@ -59,6 +59,8 @@ public sealed class VerificationPrivacyTests
     {
         public Task<ArtifactRecord?> GetAsync(ArtifactId id, CancellationToken token) => Task.FromResult<ArtifactRecord?>(render);
         public Task<ArtifactRecord?> FindLatestAsync(JobId id, string type, CancellationToken token) => Task.FromResult<ArtifactRecord?>(render);
+        public Task<IReadOnlyList<ArtifactRecord>> ListAsync(JobId id, string type, CancellationToken token) =>
+            Task.FromResult<IReadOnlyList<ArtifactRecord>>([render]);
         public Task<ArtifactRegistrationResult> RegisterAsync(ArtifactRecord record, CancellationToken token) =>
             Task.FromResult<ArtifactRegistrationResult>(new ArtifactRegistrationResult.Created(record));
     }

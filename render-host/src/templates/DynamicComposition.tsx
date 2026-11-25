@@ -1,49 +1,50 @@
 import React from "react";
 import { AbsoluteFill, Audio, interpolate, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import type { Caption, EditPlan, EditPlanV2, OutputRange, RenderRequest, SourceMapping, SourceTimeRange } from "../contracts.js";
+import type { Caption, EditPlan, EditPlanV2, EditPlanV3, OutputRange, RenderRequest, SourceMapping, SourceTimeRange } from "../contracts.js";
 
 type V1Clip = EditPlan["video"]["clips"][number];
 type V2Clip = EditPlanV2["video"]["clips"][number];
+type ModernPlan = EditPlanV2 | EditPlanV3;
 type V2CaptionWord = EditPlanV2["captions"]["words"][number];
 type V2CaptionGroup = NonNullable<EditPlanV2["captions"]["groups"]>[number];
 
-function isV2(plan: EditPlan | EditPlanV2): plan is EditPlanV2 {
-  return plan.schemaVersion === 2;
+function isModern(plan: EditPlan | ModernPlan): plan is ModernPlan {
+  return plan.schemaVersion === 2 || plan.schemaVersion === 3;
 }
 
 function isCaptionGroup(caption: Caption | V2CaptionWord | V2CaptionGroup): caption is V2CaptionGroup {
   return "words" in caption;
 }
 
-function clipAsset(clip: V1Clip | V2Clip, request: RenderRequest): { path: string; frameRate: number } | undefined {
+function clipAsset(clip: V1Clip | V2Clip, request: RenderRequest): { path: string } | undefined {
   const assetId = "mapping" in clip ? clip.mapping.masterAssetId : clip.sourceAssetId;
+  if (request.schemaVersion === 2) {
+    const asset = request.assets.find((item) => item.sourceAssetId === assetId);
+    return asset ? { path: asset.videoPath } : undefined;
+  }
   const asset = request.assets.find((item) => item.id === assetId);
   if (!asset) return undefined;
-  const frameRate = asset.frameRate;
-  return {
-    path: asset.path,
-    frameRate: frameRate ? frameRate.numerator / frameRate.denominator : 30,
-  };
+  return { path: asset.path };
 }
 
 function clipSource(clip: V1Clip | V2Clip): SourceTimeRange {
   return "mapping" in clip ? clip.mapping.master : clip.master;
 }
 
-function activeEffect(plan: EditPlanV2, type: EditPlanV2["effects"][number]["type"], frame: number) {
+function activeEffect(plan: ModernPlan, type: EditPlanV2["effects"][number]["type"], frame: number) {
   return plan.effects.find((effect) => effect.type === type
     && effect.output
     && frame >= effect.output.startFrame
     && frame < effect.output.endFrame);
 }
 
-function clipStyle(clip: V1Clip | V2Clip, width: number, height: number, frame: number, plan: EditPlan | EditPlanV2): React.CSSProperties {
+function clipStyle(clip: V1Clip | V2Clip, width: number, height: number, frame: number, plan: EditPlan | ModernPlan): React.CSSProperties {
   if ("mapping" in clip) {
     return { width, height, objectFit: clip.crop === "fit" ? "contain" : "cover" };
   }
 
   const crop = resolveCrop(clip, frame);
-  const zoomEffect = isV2(plan) ? activeEffect(plan, "dynamicZoom", frame) : undefined;
+  const zoomEffect = isModern(plan) ? activeEffect(plan, "dynamicZoom", frame) : undefined;
   const effectProgress = zoomEffect?.output
     ? (frame - zoomEffect.output.startFrame) / Math.max(1, zoomEffect.output.endFrame - zoomEffect.output.startFrame - 1)
     : 0;
@@ -72,28 +73,33 @@ function resolveCrop(clip: V2Clip, frame: number): { focalX: number; focalY: num
   };
 }
 
-function sourceStartFrame(mapping: SourceMapping, sourceFps: number): number {
-  return Math.max(0, Math.round(mapping.master.startMicroseconds * sourceFps / 1_000_000));
+export function sourceTimestampToCompositionFrame(startMicroseconds: number, compositionFps: number): number {
+  return Math.max(0, Math.round(startMicroseconds * compositionFps / 1_000_000));
+}
+
+function sourceStartFrame(mapping: SourceMapping, compositionFps: number): number {
+  return sourceTimestampToCompositionFrame(mapping.master.startMicroseconds, compositionFps);
 }
 
 export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) => {
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
   const clip = plan.video.clips.find((item) => frame >= item.output.startFrame && frame < item.output.endFrame) as V1Clip | V2Clip | undefined;
-  const source = clip ? clipAsset(clip, { plan, assets } as RenderRequest) : undefined;
-  const audio = assets.find((asset) => asset.id === "__audio_master")?.path;
-  const music = isV2(plan) && plan.audio.musicAssetId
-    ? assets.find((asset) => asset.id === plan.audio.musicAssetId)?.path
+  const request = { plan, assets, schemaVersion: plan.schemaVersion === 3 ? 2 : 1 } as RenderRequest;
+  const source = clip ? clipAsset(clip, request) : undefined;
+  const audio = request.schemaVersion === 1 ? request.assets.find((asset) => asset.id === "__audio_master")?.path : undefined;
+  const music = isModern(plan) && plan.audio.musicAssetId && request.schemaVersion === 1
+    ? request.assets.find((asset) => asset.id === plan.audio.musicAssetId)?.path
     : undefined;
-  const captionItems = isV2(plan) && plan.captions.groups?.length
+  const captionItems = isModern(plan) && plan.captions.groups?.length
     ? plan.captions.groups
-    : isV2(plan) ? plan.captions.words : plan.captions.items;
+    : isModern(plan) ? plan.captions.words : plan.captions.items;
   const caption = captionItems
     .find((item) => frame >= item.output.startFrame && frame < item.output.endFrame);
   const captionGroup = caption && isCaptionGroup(caption) ? caption : undefined;
-  const textHighlight = isV2(plan) ? activeEffect(plan, "textHighlight", frame) : undefined;
-  const transition = isV2(plan) ? activeEffect(plan, "visualTransition", frame) : undefined;
-  const lightTheme = !isV2(plan) && plan.templateProps.theme === "light";
+  const textHighlight = isModern(plan) ? activeEffect(plan, "textHighlight", frame) : undefined;
+  const transition = isModern(plan) ? activeEffect(plan, "visualTransition", frame) : undefined;
+  const lightTheme = !isModern(plan) && plan.templateProps.theme === "light";
   const theme = lightTheme ? "#f5f1e8" : "#111318";
   const foreground = lightTheme ? "#141414" : "#ffffff";
 
@@ -104,7 +110,7 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
           <OffthreadVideo
             src={source.path}
             muted
-            startFrom={Math.max(0, Math.round(clipSource(clip).startMicroseconds * source.frameRate / 1_000_000))}
+            startFrom={sourceTimestampToCompositionFrame(clipSource(clip).startMicroseconds, fps)}
             style={clipStyle(clip, width, height, frame, plan)}
           />
         </Sequence>
@@ -115,7 +121,7 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
           opacity: transitionOpacity(frame, transition.output, transition.parameters.amount ?? 0.2),
         }} />
       ) : null}
-      {audio && !isV2(plan) ? plan.audio.sourceClips.map((audioClip) => {
+      {audio && !isModern(plan) ? plan.audio.sourceClips.map((audioClip) => {
         const videoClip = plan.video.clips.find((item) => item.segmentId === audioClip.segmentId);
         if (!videoClip) return null;
         return (
@@ -124,16 +130,20 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
           </Sequence>
         );
       }) : null}
-      {isV2(plan) ? plan.video.clips.map((audioClip, index) => {
-        const asset = assets.find((item) => item.id === audioClip.sourceAssetId);
-        const audioSource = audio ?? asset?.path;
+      {isModern(plan) ? plan.video.clips.map((audioClip, index) => {
+        const sourceAsset = request.schemaVersion === 2
+          ? request.assets.find((item) => item.sourceAssetId === audioClip.sourceAssetId)
+          : undefined;
+        const audioSource = request.schemaVersion === 2
+          ? sourceAsset?.audioPath
+          : audio ?? request.assets.find((item) => item.id === audioClip.sourceAssetId)?.path;
         if (!audioSource) return null;
         const duration = audioClip.output.endFrame - audioClip.output.startFrame;
         return (
           <Sequence key={`v2-audio-${index}`} from={audioClip.output.startFrame} durationInFrames={duration}>
             <Audio
               src={audioSource}
-              startFrom={Math.max(0, Math.round(audioClip.master.startMicroseconds * fps / 1_000_000))}
+              startFrom={sourceTimestampToCompositionFrame(audioClip.master.startMicroseconds, fps)}
               volume={(localFrame) => plan.audio.sourceGain * fadeVolume(
                 localFrame,
                 duration,
@@ -144,14 +154,14 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
           </Sequence>
         );
       }) : null}
-      {isV2(plan) && music ? (
+      {isModern(plan) && music ? (
         <Audio
           src={music}
           volume={(plan.audio.musicGain ?? 1) * (1 - (plan.audio.ducking ?? 0))}
         />
       ) : null}
-      {!isV2(plan) && plan.templateProps.title ? <div style={{ position: "absolute", top: 100, left: 70, right: 70, fontSize: 58, fontWeight: 700 }}>{plan.templateProps.title}</div> : null}
-      {caption && (isV2(plan) || plan.templateProps.captions !== "none") ? (
+      {!isModern(plan) && plan.templateProps.title ? <div style={{ position: "absolute", top: 100, left: 70, right: 70, fontSize: 58, fontWeight: 700 }}>{plan.templateProps.title}</div> : null}
+      {caption && (isModern(plan) || plan.templateProps.captions !== "none") ? (
         <Sequence from={caption.output.startFrame} durationInFrames={caption.output.endFrame - caption.output.startFrame}>
           <div style={{
             position: "absolute",
@@ -160,7 +170,7 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
             right: 70,
             padding: 24,
             textAlign: "center",
-            fontSize: isV2(plan) || plan.templateProps.captions === "emphasis" ? 58 : 44,
+            fontSize: isModern(plan) || plan.templateProps.captions === "emphasis" ? 58 : 44,
             fontWeight: 700,
             backgroundColor: "rgba(0,0,0,0.72)",
             borderRadius: 18,

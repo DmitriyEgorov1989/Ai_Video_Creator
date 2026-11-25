@@ -1,14 +1,15 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using VideoFactory.Bot.Configuration;
-using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
+using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Delivery;
+using VideoFactory.VideoProduction.Application.TelegramIntake;
 
 namespace VideoFactory.Bot.Telegram;
 
@@ -21,13 +22,14 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
     private readonly LimitsOptions limitsOptions;
     private readonly ITelegramFileDownloader downloader;
     private readonly IArtifactStore artifactStore;
-    private readonly ICreateJobUseCase createJob;
-    private readonly ITelegramIntakeSessionStore sessions;
+    private readonly ITelegramIntakeStore intakeStore;
     private readonly ITelegramResponder responder;
     private readonly ILogger<TelegramUpdateHandler>? logger;
     private readonly PlanningApprovalUseCase? approvalUseCase;
     private readonly CancelJobUseCase? cancelJobUseCase;
     private readonly RepeatDeliveryUseCase? repeatDeliveryUseCase;
+    private readonly IJobSignal? jobSignal;
+    private readonly string workspaceRoot;
 
     /// <summary>Создаёт обработчик intake.</summary>
     public TelegramUpdateHandler(
@@ -35,32 +37,33 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         LimitsOptions limitsOptions,
         ITelegramFileDownloader downloader,
         IArtifactStore artifactStore,
-        ICreateJobUseCase createJob,
-        ITelegramIntakeSessionStore sessions,
+        ITelegramIntakeStore intakeStore,
         ITelegramResponder responder,
         ILogger<TelegramUpdateHandler>? logger = null,
         PlanningApprovalUseCase? approvalUseCase = null,
         CancelJobUseCase? cancelJobUseCase = null,
-        RepeatDeliveryUseCase? repeatDeliveryUseCase = null)
+        RepeatDeliveryUseCase? repeatDeliveryUseCase = null,
+        IJobSignal? jobSignal = null,
+        string? workspaceRoot = null)
     {
         ArgumentNullException.ThrowIfNull(telegramOptions);
         ArgumentNullException.ThrowIfNull(limitsOptions);
         ArgumentNullException.ThrowIfNull(downloader);
         ArgumentNullException.ThrowIfNull(artifactStore);
-        ArgumentNullException.ThrowIfNull(createJob);
-        ArgumentNullException.ThrowIfNull(sessions);
+        ArgumentNullException.ThrowIfNull(intakeStore);
         ArgumentNullException.ThrowIfNull(responder);
         this.telegramOptions = telegramOptions;
         this.limitsOptions = limitsOptions;
         this.downloader = downloader;
         this.artifactStore = artifactStore;
-        this.createJob = createJob;
-        this.sessions = sessions;
+        this.intakeStore = intakeStore;
         this.responder = responder;
         this.logger = logger;
         this.approvalUseCase = approvalUseCase;
         this.cancelJobUseCase = cancelJobUseCase;
         this.repeatDeliveryUseCase = repeatDeliveryUseCase;
+        this.jobSignal = jobSignal;
+        this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? Environment.CurrentDirectory);
     }
 
     /// <inheritdoc />
@@ -133,15 +136,26 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         {
             await responder.SendTextAsync(
                 update.ChatId,
-                "Отправьте видео, затем отправьте непустой комментарий для режима Fast.",
+                "Отправьте до пяти видео и инструкцию, затем используйте /done.",
                 cancellationToken);
             return;
         }
 
         if (string.Equals(update.Text?.Trim(), "/cancel", StringComparison.OrdinalIgnoreCase))
         {
-            sessions.Remove(update.UserId);
-            await responder.SendTextAsync(update.ChatId, "Текущий диалог отменён.", cancellationToken);
+            IntakeCancellationResult result = await intakeStore.CancelAsync(
+                update.UserId, update.ChatId, cancellationToken);
+            if (result is IntakeCancellationResult.Cancelled cancelled)
+            {
+                foreach (string relativePath in cancelled.TemporaryRelativePaths)
+                    DeleteIntakeFile(relativePath);
+            }
+            await responder.SendTextAsync(
+                update.ChatId,
+                result is IntakeCancellationResult.Cancelled
+                    ? "Текущий набор видео отменён."
+                    : "Открытого набора видео нет.",
+                cancellationToken);
             return;
         }
 
@@ -163,53 +177,139 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             return;
         }
 
-        TelegramIntakeSession? session = sessions.Get(update.UserId);
-        if (session is null)
+        if (string.Equals(update.Text?.Trim(), "/done", StringComparison.OrdinalIgnoreCase))
         {
+            await CompleteIntakeAsync(update, cancellationToken);
+            return;
+        }
+
+        if (update.Text?.Trim().StartsWith("/style", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await SetStyleAsync(update, cancellationToken);
+            return;
+        }
+
+        if (update.Text?.Trim().StartsWith("/duration", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await SetDurationAsync(update, cancellationToken);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(update.Text))
+        {
+            IntakeSessionUpdateResult result = await intakeStore.SetInstructionAsync(
+                update.UserId, update.ChatId, update.Text.Trim(), cancellationToken);
             await responder.SendTextAsync(
                 update.ChatId,
-                "Сначала отправьте видео. Для отмены используйте /cancel.",
+                result is IntakeSessionUpdateResult.Updated
+                    ? "Инструкция сохранена. После загрузки всех видео используйте /done."
+                    : $"Не удалось сохранить инструкцию: {((IntakeSessionUpdateResult.Rejected)result).Code}",
                 cancellationToken);
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(update.Text))
-        {
-            await responder.SendTextAsync(
-                update.ChatId,
-                "Комментарий не должен быть пустым. Опишите желаемый стиль ролика.",
-                cancellationToken);
-            return;
-        }
-
-        CreateJobResult result = await createJob.ExecuteAsync(
-            new CreateJobCommand(
-                session.SourceArtifactId,
-                update.Text,
-                new ProductionSettings(null, captionsEnabled: true, musicEnabled: false),
-                update.UserId),
-            cancellationToken);
-
-        if (result is CreateJobResult.Succeeded succeeded)
-        {
-            sessions.Remove(update.UserId);
-            await responder.SendTextAsync(
-                update.ChatId,
-                succeeded.WasCreated
-                    ? "Задание принято. Начинаю обработку."
-                    : "Это видео уже принято ранее. Продолжаю обработку существующего задания.",
-                cancellationToken);
-            return;
-        }
-
-        CreateJobResult.Rejected rejected = (CreateJobResult.Rejected)result;
-        logger?.LogWarning(
-            "Telegram Job creation rejected for user {UserId}: {ErrorCode}",
-            update.UserId,
-            rejected.Error.Code);
         await responder.SendTextAsync(
             update.ChatId,
-            "Не удалось принять задание. Попробуйте отправить видео ещё раз.",
+            "Отправьте видео, инструкцию или команду /done.",
+            cancellationToken);
+    }
+
+    private void DeleteIntakeFile(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath)) return;
+        string absolutePath = Path.GetFullPath(Path.Combine(
+            workspaceRoot,
+            relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        string relativeToRoot = Path.GetRelativePath(workspaceRoot, absolutePath);
+        if (relativeToRoot.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativeToRoot)) return;
+        try
+        {
+            if (File.Exists(absolutePath)) File.Delete(absolutePath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger?.LogWarning("Failed to delete a Telegram intake file: {ErrorType}", exception.GetType().Name);
+        }
+    }
+
+    private async Task CompleteIntakeAsync(TelegramUpdate update, CancellationToken cancellationToken)
+    {
+        IntakeCompletionResult result = await intakeStore.CompleteAsync(
+            new IntakeCompletion(update.UserId, update.ChatId, Math.Max(1, update.UpdateId)),
+            cancellationToken);
+        string message;
+        switch (result)
+        {
+            case IntakeCompletionResult.Created created:
+                if (jobSignal is not null)
+                {
+                    await jobSignal.PublishAsync(created.JobId, cancellationToken);
+                }
+                message = "Задание принято. Начинаю обработку.";
+                break;
+            case IntakeCompletionResult.Existing:
+                message = "Эта команда уже обработана. Продолжаю существующее задание.";
+                break;
+            case IntakeCompletionResult.Rejected rejected:
+                message = $"Не удалось завершить набор: {rejected.Code}";
+                break;
+            default:
+                throw new InvalidOperationException("Unknown intake completion result.");
+        }
+
+        await responder.SendTextAsync(update.ChatId, message, cancellationToken);
+    }
+
+    private async Task SetStyleAsync(TelegramUpdate update, CancellationToken cancellationToken)
+    {
+        string value = update.Text!.Trim()["/style".Length..].Trim();
+        RequestedReelsStyle? style = value.ToLowerInvariant() switch
+        {
+            "auto" => RequestedReelsStyle.Auto,
+            "expert-clean" or "expertclean" => RequestedReelsStyle.ExpertClean,
+            "dynamic-viral" or "dynamicviral" => RequestedReelsStyle.DynamicViral,
+            "cinematic" => RequestedReelsStyle.Cinematic,
+            "premium-ads" or "premiumads" => RequestedReelsStyle.PremiumAds,
+            _ => null
+        };
+        if (style is null)
+        {
+            await responder.SendTextAsync(
+                update.ChatId,
+                "Стиль: auto, expert-clean, dynamic-viral, cinematic или premium-ads.",
+                cancellationToken);
+            return;
+        }
+
+        IntakeSessionUpdateResult result = await intakeStore.SetStyleAsync(
+            update.UserId, update.ChatId, style.Value, cancellationToken);
+        await responder.SendTextAsync(
+            update.ChatId,
+            result is IntakeSessionUpdateResult.Updated
+                ? "Стиль сохранён."
+                : $"Не удалось сохранить стиль: {((IntakeSessionUpdateResult.Rejected)result).Code}",
+            cancellationToken);
+    }
+
+    private async Task SetDurationAsync(TelegramUpdate update, CancellationToken cancellationToken)
+    {
+        string value = update.Text!.Trim()["/duration".Length..].Trim();
+        if (!int.TryParse(value, out int durationSeconds) || durationSeconds is < 5 or > 60)
+        {
+            await responder.SendTextAsync(
+                update.ChatId,
+                "Длительность должна быть целым числом от 5 до 60 секунд.",
+                cancellationToken);
+            return;
+        }
+
+        IntakeSessionUpdateResult result = await intakeStore.SetDurationAsync(
+            update.UserId, update.ChatId, durationSeconds, cancellationToken);
+        await responder.SendTextAsync(
+            update.ChatId,
+            result is IntakeSessionUpdateResult.Updated
+                ? "Длительность сохранена."
+                : $"Не удалось сохранить длительность: {((IntakeSessionUpdateResult.Rejected)result).Code}",
             cancellationToken);
     }
 
@@ -282,9 +382,45 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             return;
         }
 
-        TelegramDownloadResult result = await downloader.DownloadAsync(input, cancellationToken);
+        long messageId = Math.Max(1, update.UpdateId);
+        string relativePath = $"jobs/intake/{Guid.NewGuid():N}/original.bin";
+        IntakeReservationResult reservation = await intakeStore.ReserveAsync(
+            new IntakeReservation(
+                update.UserId,
+                update.ChatId,
+                messageId,
+                input.FileUniqueId,
+                input.SizeBytes,
+                limitsOptions.MaxInputFileBytes,
+                relativePath + ".tmp"),
+            cancellationToken);
+        if (reservation is IntakeReservationResult.Duplicate)
+        {
+            await responder.SendTextAsync(update.ChatId, "Это видео уже добавлено.", cancellationToken);
+            return;
+        }
+        if (reservation is IntakeReservationResult.Rejected reservationRejected)
+        {
+            await responder.SendTextAsync(
+                update.ChatId,
+                $"Не удалось зарезервировать видео: {reservationRejected.Code}",
+                cancellationToken);
+            return;
+        }
+
+        IntakeReservationResult.Reserved reserved = (IntakeReservationResult.Reserved)reservation;
+        TelegramDownloadResult result = await downloader.DownloadAsync(
+            input,
+            relativePath,
+            reserved.ReservedBytes,
+            (requiredBytes, token) => requiredBytes > limitsOptions.MaxInputFileBytes
+                ? Task.FromResult<long?>(null)
+                : intakeStore.TryExpandReservationAsync(
+                    reserved.SessionId, messageId, requiredBytes, token),
+            cancellationToken);
         if (result is TelegramDownloadResult.Rejected failure)
         {
+            await intakeStore.FailAsync(reserved.SessionId, messageId, failure.Code, cancellationToken);
             logger?.LogWarning("Telegram download rejected: {ErrorCode}", failure.Code);
             await responder.SendTextAsync(update.ChatId, "Не удалось принять видео: проверьте формат и размер или повторите позже.", cancellationToken);
             return;
@@ -292,6 +428,12 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         TelegramDownloadedFile downloaded = ((TelegramDownloadResult.Succeeded)result).File;
         if (downloaded.SizeBytes > limitsOptions.MaxInputFileBytes)
         {
+            await intakeStore.FailAsync(
+                reserved.SessionId,
+                messageId,
+                "intake.file_limit_exceeded",
+                cancellationToken);
+            DeleteIntakeFile(downloaded.RelativePath);
             await responder.SendTextAsync(
                 update.ChatId,
                 "Фактический размер скачанного видео превышает допустимый лимит.",
@@ -322,6 +464,12 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             cancellationToken);
         if (registration is ArtifactRegistrationResult.Rejected)
         {
+            await intakeStore.FailAsync(
+                reserved.SessionId,
+                messageId,
+                "intake.artifact_registration_failed",
+                cancellationToken);
+            DeleteIntakeFile(downloaded.RelativePath);
             logger?.LogWarning(
                 "Telegram Artifact registration rejected for user {UserId}",
                 update.UserId);
@@ -338,14 +486,22 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             ArtifactRegistrationResult.Existing existing => existing.Record,
             _ => throw new InvalidOperationException("Unknown Artifact registration result.")
         };
-        sessions.Set(new TelegramIntakeSession(
-            update.UserId,
-            stored.ArtifactId,
-            input.FileId,
-            input.FileUniqueId));
+        IntakeAcceptanceResult acceptance = await intakeStore.AcceptAsync(
+            new IntakeAcceptance(
+                reserved.SessionId,
+                messageId,
+                stored.ArtifactId,
+                downloaded.Sha256,
+                downloaded.SizeBytes,
+                downloaded.DurationMicroseconds),
+            cancellationToken);
+        if (acceptance is IntakeAcceptanceResult.Rejected)
+            DeleteIntakeFile(downloaded.RelativePath);
         await responder.SendTextAsync(
             update.ChatId,
-            "Видео получено. Теперь отправьте непустой комментарий.",
+            acceptance is IntakeAcceptanceResult.Accepted
+                ? "Видео получено. Добавьте ещё видео или инструкцию, затем используйте /done."
+                : $"Не удалось добавить видео: {((IntakeAcceptanceResult.Rejected)acceptance).Code}",
             cancellationToken);
     }
 }

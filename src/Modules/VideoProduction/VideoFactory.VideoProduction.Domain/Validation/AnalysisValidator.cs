@@ -8,6 +8,70 @@ namespace VideoFactory.VideoProduction.Domain.Validation;
 
 public static class AnalysisValidator
 {
+    /// <summary>Проверяет агрегированный Analysis V3 и source-scoped ссылки.</summary>
+    public static ImmutableArray<ValidationIssue> Validate(
+        MultiSourceAnalysisResult analysis,
+        IReadOnlyDictionary<ArtifactId, MediaAsset> assets)
+    {
+        ArgumentNullException.ThrowIfNull(analysis);
+        ArgumentNullException.ThrowIfNull(assets);
+        List<ValidationIssue> issues = [];
+        if (analysis.SchemaVersion != 3)
+            Add(issues, "analysis.schema_version", "schemaVersion", "Analysis schema version 3 is required.");
+        if (analysis.RevisionId.IsEmpty)
+            Add(issues, "analysis.revision_empty", "revisionId", "Revision ID is required.");
+        if (analysis.Sources.IsDefaultOrEmpty)
+        {
+            Add(issues, "analysis.sources_empty", "sources", "At least one analysis source is required.");
+            return [.. issues];
+        }
+        if (analysis.AllowedSegments.IsDefault)
+            Add(issues, "analysis.segments_uninitialized", "allowedSegments", "Allowed segments must be initialized.");
+
+        HashSet<(ArtifactId Original, ArtifactId Master)> pairs = [];
+        HashSet<SegmentId> segmentIds = [];
+        for (int index = 0; index < analysis.Sources.Length; index++)
+        {
+            AnalysisSource source = analysis.Sources[index];
+            if (!pairs.Add((source.OriginalAssetId, source.MasterAssetId)))
+                Add(issues, "analysis.source_duplicate", $"sources[{index}]", "Original/Master source pairs must be unique.");
+
+            ImmutableArray<AllowedSegment> sourceSegments = analysis.AllowedSegments.IsDefault
+                ? []
+                : [.. analysis.AllowedSegments.Where(segment =>
+                    segment.Mapping.OriginalAssetId == source.OriginalAssetId
+                    && segment.Mapping.MasterAssetId == source.MasterAssetId)];
+            AnalysisResult compatible = new(
+                2,
+                analysis.RevisionId,
+                source.OriginalAssetId,
+                source.MasterAssetId,
+                source.Speech,
+                source.Pauses,
+                source.Scenes,
+                sourceSegments)
+            {
+                Features = source.Features
+            };
+            foreach (ValidationIssue issue in Validate(compatible, assets))
+                issues.Add(issue with { Path = $"sources[{index}].{issue.Path}" });
+        }
+
+        if (!analysis.AllowedSegments.IsDefault)
+        {
+            for (int index = 0; index < analysis.AllowedSegments.Length; index++)
+            {
+                AllowedSegment segment = analysis.AllowedSegments[index];
+                if (!segmentIds.Add(segment.Id))
+                    Add(issues, "analysis.segment_id_duplicate", $"allowedSegments[{index}].id", "Segment IDs must be globally unique.");
+                if (!pairs.Contains((segment.Mapping.OriginalAssetId, segment.Mapping.MasterAssetId)))
+                    Add(issues, "analysis.source_mapping_invalid", $"allowedSegments[{index}].mapping", "Mapping must use one declared Original/Master source pair.");
+            }
+        }
+
+        return [.. issues];
+    }
+
     public static ImmutableArray<ValidationIssue> Validate(
         AnalysisResult analysis,
         IReadOnlyDictionary<ArtifactId, MediaAsset> assets)

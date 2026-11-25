@@ -33,7 +33,9 @@ public sealed class CreateJobUseCase
         CreateJobCommand command,
         CancellationToken cancellationToken = default)
     {
-        if (command.SourceArtifactId.IsEmpty)
+        if (command.SourceArtifactIds.Length is < 1 or > 5
+            || command.SourceArtifactIds.Any(source => source.IsEmpty)
+            || command.SourceArtifactIds.Distinct().Count() != command.SourceArtifactIds.Length)
         {
             return new CreateJobResult.Rejected(
                 new CreateJobError(CreateJobErrorCode.InvalidSourceArtifactId));
@@ -52,7 +54,7 @@ public sealed class CreateJobUseCase
         }
 
         JobRequest request = new(
-            command.SourceArtifactId,
+            command.SourceArtifactIds,
             command.Comment,
             ProductionMode.Fast,
             command.Settings);

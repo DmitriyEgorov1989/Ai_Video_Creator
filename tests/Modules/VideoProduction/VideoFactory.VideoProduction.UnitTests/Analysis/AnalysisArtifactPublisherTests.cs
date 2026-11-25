@@ -79,6 +79,10 @@ public sealed class AnalysisArtifactPublisherTests
         public Task<ArtifactRecord?> FindLatestAsync(JobId jobId, string artifactType, CancellationToken cancellationToken) =>
             Task.FromResult(Record?.JobId == jobId && Record.ArtifactType == artifactType ? Record : null);
 
+        public Task<IReadOnlyList<ArtifactRecord>> ListAsync(JobId jobId, string artifactType, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<ArtifactRecord>>(
+                Record?.JobId == jobId && Record.ArtifactType == artifactType ? [Record] : []);
+
         public Task<ArtifactRegistrationResult> RegisterAsync(ArtifactRecord record, CancellationToken cancellationToken)
         {
             Record = record;

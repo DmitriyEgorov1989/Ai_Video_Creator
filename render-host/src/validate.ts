@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { EditPlan, OutputRange, RenderRequest, SourceMapping } from "./contracts.js";
+import type { OutputRange, RenderRequest, SourceMapping } from "./contracts.js";
 
 export interface ValidationIssue {
   code: string;
@@ -69,17 +69,17 @@ function validMapping(value: unknown, path: string, issues: ValidationIssue[]): 
   return true;
 }
 
-function validatePlan(value: unknown, issues: ValidationIssue[]): value is EditPlan {
+function validatePlan(value: unknown, issues: ValidationIssue[]): boolean {
   if (!isRecord(value)) {
     issues.push(issue("plan_null", "plan", "Plan must be an object."));
     return false;
   }
 
-  if (value.schemaVersion === 2) {
+  if (value.schemaVersion === 2 || value.schemaVersion === 3) {
     validatePlanV2(value, issues);
     return issues.length === 0;
   }
-  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema versions 1 and 2 are supported."));
+  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema versions 1, 2 and 3 are supported."));
   for (const name of ["jobId", "variantId", "revisionId", "analysisRevisionId"]) requiredString(value[name], `plan.${name}`, issues);
   if (!Number.isInteger(value.seed)) issues.push(issue("seed_invalid", "plan.seed", "Seed must be an integer."));
   if (value.template !== "dynamic") issues.push(issue("template_unknown", "plan.template", "Only the dynamic template is supported."));
@@ -171,11 +171,37 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
     }
     duration = typeof output.durationFrames === "number" ? output.durationFrames : 0;
   }
-  const source = value.source;
-  if (!isRecord(source)) issues.push(issue("source_invalid", "plan.source", "Source identity is required."));
-  else {
-    requiredString(source.originalAssetId, "plan.source.originalAssetId", issues);
-    requiredString(source.masterAssetId, "plan.source.masterAssetId", issues);
+  const sourceDurations = new Map<string, number>();
+  if (value.schemaVersion === 3) {
+    const sources = value.sources;
+    if (!Array.isArray(sources) || sources.length === 0) {
+      issues.push(issue("source_invalid", "plan.sources", "At least one source identity is required."));
+    } else {
+      const originalIds = new Set<string>();
+      sources.forEach((source, index) => {
+        const path = `plan.sources[${index}]`;
+        if (!isRecord(source)
+          || !requiredString(source.originalAssetId, `${path}.originalAssetId`, issues)
+          || !requiredString(source.masterAssetId, `${path}.masterAssetId`, issues)
+          || !Number.isInteger(source.durationMicroseconds)
+          || Number(source.durationMicroseconds) <= 0) {
+          issues.push(issue("source_invalid", path, "Source identity and positive duration are required."));
+          return;
+        }
+        if (originalIds.has(source.originalAssetId) || sourceDurations.has(source.masterAssetId)) {
+          issues.push(issue("source_duplicate", path, "Original and Master source IDs must be unique."));
+        }
+        originalIds.add(source.originalAssetId);
+        sourceDurations.set(source.masterAssetId, Number(source.durationMicroseconds));
+      });
+    }
+  } else {
+    const source = value.source;
+    if (!isRecord(source)) issues.push(issue("source_invalid", "plan.source", "Source identity is required."));
+    else {
+      requiredString(source.originalAssetId, "plan.source.originalAssetId", issues);
+      requiredString(source.masterAssetId, "plan.source.masterAssetId", issues);
+    }
   }
   const video = value.video;
   if (!isRecord(video) || !Array.isArray(video.clips) || video.clips.length === 0) {
@@ -185,9 +211,17 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
     video.clips.forEach((clip, index) => {
       const path = `plan.video.clips[${index}]`;
       if (!isRecord(clip)) { issues.push(issue("clip_invalid", path, "Video clip must be an object.")); return; }
-      requiredString(clip.sourceAssetId, `${path}.sourceAssetId`, issues);
+      const sourceAssetValid = requiredString(clip.sourceAssetId, `${path}.sourceAssetId`, issues);
       validSourceRange(clip.source, `${path}.source`, issues);
-      validSourceRange(clip.master, `${path}.master`, issues);
+      const masterRangeValid = validSourceRange(clip.master, `${path}.master`, issues);
+      if (value.schemaVersion === 3 && sourceAssetValid) {
+        const sourceDuration = sourceDurations.get(clip.sourceAssetId as string);
+        if (sourceDuration === undefined) {
+          issues.push(issue("source_unknown", `${path}.sourceAssetId`, "Clip must reference a declared Master source."));
+        } else if (masterRangeValid && isRecord(clip.master) && Number(clip.master.endMicroseconds) > sourceDuration) {
+          issues.push(issue("mapping_out_of_bounds", `${path}.master`, "Clip Master range exceeds its source duration."));
+        }
+      }
       if (!isRecord(clip.crop) || !["fit", "fill"].includes(String(clip.crop.preset))) issues.push(issue("enum_unknown", `${path}.crop.preset`, "Unknown crop preset."));
       else {
         const crop = clip.crop;
@@ -327,7 +361,7 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
 export function validateRenderRequest(value: unknown): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   if (!isRecord(value)) return [issue("request_null", "$", "Render request must be an object.")];
-  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "schemaVersion", "Only schema version 1 is supported."));
+  if (value.schemaVersion !== 1 && value.schemaVersion !== 2) issues.push(issue("schema_version", "schemaVersion", "Only schema versions 1 and 2 are supported."));
   requiredString(value.jobId, "jobId", issues);
   requiredString(value.variantId, "variantId", issues);
   requiredString(value.outputPath, "outputPath", issues);
@@ -344,6 +378,9 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
   }
   validatePlan(value.plan, issues);
   if (isRecord(value.plan)) {
+    if ((value.schemaVersion === 2) !== (value.plan.schemaVersion === 3)) {
+      issues.push(issue("contract_version_mismatch", "plan.schemaVersion", "RenderRequest V2 requires Edit Plan V3; legacy plans require RenderRequest V1."));
+    }
     if (value.plan.jobId !== value.jobId) {
       issues.push(issue("plan_job_id_mismatch", "plan.jobId", "Plan jobId must match the render request jobId."));
     }
@@ -355,15 +392,44 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
     issues.push(issue("assets_empty", "assets", "At least one local asset is required."));
   } else {
     const ids = new Set<string>();
+    const audioPaths = new Set<string>();
     value.assets.forEach((asset, index) => {
-      if (!isRecord(asset) || !requiredString(asset.id, `assets[${index}].id`, issues) || !requiredString(asset.path, `assets[${index}].path`, issues)) return;
-      if (ids.has(asset.id)) issues.push(issue("asset_duplicate", `assets[${index}].id`, "Asset IDs must be unique."));
-      ids.add(asset.id);
-      if (!isAbsolute(asset.path)) issues.push(issue("asset_path_not_absolute", `assets[${index}].path`, "Asset paths must be absolute."));
+      if (!isRecord(asset)) {
+        issues.push(issue("asset_invalid", `assets[${index}]`, "Asset must be an object."));
+        return;
+      }
+      if (value.schemaVersion === 2) {
+        if (!requiredString(asset.sourceAssetId, `assets[${index}].sourceAssetId`, issues)
+          || !requiredString(asset.videoPath, `assets[${index}].videoPath`, issues)) return;
+        if (ids.has(asset.sourceAssetId)) issues.push(issue("asset_duplicate", `assets[${index}].sourceAssetId`, "Source asset IDs must be unique."));
+        ids.add(asset.sourceAssetId);
+        if (!isAbsolute(asset.videoPath)) issues.push(issue("asset_path_not_absolute", `assets[${index}].videoPath`, "Video path must be absolute."));
+        if (asset.audioPath !== undefined && asset.audioPath !== null
+          && (typeof asset.audioPath !== "string" || asset.audioPath.length === 0 || !isAbsolute(asset.audioPath))) {
+          issues.push(issue("asset_path_not_absolute", `assets[${index}].audioPath`, "Audio path must be null or an absolute path."));
+        } else if (typeof asset.audioPath === "string") {
+          if (audioPaths.has(asset.audioPath)) {
+            issues.push(issue("audio_asset_duplicate", `assets[${index}].audioPath`, "Each source must own its audio path."));
+          }
+          audioPaths.add(asset.audioPath);
+        }
+        const frameRate = asset.frameRate;
+        if (!isRecord(frameRate)
+          || !Number.isInteger(frameRate.numerator) || Number(frameRate.numerator) <= 0
+          || !Number.isInteger(frameRate.denominator) || Number(frameRate.denominator) <= 0) {
+          issues.push(issue("frame_rate_invalid", `assets[${index}].frameRate`, "A positive rational frame rate is required."));
+        }
+      } else {
+        if (!requiredString(asset.id, `assets[${index}].id`, issues) || !requiredString(asset.path, `assets[${index}].path`, issues)) return;
+        if (ids.has(asset.id)) issues.push(issue("asset_duplicate", `assets[${index}].id`, "Asset IDs must be unique."));
+        ids.add(asset.id);
+        if (!isAbsolute(asset.path)) issues.push(issue("asset_path_not_absolute", `assets[${index}].path`, "Asset paths must be absolute."));
+      }
     });
     const plan = isRecord(value.plan) ? value.plan : undefined;
     const video = plan && isRecord(plan.video) && Array.isArray(plan.video.clips) ? plan.video.clips : [];
     const videoSegmentIds = new Set<string>();
+    const usedSourceIds = new Set<string>();
     video.forEach((clip, index) => {
       if (isRecord(clip) && typeof clip.segmentId === "string") videoSegmentIds.add(clip.segmentId);
       const mapping = isRecord(clip) && isRecord(clip.mapping) ? clip.mapping : undefined;
@@ -373,7 +439,13 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
       if (isRecord(clip) && typeof clip.sourceAssetId === "string" && !ids.has(clip.sourceAssetId)) {
         issues.push(issue("asset_unknown", `plan.video.clips[${index}].sourceAssetId`, `No asset is registered for source '${clip.sourceAssetId}'.`));
       }
+      if (isRecord(clip) && typeof clip.sourceAssetId === "string") usedSourceIds.add(clip.sourceAssetId);
     });
+    if (value.schemaVersion === 2) {
+      ids.forEach((id) => {
+        if (!usedSourceIds.has(id)) issues.push(issue("asset_unused", "assets", `Source asset '${id}' is not used by any clip.`));
+      });
+    }
     const audio = plan && isRecord(plan.audio) && Array.isArray(plan.audio.sourceClips) ? plan.audio.sourceClips : [];
     audio.forEach((clip, index) => {
       if (isRecord(clip) && typeof clip.segmentId === "string" && !videoSegmentIds.has(clip.segmentId)) {
@@ -389,11 +461,17 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
 }
 export async function validateAssetFiles(request: RenderRequest): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
-  for (const [index, asset] of request.assets.entries()) {
+  const paths = request.schemaVersion === 2
+    ? request.assets.flatMap((asset, index) => [
+      { path: asset.videoPath, name: asset.sourceAssetId, issuePath: `assets[${index}].videoPath` },
+      ...(asset.audioPath ? [{ path: asset.audioPath, name: asset.sourceAssetId, issuePath: `assets[${index}].audioPath` }] : []),
+    ])
+    : request.assets.map((asset, index) => ({ path: asset.path, name: asset.id, issuePath: `assets[${index}].path` }));
+  for (const item of paths) {
     try {
-      await access(resolve(asset.path));
+      await access(resolve(item.path));
     } catch {
-      issues.push(issue("asset_missing", `assets[${index}].path`, `Asset does not exist: ${asset.id}.`));
+      issues.push(issue("asset_missing", item.issuePath, `Asset does not exist: ${item.name}.`));
     }
   }
   return issues;

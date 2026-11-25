@@ -74,6 +74,31 @@ public sealed class SqliteArtifactStore : IArtifactStore
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<ArtifactRecord>> ListAsync(
+        JobId jobId,
+        string artifactType,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactType);
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
+                   metadata_json, parent_artifact_id, tool_version
+            FROM artifacts
+            WHERE job_id = $jobId AND artifact_type = $artifactType
+            ORDER BY created_at, artifact_id;
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$artifactType", artifactType);
+        List<ArtifactRecord> records = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) records.Add(ReadRecord(reader));
+        return records;
+    }
+
+    /// <inheritdoc />
     public async Task<ArtifactRegistrationResult> RegisterAsync(
         ArtifactRecord record,
         CancellationToken cancellationToken)

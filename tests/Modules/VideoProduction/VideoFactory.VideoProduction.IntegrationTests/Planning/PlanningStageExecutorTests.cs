@@ -78,6 +78,24 @@ public sealed class PlanningStageExecutorTests
         Assert.Equal(0, fixture.Provider.CreatePlanCount);
     }
 
+    [Fact]
+    public async Task MultiSourceAnalysisCreatesApprovedV3Plan()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(multiSource: true);
+
+        Assert.True(await fixture.ProcessAsync());
+
+        JobCreationRecord state = (await fixture.State.GetAsync(fixture.Job.JobId, CancellationToken.None))!;
+        Assert.Equal(ProductionStage.Rendering, state.Progress.Stage);
+        EditPlanRevision revision = (await fixture.Revisions.FindApprovedAsync(
+            fixture.Job.JobId,
+            fixture.Job.VariantId,
+            CancellationToken.None))!;
+        Assert.Equal(3, revision.Plan.SchemaVersion);
+        Assert.Equal(2, revision.Plan.Sources.Length);
+        Assert.Equal(2, revision.Plan.Video.Clips.Select(clip => clip.Mapping.MasterAssetId).Distinct().Count());
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -90,7 +108,7 @@ public sealed class PlanningStageExecutorTests
         public TestProvider Provider { get; private set; } = null!;
         public PlanningStageExecutor Executor { get; private set; } = null!;
 
-        public static async Task<Fixture> CreateAsync()
+        public static async Task<Fixture> CreateAsync(bool multiSource = false)
         {
             Fixture fixture = new();
             Directory.CreateDirectory(fixture.Root);
@@ -101,6 +119,8 @@ public sealed class PlanningStageExecutorTests
 
             ArtifactId originalId = ArtifactId.New();
             ArtifactId masterId = ArtifactId.New();
+            ArtifactId secondOriginalId = ArtifactId.New();
+            ArtifactId secondMasterId = ArtifactId.New();
             string sourcePath = Path.Combine(fixture.Root, "source.mp4");
             await File.WriteAllBytesAsync(sourcePath, [1, 2, 3]);
             MediaMetadata metadata = new(
@@ -117,10 +137,27 @@ public sealed class PlanningStageExecutorTests
                 JsonSerializer.Serialize(new { mediaMetadata = metadata, originalMetadata = metadata }, JsonOptions),
                 null,
                 "test"), CancellationToken.None).GetAwaiter().GetResult();
+            if (multiSource)
+            {
+                string secondSourcePath = Path.Combine(fixture.Root, "source-2.mp4");
+                await File.WriteAllBytesAsync(secondSourcePath, [4, 5, 6]);
+                await fixture.Artifacts.RegisterAsync(new ArtifactRecord(
+                    secondOriginalId,
+                    "OriginalVideo",
+                    "source-2.mp4",
+                    Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(secondSourcePath))),
+                    3,
+                    JsonSerializer.Serialize(new { mediaMetadata = metadata, originalMetadata = metadata }, JsonOptions),
+                    null,
+                    "test"), CancellationToken.None);
+            }
 
             fixture.Job = Assert.IsType<CreateJobResult.Succeeded>(await new CreateJobUseCase(
                 new SqliteJobCreationStore(fixture.ConnectionString)).ExecuteAsync(
-                    new CreateJobCommand(originalId, "Сделай коротко", new ProductionSettings(null, false, false))));
+                    new CreateJobCommand(
+                        multiSource ? [originalId, secondOriginalId] : [originalId],
+                        "Сделай коротко",
+                        new ProductionSettings(null, false, false))));
 
             ArtifactRecord master = new(
                 masterId,
@@ -133,8 +170,22 @@ public sealed class PlanningStageExecutorTests
                 "test",
                 fixture.Job.JobId);
             await fixture.Artifacts.RegisterAsync(master, CancellationToken.None);
+            if (multiSource)
+            {
+                await fixture.Artifacts.RegisterAsync(new ArtifactRecord(
+                    secondMasterId,
+                    "master-video",
+                    $"data/jobs/{fixture.Job.JobId}/normalized/master-2.mp4",
+                    "master-2-hash",
+                    3,
+                    JsonSerializer.Serialize(new { mediaMetadata = metadata, originalMetadata = metadata }, JsonOptions),
+                    secondOriginalId,
+                    "test",
+                    fixture.Job.JobId), CancellationToken.None);
+            }
 
             SegmentId segmentId = SegmentId.New();
+            SegmentId secondSegmentId = SegmentId.New();
             AnalysisResult analysis = new(
                 1,
                 RevisionId.New(),
@@ -148,9 +199,26 @@ public sealed class PlanningStageExecutorTests
                     new OriginalRange(0, 3_000_000),
                     masterId,
                     new MasterRange(0, 3_000_000)))]);
+            object storedAnalysis = multiSource
+                ? new MultiSourceAnalysisResult(
+                    3,
+                    analysis.RevisionId,
+                    [
+                        new AnalysisSource(originalId, masterId, [], [], [new Scene(new MasterRange(0, 3_000_000))], AnalysisFeatureSet.Empty),
+                        new AnalysisSource(secondOriginalId, secondMasterId, [], [], [new Scene(new MasterRange(0, 3_000_000))], AnalysisFeatureSet.Empty)
+                    ],
+                    [
+                        analysis.AllowedSegments[0] with { IsApproved = true },
+                        new AllowedSegment(secondSegmentId, new SourceMapping(
+                            secondOriginalId,
+                            new OriginalRange(0, 3_000_000),
+                            secondMasterId,
+                            new MasterRange(0, 3_000_000))) { IsApproved = true }
+                    ])
+                : analysis;
             string analysisPath = Path.Combine(fixture.Root, $"data/jobs/{fixture.Job.JobId}/analysis/result.json");
             Directory.CreateDirectory(Path.GetDirectoryName(analysisPath)!);
-            await File.WriteAllTextAsync(analysisPath, JsonSerializer.Serialize(analysis, JsonOptions));
+            await File.WriteAllTextAsync(analysisPath, JsonSerializer.Serialize(storedAnalysis, JsonOptions));
             byte[] analysisBytes = await File.ReadAllBytesAsync(analysisPath);
             await fixture.Artifacts.RegisterAsync(new ArtifactRecord(
                 ArtifactId.New(),
@@ -158,9 +226,9 @@ public sealed class PlanningStageExecutorTests
                 Path.GetRelativePath(fixture.Root, analysisPath).Replace(Path.DirectorySeparatorChar, '/'),
                 Convert.ToHexStringLower(SHA256.HashData(analysisBytes)),
                 analysisBytes.Length,
-                JsonSerializer.Serialize(new { schemaVersion = 1, analysis.RevisionId }, JsonOptions),
-                masterId,
-                "analysis-v1",
+                JsonSerializer.Serialize(new { schemaVersion = multiSource ? 3 : 1, analysis.RevisionId }, JsonOptions),
+                multiSource ? null : masterId,
+                multiSource ? "analysis-v3" : "analysis-v1",
                 fixture.Job.JobId), CancellationToken.None);
 
             JobCreationRecord current = (await fixture.State.GetAsync(fixture.Job.JobId, CancellationToken.None))!;
@@ -173,7 +241,7 @@ public sealed class PlanningStageExecutorTests
             await fixture.State.TryTransitionAsync(current.JobId, current.Progress.Status, current.Progress.Stage,
                 current.Progress.CompleteAnalysis(), CancellationToken.None);
 
-            fixture.Provider = new TestProvider(segmentId);
+            fixture.Provider = new TestProvider(multiSource ? [segmentId, secondSegmentId] : [segmentId]);
             EditPlanRevisionStore revisionStore = new(fixture.Revisions);
             fixture.Executor = new PlanningStageExecutor(
                 new EditPlanPlanner(
@@ -212,7 +280,7 @@ public sealed class PlanningStageExecutorTests
         }
     }
 
-    private sealed class TestProvider(SegmentId segmentId) : IEditPlanProvider
+    private sealed class TestProvider(ImmutableArray<SegmentId> segmentIds) : IEditPlanProvider
     {
         public int CreatePlanCount { get; private set; }
         public decimal EstimatedCostUsd { get; set; } = 0.01m;
@@ -226,7 +294,10 @@ public sealed class PlanningStageExecutorTests
             return Task.FromResult(new ProviderPlanResponse(
                 1,
                 7,
-                [new ProviderVideoClip(segmentId, new OutputRange(0, 90), CropPreset.CenterCrop)],
+                [.. segmentIds.Select((segmentId, index) => new ProviderVideoClip(
+                    segmentId,
+                    new OutputRange(index * 90, (index + 1) * 90),
+                    CropPreset.CenterCrop))],
                 ImmutableArray<ProviderCaption>.Empty,
                 0.01m));
         }

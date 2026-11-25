@@ -8,19 +8,166 @@ using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using Microsoft.Extensions.Logging;
+using System.Collections.Immutable;
 
 namespace VideoFactory.Bot.Tests.Telegram;
 
 public sealed class TelegramUpdateHandlerTests
 {
     [Fact]
+    public async Task StartupRecoveryDeletesOnlyReturnedPathsInsideWorkspace()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"telegram-recovery-{Guid.NewGuid():N}");
+        string outside = Path.Combine(Path.GetTempPath(), $"telegram-outside-{Guid.NewGuid():N}.tmp");
+        string inside = Path.Combine(root, "jobs", "intake", "pending.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(inside)!);
+        await File.WriteAllBytesAsync(inside, [1]);
+        await File.WriteAllBytesAsync(outside, [2]);
+        try
+        {
+            FakePersistentIntakeStore intake = new()
+            {
+                RecoveryPaths = ["jobs/intake/pending.tmp", Path.GetRelativePath(root, outside)]
+            };
+            TelegramIntakeRecoveryService service = new(intake, root);
+
+            await service.StartAsync(CancellationToken.None);
+
+            Assert.False(File.Exists(inside));
+            Assert.True(File.Exists(outside));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public async Task TwoVideosAndInstructionWaitForDoneBeforeCompletingIntake()
+    {
+        FakeDownloader downloader = new();
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = new(
+            new TelegramOptions { AllowedUserId = 123456789 },
+            new LimitsOptions { MaxInputFileBytes = 524_288_000 },
+            downloader,
+            new FakeArtifactStore(),
+            intake,
+            new FakeResponder());
+
+        await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, null,
+            new TelegramMediaInput("file-a", "unique-a", 100, "video/mp4", "a.mp4")) { UpdateId = 10 }, CancellationToken.None);
+        await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, null,
+            new TelegramMediaInput("file-b", "unique-b", 100, "video/mp4", "b.mp4")) { UpdateId = 20 }, CancellationToken.None);
+        await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, "Собери обзор", null) { UpdateId = 30 }, CancellationToken.None);
+
+        Assert.Equal(0, intake.CompleteCalls);
+        Assert.Equal(2, intake.AcceptedArtifacts.Count);
+
+        await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, "/done", null) { UpdateId = 40 }, CancellationToken.None);
+
+        Assert.Equal(1, intake.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task DownloadFailureReleasesPersistentReservation()
+    {
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = new(
+            new TelegramOptions { AllowedUserId = 123456789 },
+            new LimitsOptions { MaxInputFileBytes = 524_288_000 },
+            new RejectingDownloader(),
+            new FakeArtifactStore(),
+            intake,
+            new FakeResponder());
+
+        await handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, null,
+                new TelegramMediaInput("file-a", "unique-a", 100, "video/mp4", "a.mp4")) { UpdateId = 10 },
+            CancellationToken.None);
+
+        Assert.Equal(1, intake.FailureCalls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RejectedDownloadedVideoIsDeletedFromWorkspace(bool artifactRegistrationRejected)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"telegram-rejected-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            FileCreatingDownloader downloader = new(root);
+            FakePersistentIntakeStore intake = new() { RejectAcceptance = !artifactRegistrationRejected };
+            TelegramUpdateHandler handler = new(
+                new TelegramOptions { AllowedUserId = 123456789 },
+                new LimitsOptions { MaxInputFileBytes = 1_000 },
+                downloader,
+                new FakeArtifactStore(artifactRegistrationRejected ? "registration rejected" : null),
+                intake,
+                new FakeResponder(),
+                workspaceRoot: root);
+
+            await handler.HandleAsync(
+                new TelegramUpdate(123456789, 123456789, null,
+                    new TelegramMediaInput("file", "unique", 100, "video/mp4", "video.mp4")) { UpdateId = 10 },
+                CancellationToken.None);
+
+            Assert.NotNull(downloader.DownloadedPath);
+            Assert.False(File.Exists(downloader.DownloadedPath));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("auto", RequestedReelsStyle.Auto)]
+    [InlineData("expert-clean", RequestedReelsStyle.ExpertClean)]
+    [InlineData("dynamic-viral", RequestedReelsStyle.DynamicViral)]
+    [InlineData("cinematic", RequestedReelsStyle.Cinematic)]
+    [InlineData("premium-ads", RequestedReelsStyle.PremiumAds)]
+    public async Task StyleCommandMapsEverySupportedName(string name, RequestedReelsStyle expected)
+    {
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = CreateHandler(new FakeDownloader(), intake);
+
+        await handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, $"/style {name}", null) { UpdateId = 10 },
+            CancellationToken.None);
+
+        Assert.Equal(expected, intake.Style);
+    }
+
+    [Theory]
+    [InlineData("4", null)]
+    [InlineData("5", 5)]
+    [InlineData("60", 60)]
+    [InlineData("61", null)]
+    [InlineData("fast", null)]
+    public async Task DurationCommandAcceptsOnlyIntegerFromFiveToSixty(string value, int? expected)
+    {
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = CreateHandler(new FakeDownloader(), intake);
+
+        await handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, $"/duration {value}", null) { UpdateId = 10 },
+            CancellationToken.None);
+
+        Assert.Equal(expected, intake.DurationSeconds);
+    }
+
+    [Fact]
     public async Task IntegrationDiagnosticsAndUserContentNeverEnterLogs()
     {
         const string sensitive = "synthetic-token private-comment private-transcript";
         CaptureLogger logger = new();
         TelegramUpdateHandler handler = new(new TelegramOptions { AllowedUserId = 123456789 }, new LimitsOptions(),
-            new FakeDownloader(), new FakeArtifactStore(sensitive), new FakeCreateJobUseCase(),
-            new InMemoryTelegramIntakeSessionStore(), new FakeResponder(), logger);
+            new FakeDownloader(), new FakeArtifactStore(sensitive),
+            new FakePersistentIntakeStore(), new FakeResponder(), logger);
         await handler.HandleAsync(new TelegramUpdate(123456789, 123456789, null,
             new TelegramMediaInput("file", null, 100, "video/mp4", "video.mp4")), CancellationToken.None);
         Assert.NotEmpty(logger.Messages);
@@ -74,35 +221,38 @@ public sealed class TelegramUpdateHandlerTests
     }
 
     [Fact]
-    public async Task AllowedUserCreatesJobOnlyAfterVideoAndNonEmptyComment()
+    public async Task AllowedUserCompletesIntakeOnlyAfterVideoInstructionAndDone()
     {
         FakeDownloader downloader = new();
-        FakeCreateJobUseCase createJob = new();
-        TelegramUpdateHandler handler = CreateHandler(downloader, createJob);
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = CreateHandler(downloader, intake);
 
         await handler.HandleAsync(
             new TelegramUpdate(
                 123456789,
                 123456789,
                 null,
-                new TelegramMediaInput("telegram-file", "unique-file", 10_000, "video/mp4", "video.mp4")),
+                new TelegramMediaInput("telegram-file", "unique-file", 10_000, "video/mp4", "video.mp4")) { UpdateId = 1 },
             CancellationToken.None);
 
         Assert.Equal(1, downloader.DownloadCalls);
-        Assert.Null(createJob.Command);
 
         await handler.HandleAsync(
             new TelegramUpdate(123456789, 123456789, "  ", null),
             CancellationToken.None);
-        Assert.Null(createJob.Command);
 
         await handler.HandleAsync(
-            new TelegramUpdate(123456789, 123456789, "Сделай динамично", null),
+            new TelegramUpdate(123456789, 123456789, "Сделай динамично", null) { UpdateId = 2 },
             CancellationToken.None);
 
-        Assert.NotNull(createJob.Command);
-        Assert.Equal("Сделай динамично", createJob.Command.Comment);
-        Assert.True(createJob.Command.Settings!.CaptionsEnabled);
+        Assert.Equal("Сделай динамично", intake.Instruction);
+        Assert.Equal(0, intake.CompleteCalls);
+
+        await handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, "/done", null) { UpdateId = 3 },
+            CancellationToken.None);
+
+        Assert.Equal(1, intake.CompleteCalls);
     }
 
     [Fact]
@@ -114,8 +264,7 @@ public sealed class TelegramUpdateHandlerTests
             new LimitsOptions { MaxInputFileBytes = 100 },
             downloader,
             new FakeArtifactStore(),
-            new FakeCreateJobUseCase(),
-            new InMemoryTelegramIntakeSessionStore(),
+            new FakePersistentIntakeStore(),
             new FakeResponder());
 
         await handler.HandleAsync(
@@ -132,8 +281,8 @@ public sealed class TelegramUpdateHandlerTests
     [Fact]
     public async Task CancelClearsPendingVideoAndPreventsJobCreation()
     {
-        FakeCreateJobUseCase createJob = new();
-        TelegramUpdateHandler handler = CreateHandler(new FakeDownloader(), createJob);
+        FakePersistentIntakeStore intake = new();
+        TelegramUpdateHandler handler = CreateHandler(new FakeDownloader(), intake);
 
         await handler.HandleAsync(
             new TelegramUpdate(
@@ -149,7 +298,46 @@ public sealed class TelegramUpdateHandlerTests
             new TelegramUpdate(123456789, 123456789, "Комментарий после отмены", null),
             CancellationToken.None);
 
-        Assert.Null(createJob.Command);
+        Assert.Equal(1, intake.CancelCalls);
+        Assert.Equal(0, intake.CompleteCalls);
+    }
+
+    [Fact]
+    public async Task CancelDeletesOnlyReturnedFilesInsideWorkspace()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"telegram-cancel-{Guid.NewGuid():N}");
+        string inside = Path.Combine(root, "jobs", "intake", "accepted.bin");
+        string outside = Path.Combine(Path.GetTempPath(), $"telegram-cancel-outside-{Guid.NewGuid():N}.bin");
+        Directory.CreateDirectory(Path.GetDirectoryName(inside)!);
+        await File.WriteAllBytesAsync(inside, [1]);
+        await File.WriteAllBytesAsync(outside, [2]);
+        try
+        {
+            FakePersistentIntakeStore intake = new()
+            {
+                CancellationPaths = ["jobs/intake/accepted.bin", Path.GetRelativePath(root, outside)]
+            };
+            TelegramUpdateHandler handler = new(
+                new TelegramOptions { AllowedUserId = 123456789 },
+                new LimitsOptions(),
+                new FakeDownloader(),
+                new FakeArtifactStore(),
+                intake,
+                new FakeResponder(),
+                workspaceRoot: root);
+
+            await handler.HandleAsync(
+                new TelegramUpdate(123456789, 123456789, "/cancel", null),
+                CancellationToken.None);
+
+            Assert.False(File.Exists(inside));
+            Assert.True(File.Exists(outside));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+            File.Delete(outside);
+        }
     }
 
     [Fact]
@@ -171,8 +359,7 @@ public sealed class TelegramUpdateHandlerTests
             new LimitsOptions(),
             new FakeDownloader(),
             new FakeArtifactStore(),
-            new FakeCreateJobUseCase(),
-            new InMemoryTelegramIntakeSessionStore(),
+            new FakePersistentIntakeStore(),
             responder,
             cancelJobUseCase: new CancelJobUseCase(new FakeCancellationStore(job), coordinator));
 
@@ -207,8 +394,7 @@ public sealed class TelegramUpdateHandlerTests
                 new LimitsOptions(),
                 new FakeDownloader(),
                 new FakeArtifactStore(),
-                new FakeCreateJobUseCase(),
-                new InMemoryTelegramIntakeSessionStore(),
+                new FakePersistentIntakeStore(),
                 responder,
                 repeatDeliveryUseCase: new RepeatDeliveryUseCase(
                     new RepeatStateStore(job),
@@ -231,14 +417,13 @@ public sealed class TelegramUpdateHandlerTests
 
     private static TelegramUpdateHandler CreateHandler(
         FakeDownloader downloader,
-        FakeCreateJobUseCase? createJob = null) =>
+        FakePersistentIntakeStore? intake = null) =>
         new(
             new TelegramOptions { AllowedUserId = 123456789 },
             new LimitsOptions { MaxInputFileBytes = 524_288_000 },
             downloader,
             new FakeArtifactStore(),
-            createJob ?? new FakeCreateJobUseCase(),
-            new InMemoryTelegramIntakeSessionStore(),
+            intake ?? new FakePersistentIntakeStore(),
             new FakeResponder());
 
     private sealed class FakeDownloader : ITelegramFileDownloader
@@ -247,6 +432,9 @@ public sealed class TelegramUpdateHandlerTests
 
         public Task<TelegramDownloadResult> DownloadAsync(
             TelegramMediaInput input,
+            string relativePath,
+            long reservedBytes,
+            Func<long, CancellationToken, Task<long?>> tryExpandReservation,
             CancellationToken cancellationToken)
         {
             DownloadCalls++;
@@ -275,25 +463,12 @@ public sealed class TelegramUpdateHandlerTests
             string artifactType,
             CancellationToken cancellationToken) =>
             Task.FromResult<ArtifactRecord?>(null);
-    }
 
-    private sealed class FakeCreateJobUseCase : ICreateJobUseCase
-    {
-        public CreateJobCommand? Command { get; private set; }
-
-        public Task<CreateJobResult> ExecuteAsync(
-            CreateJobCommand command,
+        public Task<IReadOnlyList<ArtifactRecord>> ListAsync(
+            JobId jobId,
+            string artifactType,
             CancellationToken cancellationToken) =>
-            Capture(command);
-
-        private Task<CreateJobResult> Capture(CreateJobCommand command)
-        {
-            Command = command;
-            return Task.FromResult<CreateJobResult>(new CreateJobResult.Succeeded(
-                JobId.New(),
-                VariantId.New(),
-                WasCreated: true));
-        }
+            Task.FromResult<IReadOnlyList<ArtifactRecord>>([]);
     }
 
     private sealed class FakeResponder : ITelegramResponder
@@ -308,6 +483,144 @@ public sealed class TelegramUpdateHandlerTests
             Messages.Add(text);
             return Task.CompletedTask;
         }
+    }
+
+    private sealed class RejectingDownloader : ITelegramFileDownloader
+    {
+        public Task<TelegramDownloadResult> DownloadAsync(
+            TelegramMediaInput input,
+            string relativePath,
+            long reservedBytes,
+            Func<long, CancellationToken, Task<long?>> tryExpandReservation,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<TelegramDownloadResult>(
+                new TelegramDownloadResult.Rejected("telegram.download_failed", "Download failed."));
+    }
+
+    private sealed class FileCreatingDownloader(string workspaceRoot) : ITelegramFileDownloader
+    {
+        public string? DownloadedPath { get; private set; }
+
+        public async Task<TelegramDownloadResult> DownloadAsync(
+            TelegramMediaInput input,
+            string relativePath,
+            long reservedBytes,
+            Func<long, CancellationToken, Task<long?>> tryExpandReservation,
+            CancellationToken cancellationToken)
+        {
+            DownloadedPath = Path.Combine(workspaceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(DownloadedPath)!);
+            await File.WriteAllBytesAsync(DownloadedPath, [1], cancellationToken);
+            return new TelegramDownloadResult.Succeeded(
+                new TelegramDownloadedFile(relativePath, "hash", 1, 1_000_000));
+        }
+    }
+
+    private sealed class FakePersistentIntakeStore : VideoFactory.VideoProduction.Application.TelegramIntake.ITelegramIntakeStore
+    {
+        private readonly Guid sessionId = Guid.NewGuid();
+
+        public List<ArtifactId> AcceptedArtifacts { get; } = [];
+        public int CompleteCalls { get; private set; }
+        public int FailureCalls { get; private set; }
+        public int CancelCalls { get; private set; }
+        public RequestedReelsStyle? Style { get; private set; }
+        public int? DurationSeconds { get; private set; }
+        public ImmutableArray<string> RecoveryPaths { get; init; } = [];
+        public ImmutableArray<string> CancellationPaths { get; init; } = [];
+        public bool RejectAcceptance { get; init; }
+        public string? Instruction { get; private set; }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeReservationResult> ReserveAsync(
+            VideoFactory.VideoProduction.Application.TelegramIntake.IntakeReservation request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeReservationResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeReservationResult.Reserved(
+                    sessionId,
+                    request.DeclaredSizeBytes ?? request.MaximumFileBytes));
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptanceResult> AcceptAsync(
+            VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptance request,
+            CancellationToken cancellationToken)
+        {
+            AcceptedArtifacts.Add(request.ArtifactId);
+            if (RejectAcceptance)
+            {
+                return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptanceResult>(
+                    new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptanceResult.Rejected(
+                        "intake.rejected",
+                        "Rejected."));
+            }
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptanceResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeAcceptanceResult.Accepted());
+        }
+
+        public Task FailAsync(Guid sessionId, long messageId, string errorCode, CancellationToken cancellationToken)
+        {
+            FailureCalls++;
+            return Task.CompletedTask;
+        }
+
+        public Task<long?> TryExpandReservationAsync(Guid sessionId, long messageId, long requiredBytes, CancellationToken cancellationToken) =>
+            Task.FromResult<long?>(requiredBytes);
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult> SetInstructionAsync(long userId, long chatId, string instruction, CancellationToken cancellationToken)
+        {
+            Instruction = instruction;
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult.Updated(
+                    CreateSession(userId, chatId)));
+        }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult> SetStyleAsync(long userId, long chatId, RequestedReelsStyle style, CancellationToken cancellationToken)
+        {
+            Style = style;
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult.Updated(
+                    CreateSession(userId, chatId)));
+        }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult> SetDurationAsync(long userId, long chatId, int durationSeconds, CancellationToken cancellationToken)
+        {
+            DurationSeconds = durationSeconds;
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeSessionUpdateResult.Updated(
+                    CreateSession(userId, chatId)));
+        }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.PendingRecoveryResult> RecoverPendingAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new VideoFactory.VideoProduction.Application.TelegramIntake.PendingRecoveryResult(RecoveryPaths));
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCompletionResult> CompleteAsync(
+            VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCompletion completion,
+            CancellationToken cancellationToken)
+        {
+            CompleteCalls++;
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCompletionResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCompletionResult.Created(JobId.New(), VariantId.New()));
+        }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCancellationResult> CancelAsync(long userId, long chatId, CancellationToken cancellationToken)
+        {
+            CancelCalls++;
+            return Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCancellationResult>(
+                new VideoFactory.VideoProduction.Application.TelegramIntake.IntakeCancellationResult.Cancelled(CancellationPaths));
+        }
+
+        public Task<VideoFactory.VideoProduction.Application.TelegramIntake.TelegramIntakeSession?> GetOpenAsync(long userId, long chatId, CancellationToken cancellationToken) =>
+            Task.FromResult<VideoFactory.VideoProduction.Application.TelegramIntake.TelegramIntakeSession?>(null);
+
+        private VideoFactory.VideoProduction.Application.TelegramIntake.TelegramIntakeSession CreateSession(long userId, long chatId) =>
+            new(
+                sessionId,
+                userId,
+                chatId,
+                VideoFactory.VideoProduction.Application.TelegramIntake.TelegramIntakeSessionStatus.Open,
+                Instruction,
+                Style ?? RequestedReelsStyle.Auto,
+                DurationSeconds,
+                [],
+                null);
     }
 
     private sealed class FakeCancellationStore(JobCreationRecord job) : IJobCancellationStore

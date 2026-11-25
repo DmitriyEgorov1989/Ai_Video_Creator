@@ -2,32 +2,10 @@ using System.Security.Cryptography;
 using Telegram.Bot;
 using Telegram.Bot.Types;
 using VideoFactory.VideoProduction.Application.Delivery;
-using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Application.Media;
 
 namespace VideoFactory.Bot.Telegram;
-
-/// <summary>
-/// Адаптирует application use case создания Job к Telegram intake seam.
-/// </summary>
-public sealed class CreateJobUseCaseAdapter : ICreateJobUseCase
-{
-    private readonly CreateJobUseCase useCase;
-
-    /// <summary>Создаёт адаптер для application use case.</summary>
-    public CreateJobUseCaseAdapter(CreateJobUseCase useCase)
-    {
-        ArgumentNullException.ThrowIfNull(useCase);
-        this.useCase = useCase;
-    }
-
-    /// <inheritdoc />
-    public Task<CreateJobResult> ExecuteAsync(
-        CreateJobCommand command,
-        CancellationToken cancellationToken) =>
-        useCase.ExecuteAsync(command, cancellationToken);
-}
 
 /// <summary>
 /// Сохраняет Telegram-файлы в рабочем каталоге с безопасным именем.
@@ -59,6 +37,9 @@ public sealed class TelegramFileDownloader : ITelegramFileDownloader
     /// <inheritdoc />
     public async Task<TelegramDownloadResult> DownloadAsync(
         TelegramMediaInput input,
+        string relativePath,
+        long reservedBytes,
+        Func<long, CancellationToken, Task<long?>> tryExpandReservation,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(input);
@@ -67,21 +48,27 @@ public sealed class TelegramFileDownloader : ITelegramFileDownloader
             throw new ArgumentException("Telegram file ID cannot be empty.", nameof(input));
         }
 
-        string relativePath = $"jobs/intake/{Guid.NewGuid():N}/original.bin";
+        if (string.IsNullOrWhiteSpace(relativePath))
+            throw new ArgumentException("Relative path cannot be empty.", nameof(relativePath));
+        if (reservedBytes <= 0 || reservedBytes > profile.MaxFileBytes)
+            throw new ArgumentOutOfRangeException(nameof(reservedBytes));
+        ArgumentNullException.ThrowIfNull(tryExpandReservation);
         string absolutePath = Path.GetFullPath(
             Path.Combine(workspaceRoot, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+        string relativeToRoot = Path.GetRelativePath(workspaceRoot, absolutePath);
+        if (relativeToRoot.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relativeToRoot))
+            throw new ArgumentException("Relative path must remain inside the workspace.", nameof(relativePath));
         string? directory = Path.GetDirectoryName(absolutePath);
         if (directory is null)
         {
             throw new InvalidOperationException("Telegram intake directory could not be resolved.");
         }
 
-        string temporaryPath = Path.Combine(directory, $".{Guid.NewGuid():N}.tmp");
+        string temporaryPath = absolutePath + ".tmp";
         bool published = false;
         try
         {
-            long expectedBytes = input.SizeBytes is > 0 ? Math.Min(input.SizeBytes.Value, profile.MaxFileBytes) : profile.MaxFileBytes;
-            StorageBudgetFailure? capacity = await budget.CheckAsync(directory, expectedBytes, cancellationToken);
+            StorageBudgetFailure? capacity = await budget.CheckAsync(directory, reservedBytes, cancellationToken);
             if (capacity is not null) return new TelegramDownloadResult.Rejected(capacity.Code, capacity.Message);
             global::Telegram.Bot.Types.TGFile file = await bot.GetFile(input.FileId, cancellationToken);
             if (string.IsNullOrWhiteSpace(file.FilePath))
@@ -95,7 +82,12 @@ public sealed class TelegramFileDownloader : ITelegramFileDownloader
                 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
-                await using LimitedDownloadStream limited = new(output, profile.MaxFileBytes, budget, directory);
+                await using LimitedDownloadStream limited = new(
+                    output,
+                    reservedBytes,
+                    tryExpandReservation,
+                    budget,
+                    directory);
                 await bot.DownloadFile(file, limited, cancellationToken);
                 await output.FlushAsync(cancellationToken);
             }
@@ -120,7 +112,8 @@ public sealed class TelegramFileDownloader : ITelegramFileDownloader
             return new TelegramDownloadResult.Succeeded(new TelegramDownloadedFile(
                 relativePath,
                 Convert.ToHexString(hash).ToLowerInvariant(),
-                stream.Length));
+                stream.Length,
+                media.Metadata!.DurationMicroseconds));
         }
         catch (Exception exception) when (exception is IOException or HttpRequestException or global::Telegram.Bot.Exceptions.RequestException)
         {

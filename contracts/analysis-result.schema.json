@@ -2,21 +2,57 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-video-factory.local/contracts/analysis-result.schema.json",
   "title": "AnalysisResult",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["SchemaVersion", "RevisionId", "OriginalAssetId", "MasterAssetId", "Speech", "Pauses", "Scenes", "AllowedSegments"],
-  "properties": {
-    "SchemaVersion": { "enum": [1, 2] },
-    "RevisionId": { "type": "string", "minLength": 1 },
-    "OriginalAssetId": { "type": "string", "minLength": 1 },
-    "MasterAssetId": { "type": "string", "minLength": 1 },
-    "Speech": { "type": "array", "items": { "$ref": "#/$defs/speech" } },
-    "Pauses": { "type": "array", "items": { "$ref": "#/$defs/range" } },
-    "Scenes": { "type": "array", "items": { "type": "object", "required": ["Interval"], "additionalProperties": false, "properties": { "Interval": { "$ref": "#/$defs/range" } } } },
-    "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } },
-    "Features": { "$ref": "#/$defs/analysisFeatures" }
-  },
+  "oneOf": [
+    { "$ref": "#/$defs/legacyAnalysis" },
+    { "$ref": "#/$defs/multiSourceAnalysis" }
+  ],
   "$defs": {
+    "legacyAnalysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SchemaVersion", "RevisionId", "OriginalAssetId", "MasterAssetId", "Speech", "Pauses", "Scenes", "AllowedSegments"],
+      "properties": {
+        "SchemaVersion": { "enum": [1, 2] },
+        "RevisionId": { "type": "string", "minLength": 1 },
+        "OriginalAssetId": { "type": "string", "minLength": 1 },
+        "MasterAssetId": { "type": "string", "minLength": 1 },
+        "Speech": { "type": "array", "items": { "$ref": "#/$defs/speech" } },
+        "Pauses": { "type": "array", "items": { "$ref": "#/$defs/range" } },
+        "Scenes": { "type": "array", "items": { "$ref": "#/$defs/scene" } },
+        "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } },
+        "Features": { "$ref": "#/$defs/analysisFeatures" }
+      }
+    },
+    "multiSourceAnalysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["SchemaVersion", "RevisionId", "Sources", "AllowedSegments"],
+      "properties": {
+        "SchemaVersion": { "const": 3 },
+        "RevisionId": { "type": "string", "minLength": 1 },
+        "Sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/analysisSource" } },
+        "AllowedSegments": { "type": "array", "items": { "$ref": "#/$defs/segment" } }
+      }
+    },
+    "analysisSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["OriginalAssetId", "MasterAssetId", "Speech", "Pauses", "Scenes", "Features"],
+      "properties": {
+        "OriginalAssetId": { "type": "string", "minLength": 1 },
+        "MasterAssetId": { "type": "string", "minLength": 1 },
+        "Speech": { "type": "array", "items": { "$ref": "#/$defs/speech" } },
+        "Pauses": { "type": "array", "items": { "$ref": "#/$defs/range" } },
+        "Scenes": { "type": "array", "items": { "$ref": "#/$defs/scene" } },
+        "Features": { "$ref": "#/$defs/analysisFeatures" }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "required": ["Interval"],
+      "additionalProperties": false,
+      "properties": { "Interval": { "$ref": "#/$defs/range" } }
+    },
     "range": {
       "type": "object",
       "required": ["StartMicroseconds", "EndMicroseconds"],

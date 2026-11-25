@@ -21,6 +21,16 @@ public interface IArtifactStore
         string artifactType,
         CancellationToken cancellationToken);
 
+    /// <summary>Возвращает все артефакты заданного типа для Job в порядке регистрации.</summary>
+    /// <param name="jobId">Идентификатор Job.</param>
+    /// <param name="artifactType">Непустой тип артефакта.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Снимок зарегистрированных артефактов; никогда не <see langword="null"/>.</returns>
+    Task<IReadOnlyList<ArtifactRecord>> ListAsync(
+        JobId jobId,
+        string artifactType,
+        CancellationToken cancellationToken);
+
     /// <summary>
     /// Регистрирует описание Artifact или возвращает уже существующее описание.
     /// </summary>

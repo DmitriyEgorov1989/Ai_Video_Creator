@@ -1,5 +1,3 @@
-using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
-using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Application.Planning;
 
 namespace VideoFactory.Bot.Telegram;
@@ -48,49 +46,8 @@ public sealed record TelegramMediaInput(
 public sealed record TelegramDownloadedFile(
     string RelativePath,
     string Sha256,
-    long SizeBytes);
-
-/// <summary>
-/// Минимальное состояние диалога пользователя.
-/// </summary>
-public sealed record TelegramIntakeSession(
-    long UserId,
-    ArtifactId SourceArtifactId,
-    string TelegramFileId,
-    string? TelegramFileUniqueId);
-
-/// <summary>
-/// Состояние диалога, необходимое для продолжения intake.
-/// </summary>
-public interface ITelegramIntakeSessionStore
-{
-    /// <summary>Возвращает незавершённую сессию или <see langword="null"/>.</summary>
-    TelegramIntakeSession? Get(long userId);
-
-    /// <summary>Сохраняет незавершённую сессию.</summary>
-    void Set(TelegramIntakeSession session);
-
-    /// <summary>Удаляет незавершённую сессию.</summary>
-    void Remove(long userId);
-}
-
-/// <summary>
-/// Потокобезопасное временное хранилище Telegram-сессий.
-/// </summary>
-public sealed class InMemoryTelegramIntakeSessionStore : ITelegramIntakeSessionStore
-{
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<long, TelegramIntakeSession> sessions = new();
-
-    /// <inheritdoc />
-    public TelegramIntakeSession? Get(long userId) =>
-        sessions.TryGetValue(userId, out TelegramIntakeSession? session) ? session : null;
-
-    /// <inheritdoc />
-    public void Set(TelegramIntakeSession session) => sessions[session.UserId] = session;
-
-    /// <inheritdoc />
-    public void Remove(long userId) => sessions.TryRemove(userId, out _);
-}
+    long SizeBytes,
+    long DurationMicroseconds = 1);
 
 /// <summary>Скачивает Telegram-файл в локальное хранилище.</summary>
 public interface ITelegramFileDownloader
@@ -98,6 +55,9 @@ public interface ITelegramFileDownloader
     /// <summary>Сохраняет и проверяет файл; возвращает успех либо ожидаемый отказ, никогда не <see langword="null"/>.</summary>
     Task<TelegramDownloadResult> DownloadAsync(
         TelegramMediaInput input,
+        string relativePath,
+        long reservedBytes,
+        Func<long, CancellationToken, Task<long?>> tryExpandReservation,
         CancellationToken cancellationToken);
 }
 
@@ -116,13 +76,4 @@ public interface ITelegramResponder
 {
     /// <summary>Отправляет сообщение в чат.</summary>
     Task SendTextAsync(long chatId, string text, CancellationToken cancellationToken);
-}
-
-/// <summary>Создаёт Job в application-слое.</summary>
-public interface ICreateJobUseCase
-{
-    /// <summary>Создаёт или идемпотентно находит Job.</summary>
-    Task<CreateJobResult> ExecuteAsync(
-        CreateJobCommand command,
-        CancellationToken cancellationToken);
 }

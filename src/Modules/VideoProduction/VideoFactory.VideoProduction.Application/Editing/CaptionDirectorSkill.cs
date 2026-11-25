@@ -96,9 +96,9 @@ public sealed class CaptionDirectorSkill : IEditingSkill
                 []);
         }
 
-        AnalysisResult? analysis = context.Analysis;
         PacingDecision? pacing = context.PreviousDecisions?.GetValueOrDefault("pacing-director") as PacingDecision;
-        if (analysis is null || pacing?.Status != EditingDecisionStatus.Applied)
+        if ((context.Analysis is null && context.MultiSourceAnalysis is null)
+            || pacing?.Status != EditingDecisionStatus.Applied)
         {
             return new CaptionDirectorDecision(
                 Id,
@@ -109,7 +109,7 @@ public sealed class CaptionDirectorSkill : IEditingSkill
         }
 
         ImmutableArray<CaptionWordCue> words = pacing.Shots
-            .SelectMany(shot => MapWords(analysis, shot, context.PreviousDecisions))
+            .SelectMany(shot => MapWords(context, shot, context.PreviousDecisions))
             .OrderBy(word => word.Output.StartFrame)
             .ToImmutableArray();
         ImmutableArray<CaptionGroup> groups = GroupWords(words, context.Style);
@@ -129,19 +129,18 @@ public sealed class CaptionDirectorSkill : IEditingSkill
     }
 
     private static IEnumerable<CaptionWordCue> MapWords(
-        AnalysisResult analysis,
+        EditingContext context,
         PacingShot shot,
         IReadOnlyDictionary<string, EditingDecision>? decisions)
     {
-        AllowedSegment? segment = analysis.AllowedSegments.FirstOrDefault(item => item.Id == shot.SegmentId);
+        AllowedSegment? segment = context.AllowedSegments.FirstOrDefault(item => item.Id == shot.SegmentId);
         if (segment is null)
         {
             yield break;
         }
 
         SourceMapping mapping = EffectiveMapping(segment, shot.SegmentId, decisions);
-        foreach (WordTiming word in analysis.Speech
-                     .SelectMany(speech => speech.Words)
+        foreach (WordTiming word in context.WordsFor(mapping)
                      .Where(word => mapping.Master.Contains(word.Interval))
                      .OrderBy(word => word.Interval.StartMicroseconds))
         {

@@ -19,7 +19,7 @@ public enum EditPlanContractStatus
 /// <summary>Выбирает реализацию контракта без исполнения произвольного JSON-кода.</summary>
 public static class EditPlanContractDispatcher
 {
-    /// <summary>Проверяет JSON-документ V1 или V2.</summary>
+    /// <summary>Проверяет JSON-документ V1, V2 или V3.</summary>
     /// <param name="document">JSON-документ монтажного плана; не может быть <see langword="null"/>.</param>
     /// <returns>Результат dispatch с диагностикой ошибок.</returns>
     public static EditPlanContractDispatch Dispatch(JsonElement document)
@@ -40,6 +40,7 @@ public static class EditPlanContractDispatcher
         {
             1 => new(1, EditPlanContractStatus.Accepted, []),
             2 => ValidateV2(document),
+            3 => ValidateV3(document),
             _ => new(schemaVersion, EditPlanContractStatus.UnsupportedVersion,
                 [new ValidationIssue("plan.schema_version_unsupported", "schemaVersion", "Unsupported edit plan schema version.")])
         };
@@ -179,6 +180,113 @@ public static class EditPlanContractDispatcher
         }
     }
 
+    private static EditPlanContractDispatch ValidateV3(JsonElement document)
+    {
+        List<ValidationIssue> issues = [];
+        RequiredObject(document, "output", issues);
+        RequiredArray(document, "sources", issues);
+        RequiredObject(document, "video", issues);
+        RequiredObject(document, "captions", issues);
+        RequiredObject(document, "audio", issues);
+        RequiredArray(document, "effects", issues);
+        RequiredArray(document, "skills", issues);
+
+        foreach (string property in new[] { "jobId", "variantId", "revisionId", "analysisRevisionId" })
+        {
+            RequiredString(document, property, property, issues);
+        }
+
+        if (issues.Count == 0)
+        {
+            ValidateV3Semantics(document, issues);
+        }
+
+        return new(3, issues.Count == 0 ? EditPlanContractStatus.Accepted : EditPlanContractStatus.Invalid, issues);
+    }
+
+    private static void ValidateV3Semantics(JsonElement document, List<ValidationIssue> issues)
+    {
+        int duration = PositiveInt(document.GetProperty("output"), "durationFrames", "output.durationFrames", issues);
+        Dictionary<string, long> masterDurations = new(StringComparer.Ordinal);
+        HashSet<string> originalIds = new(StringComparer.Ordinal);
+        JsonElement sources = document.GetProperty("sources");
+        if (sources.GetArrayLength() == 0)
+        {
+            issues.Add(new ValidationIssue("source.empty", "sources", "At least one source is required."));
+        }
+
+        foreach (JsonElement source in sources.EnumerateArray())
+        {
+            if (source.ValueKind != JsonValueKind.Object)
+            {
+                issues.Add(new ValidationIssue("source.invalid", "sources", "Each source must be an object."));
+                continue;
+            }
+
+            string? originalId = ReadRequiredString(source, "originalAssetId", "sources.originalAssetId", issues);
+            string? masterId = ReadRequiredString(source, "masterAssetId", "sources.masterAssetId", issues);
+            long masterDuration = PositiveLong(source, "durationMicroseconds", "sources.durationMicroseconds", issues);
+            if (originalId is not null && !originalIds.Add(originalId))
+                issues.Add(new ValidationIssue("source.duplicate", "sources.originalAssetId", "Original source IDs must be unique."));
+            if (masterId is not null && !masterDurations.TryAdd(masterId, masterDuration))
+                issues.Add(new ValidationIssue("source.duplicate", "sources.masterAssetId", "Master source IDs must be unique."));
+        }
+
+        JsonElement video = document.GetProperty("video");
+        if (!video.TryGetProperty("clips", out JsonElement clips)
+            || clips.ValueKind != JsonValueKind.Array
+            || clips.GetArrayLength() == 0)
+        {
+            issues.Add(new ValidationIssue("video.clips_required", "video.clips", "At least one video clip is required."));
+        }
+        else
+        {
+            int expectedStart = 0;
+            foreach (JsonElement clip in clips.EnumerateArray())
+            {
+                if (clip.ValueKind != JsonValueKind.Object)
+                {
+                    issues.Add(new ValidationIssue("video.clip_invalid", "video.clips", "Each clip must be an object."));
+                    continue;
+                }
+
+                string? masterId = ReadRequiredString(clip, "sourceAssetId", "video.clips.sourceAssetId", issues);
+                long masterDuration = 0;
+                if (masterId is not null && !masterDurations.TryGetValue(masterId, out masterDuration))
+                    issues.Add(new ValidationIssue("source.unknown", "video.clips.sourceAssetId", "Clip must reference a known Master source."));
+                if (clip.TryGetProperty("source", out JsonElement sourceRange))
+                    ValidateSourceRange(sourceRange, long.MaxValue, "video.clips.source", issues);
+                else
+                    issues.Add(new ValidationIssue("timeline.source_out_of_bounds", "video.clips.source", "Source range is required."));
+                if (masterId is not null && clip.TryGetProperty("master", out JsonElement masterRange))
+                    ValidateSourceRange(masterRange, masterDuration, "video.clips.master", issues);
+                else if (masterId is not null)
+                    issues.Add(new ValidationIssue("timeline.source_out_of_bounds", "video.clips.master", "Master range is required."));
+
+                if (!clip.TryGetProperty("output", out JsonElement output))
+                {
+                    issues.Add(new ValidationIssue("video.clip_invalid", "video.clips.output", "Each clip must contain an output range."));
+                    continue;
+                }
+
+                int start = PositiveOrZeroInt(output, "startFrame", "video.clips.output.startFrame", issues);
+                int end = PositiveInt(output, "endFrame", "video.clips.output.endFrame", issues);
+                if (start != expectedStart)
+                    issues.Add(new ValidationIssue("video.timeline_not_contiguous", "video.clips", "Video clips must be contiguous."));
+                if (end > duration)
+                    issues.Add(new ValidationIssue("timeline.output_out_of_bounds", "video.clips.output", "Output range exceeds plan duration."));
+                expectedStart = end;
+            }
+
+            if (expectedStart != duration)
+                issues.Add(new ValidationIssue("video.duration_mismatch", "video.clips", "Video clips must end at output duration."));
+        }
+
+        ValidateEffects(document.GetProperty("effects"), document.GetProperty("skills"), duration, issues);
+        ValidateCaptions(document.GetProperty("captions"), duration, issues);
+        ValidateAudio(document.GetProperty("audio"), issues);
+    }
+
     private static void ValidateCaptions(JsonElement captions, int duration, List<ValidationIssue> issues)
     {
         if (!captions.TryGetProperty("words", out JsonElement words) || words.ValueKind != JsonValueKind.Array)
@@ -290,6 +398,50 @@ public static class EditPlanContractDispatcher
             return number;
         issues.Add(new ValidationIssue("plan.non_negative_integer_required", path, "A non-negative integer is required."));
         return 0;
+    }
+
+    private static long PositiveLong(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)
+    {
+        if (objectValue.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt64(out long number)
+            && number > 0)
+            return number;
+        issues.Add(new ValidationIssue("plan.positive_integer_required", path, "A positive integer is required."));
+        return 0;
+    }
+
+    private static string? ReadRequiredString(
+        JsonElement objectValue,
+        string property,
+        string path,
+        List<ValidationIssue> issues)
+    {
+        if (objectValue.TryGetProperty(property, out JsonElement value)
+            && value.ValueKind == JsonValueKind.String
+            && !string.IsNullOrWhiteSpace(value.GetString()))
+            return value.GetString();
+        issues.Add(new ValidationIssue("plan.required_string", path, "A non-empty string is required."));
+        return null;
+    }
+
+    private static void ValidateSourceRange(
+        JsonElement range,
+        long sourceDuration,
+        string path,
+        List<ValidationIssue> issues)
+    {
+        if (range.ValueKind != JsonValueKind.Object
+            || !range.TryGetProperty("startMicroseconds", out JsonElement startValue)
+            || !startValue.TryGetInt64(out long start)
+            || !range.TryGetProperty("endMicroseconds", out JsonElement endValue)
+            || !endValue.TryGetInt64(out long end)
+            || start < 0
+            || end <= start
+            || end > sourceDuration)
+        {
+            issues.Add(new ValidationIssue("timeline.source_out_of_bounds", path, "Source range must be inside its Master duration."));
+        }
     }
 
     private static void RequiredString(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)

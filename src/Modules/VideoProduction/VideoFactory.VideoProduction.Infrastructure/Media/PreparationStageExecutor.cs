@@ -75,7 +75,25 @@ public sealed class PreparationStageExecutor : IJobStageExecutor
         if (job.Progress.Stage != ProductionStage.Preparation)
             return StageExecutionResult.Permanent("preparation.invalid_stage", $"Preparation executor received stage '{job.Progress.Stage}'.");
 
-        ArtifactRecord? source = await artifactStore.GetAsync(job.Request.SourceAssetId, cancellationToken);
+        IReadOnlyList<ArtifactRecord> existingMasters = await artifactStore.ListAsync(
+            job.JobId, "master-video", cancellationToken);
+        foreach (ArtifactId sourceId in job.Request.SourceAssetIds)
+        {
+            StageExecutionResult result = await PrepareSourceAsync(
+                job, sourceId, existingMasters, cancellationToken);
+            if (result.Kind != StageExecutionKind.Completed) return result;
+        }
+
+        return StageExecutionResult.Success();
+    }
+
+    private async Task<StageExecutionResult> PrepareSourceAsync(
+        JobCreationRecord job,
+        ArtifactId sourceId,
+        IReadOnlyList<ArtifactRecord> existingMasters,
+        CancellationToken cancellationToken)
+    {
+        ArtifactRecord? source = await artifactStore.GetAsync(sourceId, cancellationToken);
         if (source is null)
             return StageExecutionResult.Permanent("preparation.source_missing", "The Original artifact was not found.");
 
@@ -87,8 +105,9 @@ public sealed class PreparationStageExecutor : IJobStageExecutor
         if ((source.Sha256 is not null && !string.Equals(source.Sha256, sourceHash, StringComparison.OrdinalIgnoreCase))
             || (source.SizeBytes is not null && source.SizeBytes != new FileInfo(sourcePath).Length))
             return StageExecutionResult.Permanent("preparation.source_changed", "The Original file no longer matches its registered hash or size.");
-        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "master-video", cancellationToken);
-        if (existing?.ParentArtifactId == source.ArtifactId && existing.SizeBytes is > 0 && HasCompletedMapping(existing, sourceHash)
+        ArtifactRecord? existing = existingMasters.LastOrDefault(
+            candidate => candidate.ParentArtifactId == source.ArtifactId);
+        if (existing?.SizeBytes is > 0 && HasCompletedMapping(existing, sourceHash)
             && File.Exists(SafeFileTree.Resolve(workspaceRoot, existing.RelativePath)))
         {
             string existingPath = SafeFileTree.Resolve(workspaceRoot, existing.RelativePath);

@@ -62,8 +62,61 @@ function validV2Request(): Record<string, unknown> {
   return request;
 }
 
+function validRenderV2Request(): Record<string, unknown> {
+  return {
+    schemaVersion: 2,
+    jobId: "job-1",
+    variantId: "variant-1",
+    outputPath: "C:/data/output.mp4",
+    encoding: { videoBitrateBitsPerSecond: 4_000_000, audioBitrateBitsPerSecond: 128_000 },
+    assets: [
+      { sourceAssetId: "master-1", videoPath: "C:/data/master-1.mp4", audioPath: "C:/data/master-1.m4a", frameRate: { numerator: 30, denominator: 1 } },
+      { sourceAssetId: "master-2", videoPath: "C:/data/master-2.mp4", audioPath: null, frameRate: { numerator: 24, denominator: 1 } },
+    ],
+    plan: {
+      schemaVersion: 3,
+      jobId: "job-1",
+      variantId: "variant-1",
+      revisionId: "revision-1",
+      analysisRevisionId: "analysis-1",
+      output: { width: 1080, height: 1920, frameRate: { numerator: 30, denominator: 1 }, durationFrames: 60 },
+      sources: [
+        { originalAssetId: "original-1", masterAssetId: "master-1", durationMicroseconds: 1_000_000 },
+        { originalAssetId: "original-2", masterAssetId: "master-2", durationMicroseconds: 1_250_000 },
+      ],
+      video: { clips: [
+        { sourceAssetId: "master-1", source: { startMicroseconds: 0, endMicroseconds: 1_000_000 }, master: { startMicroseconds: 0, endMicroseconds: 1_000_000 }, output: { startFrame: 0, endFrame: 30 }, crop: { preset: "fill", focalX: 0.5, focalY: 0.5, zoom: 1 }, effects: [] },
+        { sourceAssetId: "master-2", source: { startMicroseconds: 0, endMicroseconds: 1_250_000 }, master: { startMicroseconds: 0, endMicroseconds: 1_250_000 }, output: { startFrame: 30, endFrame: 60 }, crop: { preset: "fill", focalX: 0.5, focalY: 0.5, zoom: 1 }, effects: [] },
+      ] },
+      effects: [],
+      captions: { words: [] },
+      audio: { sourceGain: 1 },
+      skills: [],
+    },
+  };
+}
+
 test("accepts a valid render request", () => {
   assert.deepEqual(validateRenderRequest(validRequest()), []);
+});
+
+test("accepts a V2 render request with source-specific video and audio", () => {
+  assert.deepEqual(validateRenderRequest(validRenderV2Request()), []);
+});
+
+test("rejects V2 assets without videoPath and request-plan version mismatches", () => {
+  const request = validRenderV2Request();
+  const assets = request.assets as Array<Record<string, unknown>>;
+  delete assets[0].videoPath;
+  assert.ok(validateRenderRequest(request).some((item) => item.path === "assets[0].videoPath"));
+
+  assets[0].videoPath = "C:/data/master-1.mp4";
+  (request.plan as Record<string, unknown>).schemaVersion = 2;
+  assert.ok(validateRenderRequest(request).some((item) => item.code === "contract_version_mismatch"));
+
+  (request.plan as Record<string, unknown>).schemaVersion = 3;
+  assets[1].audioPath = assets[0].audioPath;
+  assert.ok(validateRenderRequest(request).some((item) => item.code === "audio_asset_duplicate"));
 });
 
 test("rejects null collections and unknown enums without throwing", () => {

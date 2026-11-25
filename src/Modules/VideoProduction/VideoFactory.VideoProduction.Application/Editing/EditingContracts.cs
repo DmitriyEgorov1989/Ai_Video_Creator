@@ -1,6 +1,8 @@
 using System.Collections.Immutable;
 using VideoFactory.VideoProduction.Domain.Analysis;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Domain.Identifiers;
+using VideoFactory.VideoProduction.Domain.Timeline;
 
 namespace VideoFactory.VideoProduction.Application.Editing;
 
@@ -12,6 +14,7 @@ namespace VideoFactory.VideoProduction.Application.Editing;
 /// <param name="MusicAssetId">Выбранный идентификатор music asset или <see langword="null" />.</param>
 /// <param name="KnownAssetIds">Известные идентификаторы assets или <see langword="null" />, если список недоступен.</param>
 /// <param name="Style">Разрешённые параметры Reels style или <see langword="null" /> для defaults.</param>
+/// <param name="MultiSourceAnalysis">Analysis V3 или <see langword="null"/> для legacy V1/V2.</param>
 public sealed record EditingContext(
     AnalysisResult? Analysis,
     ProductionSettings Settings,
@@ -19,7 +22,52 @@ public sealed record EditingContext(
     IReadOnlyDictionary<string, EditingDecision>? PreviousDecisions = null,
     string? MusicAssetId = null,
     IReadOnlySet<string>? KnownAssetIds = null,
-    ReelsStyleConfiguration? Style = null);
+    ReelsStyleConfiguration? Style = null,
+    MultiSourceAnalysisResult? MultiSourceAnalysis = null)
+{
+    /// <summary>Получает разрешённые сегменты текущего Analysis-контракта.</summary>
+    public ImmutableArray<AllowedSegment> AllowedSegments =>
+        MultiSourceAnalysis?.AllowedSegments ?? Analysis?.AllowedSegments ?? [];
+
+    /// <summary>Возвращает слова только из source, которому принадлежит mapping.</summary>
+    public ImmutableArray<WordTiming> WordsFor(SourceMapping mapping)
+    {
+        ArgumentNullException.ThrowIfNull(mapping);
+        IEnumerable<SpeechSegment> speech = MultiSourceAnalysis is null
+            ? Analysis?.Speech ?? []
+            : MultiSourceAnalysis.Sources
+                .Where(source => source.OriginalAssetId == mapping.OriginalAssetId
+                    && source.MasterAssetId == mapping.MasterAssetId)
+                .SelectMany(source => source.Speech);
+        return [.. speech.SelectMany(item => item.Words)];
+    }
+
+    /// <summary>Возвращает паузы только указанного Master.</summary>
+    public ImmutableArray<MasterRange> PausesFor(ArtifactId masterAssetId) =>
+        MultiSourceAnalysis is null
+            ? Analysis?.MasterAssetId == masterAssetId ? Analysis.Pauses : []
+            : MultiSourceAnalysis.Sources.FirstOrDefault(source => source.MasterAssetId == masterAssetId)?.Pauses ?? [];
+
+    /// <summary>Возвращает сцены только указанного Master.</summary>
+    public ImmutableArray<Scene> ScenesFor(ArtifactId masterAssetId) =>
+        MultiSourceAnalysis is null
+            ? Analysis?.MasterAssetId == masterAssetId ? Analysis.Scenes : []
+            : MultiSourceAnalysis.Sources.FirstOrDefault(source => source.MasterAssetId == masterAssetId)?.Scenes ?? [];
+
+    /// <summary>Возвращает объединённые признаки с глобально уникальными segment IDs.</summary>
+    public ImmutableArray<SegmentAnalysisFeatures> SegmentFeatures =>
+        MultiSourceAnalysis is null
+            ? Analysis?.Features.Segments ?? []
+            : [.. MultiSourceAnalysis.Sources.SelectMany(source => source.Features.Segments)];
+
+    /// <summary>Возвращает focal observations только source указанного mapping.</summary>
+    public ImmutableArray<FocalObservation> FocalObservationsFor(SourceMapping mapping) =>
+        MultiSourceAnalysis is null
+            ? Analysis?.MasterAssetId == mapping.MasterAssetId ? Analysis.Features.FocalObservations : []
+            : MultiSourceAnalysis.Sources.FirstOrDefault(source =>
+                source.OriginalAssetId == mapping.OriginalAssetId
+                && source.MasterAssetId == mapping.MasterAssetId)?.Features.FocalObservations ?? [];
+}
 
 /// <summary>Статус детерминированного решения editing skill.</summary>
 public enum EditingDecisionStatus
@@ -146,7 +194,7 @@ public sealed class EditingSkillEngine
                 continue;
             }
 
-            EditingDecision decisionResult = context.Analysis is null
+            EditingDecision decisionResult = context.Analysis is null && context.MultiSourceAnalysis is null
                 ? new MissingInputDecision(
                     skill.Id,
                     skill.Version,

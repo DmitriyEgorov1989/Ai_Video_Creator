@@ -22,6 +22,28 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Pipeline;
 public sealed class PreparationStageExecutorTests
 {
     [Fact]
+    public async Task RestartAfterSecondSourceFailureReusesFirstMasterAndCompletesBothSources()
+    {
+        await using Fixture fixture = await Fixture.CreateAsync(multipleSources: true);
+        InterruptSecondSourceBuilder builder = new();
+
+        Assert.True(await fixture.ProcessAsync(mezzanineBuilder: builder));
+        Assert.Equal(ProductionStage.Preparation, (await fixture.StateAsync())!.Progress.Stage);
+        Assert.Single(await fixture.Artifacts.ListAsync(fixture.Job.JobId, "master-video", CancellationToken.None));
+
+        Assert.True(await fixture.ProcessAsync(mezzanineBuilder: builder));
+
+        IReadOnlyList<ArtifactRecord> masters = await fixture.Artifacts.ListAsync(
+            fixture.Job.JobId, "master-video", CancellationToken.None);
+        Assert.Equal(ProductionStage.Analysis, (await fixture.StateAsync())!.Progress.Stage);
+        Assert.Equal(2, masters.Count);
+        Assert.Contains(masters, item => item.ParentArtifactId == fixture.Source.ArtifactId);
+        Assert.Contains(masters, item => item.ParentArtifactId == fixture.SecondSource!.ArtifactId);
+        Assert.Equal(1, builder.CallsFor("source.mp4"));
+        Assert.Equal(2, builder.CallsFor("source-b.mp4"));
+    }
+
+    [Fact]
     public async Task PreparationPreservesOriginalAndRegistersMasterBeforeMovingToAnalysis()
     {
         await using Fixture fixture = await Fixture.CreateAsync();
@@ -318,10 +340,14 @@ public sealed class PreparationStageExecutorTests
         public string SourcePath => Path.Combine(Root, "source.mp4");
         public SqliteArtifactStore Artifacts => new(ConnectionString);
         public ArtifactRecord Source { get; private set; } = null!;
+        public ArtifactRecord? SecondSource { get; private set; }
         public CreateJobResult.Succeeded Job { get; private set; } = null!;
         public MediaProcesses Processes { get; } = new();
 
-        public static async Task<Fixture> CreateAsync(string? sourcePath = null, bool rotated = false)
+        public static async Task<Fixture> CreateAsync(
+            string? sourcePath = null,
+            bool rotated = false,
+            bool multipleSources = false)
         {
             Fixture fixture = new();
             Directory.CreateDirectory(fixture.Root);
@@ -339,8 +365,27 @@ public sealed class PreparationStageExecutorTests
             fixture.Source = new(ArtifactId.New(), "OriginalVideo", "source.mp4",
                 Convert.ToHexStringLower(SHA256.HashData(content)), content.Length, "{\"telegram\":{}}", null, "test");
             await fixture.Artifacts.RegisterAsync(fixture.Source, CancellationToken.None);
+            if (multipleSources)
+            {
+                const string secondRelativePath = "source-b.mp4";
+                byte[] secondContent = [5, 6, 7, 8];
+                await File.WriteAllBytesAsync(Path.Combine(fixture.Root, secondRelativePath), secondContent);
+                fixture.SecondSource = new ArtifactRecord(
+                    ArtifactId.New(),
+                    "OriginalVideo",
+                    secondRelativePath,
+                    Convert.ToHexStringLower(SHA256.HashData(secondContent)),
+                    secondContent.Length,
+                    "{\"telegram\":{}}",
+                    null,
+                    "test");
+                await fixture.Artifacts.RegisterAsync(fixture.SecondSource, CancellationToken.None);
+            }
+            ArtifactId[] sourceIds = fixture.SecondSource is null
+                ? [fixture.Source.ArtifactId]
+                : [fixture.Source.ArtifactId, fixture.SecondSource.ArtifactId];
             fixture.Job = Assert.IsType<CreateJobResult.Succeeded>(await new CreateJobUseCase(new SqliteJobCreationStore(fixture.ConnectionString))
-                .ExecuteAsync(new CreateJobCommand(fixture.Source.ArtifactId, "Prepare video", new ProductionSettings(null, false, false))));
+                .ExecuteAsync(new CreateJobCommand(sourceIds, "Prepare video", new ProductionSettings(null, false, false))));
             fixture.Source = (await fixture.Artifacts.GetAsync(fixture.Source.ArtifactId, CancellationToken.None))!;
             return fixture;
         }
@@ -348,13 +393,14 @@ public sealed class PreparationStageExecutorTests
         public Task<JobCreationRecord?> StateAsync() => new SqliteJobStateStore(ConnectionString).GetAsync(Job.JobId, CancellationToken.None);
 
         public Task<bool> ProcessAsync(IJobStateStore? stateStore = null, CancellationToken cancellationToken = default,
-            IProcessRunner? runner = null, IStorageBudget? budget = null)
+            IProcessRunner? runner = null, IStorageBudget? budget = null, IMezzanineBuilder? mezzanineBuilder = null)
         {
             IJobStageExecutor unsupported = new UnexpectedStage();
             runner ??= Processes;
             FfprobeMediaProbe probe = new(runner, "ffprobe");
             FfmpegDecodeVerifier decode = new(runner, "ffmpeg");
-            PreparationStageExecutor preparation = new(Artifacts, probe, new FfmpegMezzanineBuilder(runner, probe, decode, "ffmpeg", budget),
+            PreparationStageExecutor preparation = new(Artifacts, probe,
+                mezzanineBuilder ?? new FfmpegMezzanineBuilder(runner, probe, decode, "ffmpeg", budget),
                 decode, Root, new MediaInputProfile(), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(10), TimeSpan.FromMinutes(5), 1_048_576, budget);
             ProductionStageExecutor executor = new(preparation, unsupported, unsupported, unsupported, unsupported);
             SequentialJobProcessor processor = new(new SqliteJobWorkQueue(ConnectionString),
@@ -366,6 +412,35 @@ public sealed class PreparationStageExecutorTests
         {
             Directory.Delete(Root, true);
             return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class InterruptSecondSourceBuilder : IMezzanineBuilder
+    {
+        private readonly Dictionary<string, int> calls = [];
+
+        public int CallsFor(string fileName) => calls.GetValueOrDefault(fileName);
+
+        public Task<MezzanineResult> BuildAsync(MezzanineRequest request, CancellationToken cancellationToken)
+        {
+            string fileName = Path.GetFileName(request.OriginalPath);
+            calls[fileName] = CallsFor(fileName) + 1;
+            Directory.CreateDirectory(Path.GetDirectoryName(request.MasterPath)!);
+            if (fileName == "source-b.mp4" && calls[fileName] == 1)
+            {
+                return Task.FromResult(MezzanineResult.Failed("process.interrupted", "Synthetic interruption."));
+            }
+
+            return Task.FromResult(MezzanineResult.Succeeded(
+                request.OriginalPath,
+                false,
+                new TimelineMapping(
+                    request.OriginalArtifactId,
+                    request.MasterArtifactId,
+                    0,
+                    request.OriginalMetadata.DurationMicroseconds,
+                    0,
+                    request.OriginalMetadata.DurationMicroseconds)));
         }
     }
 

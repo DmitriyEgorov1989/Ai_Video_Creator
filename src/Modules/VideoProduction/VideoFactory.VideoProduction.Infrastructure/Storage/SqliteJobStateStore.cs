@@ -108,62 +108,6 @@ public sealed class SqliteJobStateStore : IJobStateStore
         SqliteConnection connection,
         SqliteTransaction? transaction,
         JobId jobId,
-        CancellationToken cancellationToken)
-    {
-        await using SqliteCommand command = connection.CreateCommand();
-        command.Transaction = transaction;
-        command.CommandText =
-            """
-            SELECT j.job_id, j.source_artifact_id, j.comment, j.requested_mode,
-                   j.target_duration_seconds, j.captions_enabled, j.music_enabled,
-                   j.status, j.stage, j.effective_mode, j.pending_confirmation,
-                   j.current_approved_edit_plan_revision_id, v.variant_id, j.telegram_user_id
-            FROM jobs AS j
-            INNER JOIN variants AS v ON v.job_id = j.job_id
-            WHERE j.job_id = $jobId;
-            """;
-        command.Parameters.AddWithValue("$jobId", jobId.ToString());
-        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
-        if (!await reader.ReadAsync(cancellationToken))
-        {
-            return null;
-        }
-
-        ProductionSettings settings = new(
-            GetNullableInt32(reader, 4),
-            reader.GetInt64(5) != 0,
-            reader.GetInt64(6) != 0);
-        JobProgress progress = JobProgress.Restore(
-            (JobStatus)reader.GetInt64(7),
-            (ProductionStage)reader.GetInt64(8),
-            (ProductionMode)reader.GetInt64(3),
-            GetNullableEnum<ProductionMode>(reader, 9),
-            GetNullableEnum<ConfirmationKind>(reader, 10));
-
-        JobCreationRecord record = new(
-            new JobId(Guid.Parse(reader.GetString(0))),
-            new VariantId(Guid.Parse(reader.GetString(12))),
-            new JobRequest(
-                new ArtifactId(Guid.Parse(reader.GetString(1))),
-                reader.GetString(2),
-                (ProductionMode)reader.GetInt64(3),
-                settings),
-            progress,
-            GetNullableRevisionId(reader, 11));
-        record = record with
-        {
-            TelegramUserId = reader.IsDBNull(13) ? null : reader.GetInt64(13)
-        };
-        return record;
-    }
-
-    private static int? GetNullableInt32(SqliteDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? null : checked((int)reader.GetInt64(ordinal));
-
-    private static TEnum? GetNullableEnum<TEnum>(SqliteDataReader reader, int ordinal)
-        where TEnum : struct, Enum =>
-        reader.IsDBNull(ordinal) ? null : (TEnum)Enum.ToObject(typeof(TEnum), reader.GetInt64(ordinal));
-
-    private static RevisionId? GetNullableRevisionId(SqliteDataReader reader, int ordinal) =>
-        reader.IsDBNull(ordinal) ? null : new RevisionId(Guid.Parse(reader.GetString(ordinal)));
+        CancellationToken cancellationToken) =>
+        await SqliteJobWriter.ReadByJobIdAsync(connection, transaction, jobId, cancellationToken);
 }

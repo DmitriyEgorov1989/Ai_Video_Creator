@@ -64,9 +64,9 @@ public sealed class SmartReframeSkill : IEditingSkill
     public EditingDecision Evaluate(EditingContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        AnalysisResult? analysis = context.Analysis;
         PacingDecision? pacing = context.PreviousDecisions?.GetValueOrDefault("pacing-director") as PacingDecision;
-        if (analysis is null || pacing?.Status != EditingDecisionStatus.Applied)
+        if ((context.Analysis is null && context.MultiSourceAnalysis is null)
+            || pacing?.Status != EditingDecisionStatus.Applied)
         {
             return new SmartReframeDecision(
                 Id,
@@ -78,7 +78,7 @@ public sealed class SmartReframeSkill : IEditingSkill
 
         ImmutableArray<ReframeTrack> tracks = pacing.Shots
             .Select(shot => CreateTrack(
-                analysis,
+                context,
                 shot,
                 context.PreviousDecisions,
                 context.Style?.MaximumCropMovement ?? MaximumKeyframeMovement))
@@ -95,19 +95,19 @@ public sealed class SmartReframeSkill : IEditingSkill
     }
 
     private static ReframeTrack CreateTrack(
-        AnalysisResult analysis,
+        EditingContext context,
         PacingShot shot,
         IReadOnlyDictionary<string, EditingDecision>? decisions,
         decimal maximumMovement)
     {
-        AllowedSegment? segment = analysis.AllowedSegments.FirstOrDefault(item => item.Id == shot.SegmentId);
+        AllowedSegment? segment = context.AllowedSegments.FirstOrDefault(item => item.Id == shot.SegmentId);
         if (segment is null)
             return new ReframeTrack(shot.SegmentId, ReframeFallback.Fit, []);
         SourceMapping mapping = decisions?.GetValueOrDefault("smart-cut") is SmartCutDecision cut
             ? cut.Edits.FirstOrDefault(edit => edit.SegmentId == shot.SegmentId)?.Mapping ?? segment.Mapping
             : segment.Mapping;
 
-        IGrouping<long, FocalObservation>[] observations = analysis.Features.FocalObservations
+        IGrouping<long, FocalObservation>[] observations = context.FocalObservationsFor(mapping)
             .Where(item => item.SegmentId == shot.SegmentId
                 && item.Confidence >= MinimumConfidence
                 && IsNormalized(item)

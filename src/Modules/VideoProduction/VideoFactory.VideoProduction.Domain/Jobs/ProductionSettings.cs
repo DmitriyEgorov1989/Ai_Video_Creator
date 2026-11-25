@@ -13,6 +13,27 @@ public enum EditTempo
 }
 
 /// <summary>
+/// Определяет запрошенный пользователем стиль Reels без зависимости Domain от Application profile catalog.
+/// </summary>
+public enum RequestedReelsStyle
+{
+    /// <summary>Детерминированный автоматический выбор по результату анализа.</summary>
+    Auto,
+
+    /// <summary>Сдержанный профессиональный стиль.</summary>
+    ExpertClean,
+
+    /// <summary>Динамичный стиль с повышенной визуальной плотностью.</summary>
+    DynamicViral,
+
+    /// <summary>Кинематографичный стиль.</summary>
+    Cinematic,
+
+    /// <summary>Стиль премиальной рекламы.</summary>
+    PremiumAds
+}
+
+/// <summary>
 /// Задаёт пользовательские настройки производства одного видео.
 /// </summary>
 public sealed record ProductionSettings
@@ -42,17 +63,25 @@ public sealed record ProductionSettings
     public EditTempo Tempo { get; }
 
     /// <summary>
+    /// Получает запрошенный стиль Reels.
+    /// </summary>
+    /// <value>Допустимый стиль; <see cref="RequestedReelsStyle.Auto"/> разрешается после анализа.</value>
+    public RequestedReelsStyle RequestedStyle { get; }
+
+    /// <summary>
     /// Создаёт проверенные настройки производства.
     /// </summary>
     /// <param name="targetDurationSeconds">Положительная целевая длительность в секундах или <see langword="null" />, если длительность не задана.</param>
     /// <param name="captionsEnabled">Признак необходимости субтитров.</param>
     /// <param name="musicEnabled">Признак необходимости музыкального сопровождения.</param>
     /// <param name="tempo">Темп монтажа.</param>
+    /// <param name="requestedStyle">Запрошенный стиль Reels.</param>
     public ProductionSettings(
         int? targetDurationSeconds,
         bool captionsEnabled,
         bool musicEnabled,
-        EditTempo tempo = EditTempo.Dynamic)
+        EditTempo tempo = EditTempo.Dynamic,
+        RequestedReelsStyle requestedStyle = RequestedReelsStyle.Auto)
     {
         if (targetDurationSeconds is <= 0)
         {
@@ -70,5 +99,11 @@ public sealed record ProductionSettings
         }
 
         Tempo = tempo;
+        if (!Enum.IsDefined(requestedStyle))
+        {
+            throw new ArgumentOutOfRangeException(nameof(requestedStyle));
+        }
+
+        RequestedStyle = requestedStyle;
     }
 }

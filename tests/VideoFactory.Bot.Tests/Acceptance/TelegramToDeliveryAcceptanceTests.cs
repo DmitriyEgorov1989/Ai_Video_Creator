@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text.Json;
 using VideoFactory.Bot.Configuration;
@@ -42,12 +43,14 @@ public sealed class TelegramToDeliveryAcceptanceTests
         string? mediaRoot = Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT");
         string? whisperPython = Environment.GetEnvironmentVariable("WHISPER_TEST_PYTHON");
         string source = Path.Combine(mediaRoot!, "speech.mp4");
+        string secondSource = Path.Combine(mediaRoot!, "similar-take-a.mp4");
         Assert.True(File.Exists(source), $"Acceptance media is missing: {source}");
+        Assert.True(File.Exists(secondSource), $"Acceptance media is missing: {secondSource}");
         string repositoryRoot = Fixture.RepositoryRoot();
         Assert.True(File.Exists(Path.Combine(repositoryRoot, "render-host", "dist", "cli.js")), "Build render-host before running this acceptance test.");
 
-        await using Fixture fixture = await Fixture.CreateAsync(source, whisperPython!);
-        await fixture.SendTelegramInputAsync();
+        await using Fixture fixture = await Fixture.CreateAsync([source, secondSource], whisperPython!);
+        await fixture.SendTelegramInputAsync(restartBeforeDone: true);
 
         for (int i = 0; i < 32; i++)
         {
@@ -65,6 +68,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
         Assert.True(completed.Progress.Status == JobStatus.Completed,
             $"root={fixture.Root}; stage={completed.Progress.Stage}; error={failedAttempt?.ErrorCode}; message={failedAttempt?.ErrorMessage}; process={fixture.Runner.LastRequest?.FileName} {string.Join(' ', fixture.Runner.LastRequest?.Arguments ?? [])}; stderr={fixture.Runner.LastResult?.StandardError}");
         Assert.Equal(ProductionStage.Delivery, completed.Progress.Stage);
+        Assert.Equal(2, completed.Request.SourceAssetIds.Length);
         ArtifactRecord final = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "final-mp4", CancellationToken.None));
         ArtifactRecord render = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "render-output", CancellationToken.None));
         ArtifactRecord qa = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "qa-report", CancellationToken.None));
@@ -72,6 +76,11 @@ public sealed class TelegramToDeliveryAcceptanceTests
         EditPlanRevision approvedPlan = Assert.IsType<EditPlanRevision>(await fixture.PlanRevisions.FindApprovedAsync(
             fixture.JobId, completed.VariantId, CancellationToken.None));
         Assert.Single(fixture.Delivery.Files);
+        Assert.Equal(2, approvedPlan.Plan.Sources.Length);
+        using (JsonDocument renderMetadata = JsonDocument.Parse(render.MetadataJson!))
+        {
+            Assert.Equal(2, renderMetadata.RootElement.GetProperty("sources").GetArrayLength());
+        }
 
         string finalPath = Path.Combine(fixture.Root, final.RelativePath.Replace('/', Path.DirectorySeparatorChar));
         byte[] finalBytes = await File.ReadAllBytesAsync(finalPath);
@@ -111,7 +120,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
     public async Task CorruptTelegramVideoFailsBeforeDelivery()
     {
         string source = Path.Combine(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!, "corrupt.mp4");
-        await using Fixture fixture = await Fixture.CreateAsync(source, "python");
+        await using Fixture fixture = await Fixture.CreateAsync([source], "python");
         await fixture.SendTelegramInputAsync();
 
         for (int attemptNumber = 0; attemptNumber < 3; attemptNumber++)
@@ -128,6 +137,54 @@ public sealed class TelegramToDeliveryAcceptanceTests
         Assert.Empty(fixture.Delivery.Files);
     }
 
+    [Fact]
+    public async Task CancelledTwoSourceIntakeCreatesNoJob()
+    {
+        string source = Path.GetTempFileName();
+        await File.WriteAllBytesAsync(source, [1, 2, 3]);
+        try
+        {
+            await using Fixture fixture = await Fixture.CreateAsync([source, source], "python");
+            await fixture.SendMediaAsync(0, 10);
+            await fixture.SendMediaAsync(1, 20);
+            await fixture.SendTextAsync("/cancel", 30);
+
+            Assert.Equal(0, fixture.JobSignal.PublishCount);
+            Assert.Null(await fixture.IntakeStore.GetOpenAsync(123456789, 123456789, CancellationToken.None));
+        }
+        finally
+        {
+            File.Delete(source);
+        }
+    }
+
+    [Fact]
+    public async Task DuplicateSourceUpdateAndDoneCreateOneJob()
+    {
+        string source = Path.GetTempFileName();
+        await File.WriteAllBytesAsync(source, [1, 2, 3]);
+        try
+        {
+            await using Fixture fixture = await Fixture.CreateAsync([source], "python");
+            await fixture.SendMediaAsync(0, 10);
+            await fixture.SendMediaAsync(0, 10);
+            await fixture.SendTextAsync("Собери ролик", 20);
+            await fixture.SendTextAsync("/done", 30);
+            JobId first = fixture.JobSignal.JobId;
+            await fixture.SendTextAsync("/done", 31);
+
+            Assert.False(first.IsEmpty);
+            Assert.Equal(first, fixture.JobSignal.JobId);
+            Assert.Equal(1, fixture.JobSignal.PublishCount);
+            JobCreationRecord job = Assert.IsType<JobCreationRecord>(await fixture.State.GetAsync(first, CancellationToken.None));
+            Assert.Single(job.Request.SourceAssetIds);
+        }
+        finally
+        {
+            File.Delete(source);
+        }
+    }
+
     private static string GetIdentifier(JsonElement element) => element.ValueKind switch
     {
         JsonValueKind.String => element.GetString()!,
@@ -137,17 +194,16 @@ public sealed class TelegramToDeliveryAcceptanceTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private Fixture(string root, string source, string whisperPython, string connectionString)
+        private Fixture(string root, IReadOnlyList<string> sources, string whisperPython, string connectionString)
         {
             Root = root;
-            Source = source;
+            Sources = sources;
             ConnectionString = connectionString;
             Runner = new RecordingProcessRunner();
             Probe = new FfprobeMediaProbe(Runner, "ffprobe");
             Decode = new FfmpegDecodeVerifier(Runner, "ffmpeg");
             Artifacts = new SqliteArtifactStore(connectionString);
             State = new SqliteJobStateStore(connectionString);
-            JobCreation = new SqliteJobCreationStore(connectionString);
             Queue = new SqliteJobWorkQueue(connectionString);
             Attempts = new SqliteStageAttemptStore(connectionString);
             PlanRevisions = new SqliteEditPlanRevisionStore(connectionString);
@@ -193,18 +249,13 @@ public sealed class TelegramToDeliveryAcceptanceTests
             DeliveryStageExecutor delivery = new(Artifacts, Delivery, Receipts, root, 123456789, PlanRevisions);
             ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, verification, packaging, delivery);
             Processor = new SequentialJobProcessor(Queue, State, Attempts, stages);
-            CapturingCreateJob createJob = new(new CreateJobUseCase(JobCreation));
-            CreateJobAdapter = createJob;
-            Handler = new TelegramUpdateHandler(
-                new TelegramOptions { AllowedUserId = 123456789 },
-                new LimitsOptions { MaxInputFileBytes = 524_288_000, MaxInputDurationSeconds = 1800 },
-                new FixtureDownloader(root, source), Artifacts,
-                createJob,
-                new InMemoryTelegramIntakeSessionStore(), new CapturingResponder());
+            JobSignal = new CapturingJobSignal();
+            IntakeStore = new SqliteTelegramIntakeStore(connectionString);
+            Handler = CreateHandler(IntakeStore);
         }
 
         public string Root { get; }
-        public string Source { get; }
+        public IReadOnlyList<string> Sources { get; }
         public string ConnectionString { get; }
         public JobId JobId { get; private set; }
         public RecordingProcessRunner Runner { get; }
@@ -212,7 +263,6 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public IMediaDecodeVerifier Decode { get; }
         public SqliteArtifactStore Artifacts { get; }
         public SqliteJobStateStore State { get; }
-        public SqliteJobCreationStore JobCreation { get; }
         public SqliteJobWorkQueue Queue { get; }
         public SqliteStageAttemptStore Attempts { get; }
         public SqliteEditPlanRevisionStore PlanRevisions { get; }
@@ -222,26 +272,55 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public LocalArtifactStorage LocalStorage { get; }
         public CapturingDelivery Delivery { get; }
         public SequentialJobProcessor Processor { get; }
-        public TelegramUpdateHandler Handler { get; }
-        private CapturingCreateJob CreateJobAdapter { get; }
+        public TelegramUpdateHandler Handler { get; private set; }
+        public SqliteTelegramIntakeStore IntakeStore { get; private set; }
+        public CapturingJobSignal JobSignal { get; }
 
-        public static async Task<Fixture> CreateAsync(string source, string whisperPython)
+        public static async Task<Fixture> CreateAsync(IReadOnlyList<string> sources, string whisperPython)
         {
             string root = Path.Combine(Path.GetTempPath(), $"video-factory-acceptance-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
             string database = Path.Combine(root, "jobs.sqlite");
             string connectionString = $"Data Source={database};Cache=Shared";
             await new SqliteMigrationRunner(connectionString).InitializeAsync(CancellationToken.None);
-            return new Fixture(root, source, whisperPython, connectionString);
+            return new Fixture(root, sources, whisperPython, connectionString);
         }
 
-        public async Task SendTelegramInputAsync()
+        public async Task SendTelegramInputAsync(bool restartBeforeDone = false)
         {
-            await Handler.HandleAsync(new TelegramUpdate(123456789, 123456789, null,
-                new TelegramMediaInput("fixture-file", "fixture-file", new FileInfo(Source).Length, "video/mp4", "fixture.mp4")), CancellationToken.None);
-            await Handler.HandleAsync(new TelegramUpdate(123456789, 123456789, "Сделай динамично", null), CancellationToken.None);
-            JobId = CreateJobAdapter.JobId;
+            for (int index = 0; index < Sources.Count; index++)
+                await SendMediaAsync(index, 10 + index * 10);
+            await SendTextAsync("Сделай динамично", 70);
+            await SendTextAsync("/style dynamic-viral", 80);
+            Assert.Equal(0, JobSignal.PublishCount);
+            if (restartBeforeDone) RestartTelegramAdapter();
+            await SendTextAsync("/done", 90);
+            JobId = JobSignal.JobId;
         }
+
+        public Task SendMediaAsync(int sourceIndex, long updateId) => Handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, null,
+                new TelegramMediaInput($"fixture-file-{sourceIndex}", $"fixture-unique-{sourceIndex}", new FileInfo(Sources[sourceIndex]).Length, "video/mp4", $"fixture-{sourceIndex}.mp4")) { UpdateId = updateId },
+            CancellationToken.None);
+
+        public Task SendTextAsync(string text, long updateId) => Handler.HandleAsync(
+            new TelegramUpdate(123456789, 123456789, text, null) { UpdateId = updateId },
+            CancellationToken.None);
+
+        private void RestartTelegramAdapter()
+        {
+            IntakeStore = new SqliteTelegramIntakeStore(ConnectionString);
+            Handler = CreateHandler(IntakeStore);
+        }
+
+        private TelegramUpdateHandler CreateHandler(SqliteTelegramIntakeStore intakeStore) => new(
+            new TelegramOptions { AllowedUserId = 123456789 },
+            new LimitsOptions { MaxInputFileBytes = 524_288_000, MaxInputDurationSeconds = 1800 },
+            new FixtureDownloader(Root, Sources),
+            Artifacts,
+            intakeStore,
+            new CapturingResponder(),
+            jobSignal: JobSignal);
 
         public async ValueTask DisposeAsync()
         {
@@ -282,16 +361,21 @@ public sealed class TelegramToDeliveryAcceptanceTests
         }
     }
 
-    private sealed class FixtureDownloader(string root, string source) : ITelegramFileDownloader
+    private sealed class FixtureDownloader(string root, IReadOnlyList<string> sources) : ITelegramFileDownloader
     {
-        public async Task<TelegramDownloadResult> DownloadAsync(TelegramMediaInput input, CancellationToken cancellationToken)
+        public async Task<TelegramDownloadResult> DownloadAsync(
+            TelegramMediaInput input,
+            string relativePath,
+            long reservedBytes,
+            Func<long, CancellationToken, Task<long?>> tryExpandReservation,
+            CancellationToken cancellationToken)
         {
-            string relative = $"data/intake/{Guid.NewGuid():N}.mp4";
-            string path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
+            string path = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            File.Copy(source, path);
+            int sourceIndex = int.Parse(input.FileId.AsSpan("fixture-file-".Length), System.Globalization.CultureInfo.InvariantCulture);
+            File.Copy(sources[sourceIndex], path);
             await using FileStream stream = File.OpenRead(path);
-            return new TelegramDownloadResult.Succeeded(new TelegramDownloadedFile(relative, Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken)), stream.Length));
+            return new TelegramDownloadResult.Succeeded(new TelegramDownloadedFile(relativePath, Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken)), stream.Length));
         }
     }
 
@@ -310,19 +394,26 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public Task SendTextAsync(long chatId, string text, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
-    private sealed class CapturingCreateJob(CreateJobUseCase inner) : ICreateJobUseCase
+    private sealed class CapturingJobSignal : IJobSignal
     {
         public JobId JobId { get; private set; }
+        public int PublishCount { get; private set; }
 
-        public async Task<CreateJobResult> ExecuteAsync(CreateJobCommand command, CancellationToken cancellationToken)
+        public ValueTask PublishAsync(JobId jobId, CancellationToken cancellationToken)
         {
-            CreateJobResult result = await inner.ExecuteAsync(command, cancellationToken);
-            if (result is CreateJobResult.Succeeded succeeded)
-            {
-                JobId = succeeded.JobId;
-            }
+            JobId = jobId;
+            PublishCount++;
+            return ValueTask.CompletedTask;
+        }
 
-            return result;
+        public ValueTask<bool> WaitToReadAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult(false);
+
+        public async IAsyncEnumerable<JobId> ReadAllAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            await Task.CompletedTask;
+            yield break;
         }
     }
 
@@ -333,10 +424,16 @@ public sealed class TelegramToDeliveryAcceptanceTests
 
         public Task<ProviderPlanResponse> CreatePlanAsync(ProviderPlanningRequest request, CancellationToken cancellationToken)
         {
-            ProviderSegment segment = request.AllowedSegments[0];
-            int frames = Math.Max(30, (int)Math.Min(600, Math.Round(segment.DurationMicroseconds / 1_000_000d * 30)));
+            int outputStart = 0;
+            ImmutableArray<ProviderVideoClip> clips = [.. request.AllowedSegments.Select(segment =>
+            {
+                int frames = Math.Max(1, (int)Math.Round(segment.DurationMicroseconds / 1_000_000d * 30));
+                ProviderVideoClip clip = new(segment.Id, new OutputRange(outputStart, outputStart + frames), CropPreset.CenterCrop);
+                outputStart += frames;
+                return clip;
+            })];
             return Task.FromResult(new ProviderPlanResponse(1, 42,
-                [new ProviderVideoClip(segment.Id, new OutputRange(0, frames), CropPreset.CenterCrop)], [], 0.001m));
+                clips, [], 0.001m));
         }
     }
 }

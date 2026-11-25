@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
@@ -246,6 +247,7 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
     private static string BuildSystemInstruction() =>
         "Return JSON only. Select video clips only from the supplied allowedSegments. " +
         "Do not invent files, assets, segment IDs, timestamps, templates, or operations. " +
+        "Use every supplied allowed segment exactly once. " +
         "Use schemaVersion 1, crop Fit or CenterCrop, and integer output frame ranges. " +
         "Return exactly this shape with no null fields: " +
         "{\"schemaVersion\":1,\"seed\":123,\"videoClips\":[{\"segmentId\":\"known-id\"," +
@@ -276,7 +278,10 @@ public sealed class DeepSeekEditPlanProvider : IEditPlanProvider
                 skillId = decision.SkillId,
                 version = decision.SkillVersion,
                 status = decision.Status.ToString(),
-                reasons = decision.Reasons.Select(reason => reason.Code)
+                reasons = decision.Reasons.Select(reason => reason.Code),
+                requiredSegmentIds = decision is MultiClipDecision multiClip
+                    ? multiClip.Selections.Select(selection => selection.SegmentId.ToString())
+                    : []
             }),
             repairAttempt = request.RepairAttempt
         }, JsonOptions);

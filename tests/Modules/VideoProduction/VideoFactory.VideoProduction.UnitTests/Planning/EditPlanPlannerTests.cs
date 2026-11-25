@@ -1,10 +1,12 @@
 using System.Collections.Immutable;
+using VideoFactory.VideoProduction.Application.Analysis;
 using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Analysis;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using VideoFactory.VideoProduction.Domain.Media;
 using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.UnitTests.Fixtures;
@@ -13,6 +15,67 @@ namespace VideoFactory.VideoProduction.UnitTests.Planning;
 
 public sealed class EditPlanPlannerTests
 {
+    [Fact]
+    public async Task MultiSourceAnalysisCreatesV3PlanWithDeclaredSources()
+    {
+        ValidPlanFixture source = ValidPlanFixture.Create();
+        AllowedSegment first = source.Analysis.AllowedSegments[0] with { IsApproved = true };
+        AllowedSegment legacySecond = source.Analysis.AllowedSegments[1] with { IsApproved = true };
+        ArtifactId secondOriginalId = ArtifactId.New();
+        ArtifactId secondMasterId = ArtifactId.New();
+        AllowedSegment second = legacySecond with
+        {
+            Mapping = new SourceMapping(
+                secondOriginalId,
+                new OriginalRange(0, 3_000_000),
+                secondMasterId,
+                new MasterRange(0, 3_000_000))
+        };
+        AnalysisResult compatibilityAnalysis = source.Analysis with { AllowedSegments = [first, second] };
+        MultiSourceAnalysisResult multiSourceAnalysis = new(
+            3,
+            source.Analysis.RevisionId,
+            [
+                new AnalysisSource(source.Analysis.OriginalAssetId, source.Analysis.MasterAssetId, [], [], [new Scene(first.Mapping.Master)], AnalysisFeatureSet.Empty),
+                new AnalysisSource(secondOriginalId, secondMasterId, [], [], [new Scene(second.Mapping.Master)], AnalysisFeatureSet.Empty)
+            ],
+            [first, second]);
+        Dictionary<ArtifactId, MediaAsset> assets = source.Assets.ToDictionary();
+        MediaMetadata secondMetadata = new(
+            "mp4",
+            3_000_000,
+            [new VideoStreamMetadata(0, "h264", 1080, 1920, new FrameRate(30, 1), false, 0)],
+            [new AudioStreamMetadata(1, "aac", 48_000, 2)]);
+        assets[secondOriginalId] = new MediaAsset(secondOriginalId, secondMetadata);
+        assets[secondMasterId] = new MediaAsset(secondMasterId, secondMetadata);
+        EditPlan providerPlan = source.Plan with
+        {
+            Video = new VideoTrack([
+                source.Plan.Video.Clips[0],
+                source.Plan.Video.Clips[1] with { Mapping = second.Mapping }
+            ])
+        };
+        TestProvider provider = new(providerPlan);
+        InMemoryRevisionStore store = new();
+        EditPlanPlanner planner = new(provider, new TestCostPolicy(1m), store, new InMemoryAttemptStore());
+        PlanningRequest request = new(
+            source.Plan.JobId,
+            source.Plan.VariantId,
+            compatibilityAnalysis,
+            "Собери два источника",
+            new ProductionSettings(6, true, false),
+            assets,
+            source.Templates,
+            MultiSourceAnalysis: multiSourceAnalysis);
+
+        PlanningResult.Created created = Assert.IsType<PlanningResult.Created>(
+            await planner.PlanAsync(request, CancellationToken.None));
+
+        Assert.Equal(3, created.Revision.Plan.SchemaVersion);
+        Assert.Equal([source.Analysis.MasterAssetId, secondMasterId], created.Revision.Plan.Sources.Select(item => item.MasterAssetId));
+        Assert.Equal([source.Analysis.MasterAssetId, secondMasterId], created.Revision.Plan.Video.Clips.Select(item => item.Mapping.MasterAssetId));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -67,6 +130,29 @@ public sealed class EditPlanPlannerTests
 
         PlanningResult.Rejected rejected = Assert.IsType<PlanningResult.Rejected>(result);
         Assert.Equal("planning.segment_unknown", rejected.ErrorCode);
+        Assert.Equal(0, fixture.Store.SaveCount);
+        Assert.Equal(2, fixture.Provider.CreatePlanCount);
+    }
+
+    [Fact]
+    public async Task ProviderCannotOmitMultiClipDirectorSelection()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        AnalysisResult approvedAnalysis = fixture.Analysis with
+        {
+            AllowedSegments = [.. fixture.Analysis.AllowedSegments.Select(segment => segment with { IsApproved = true })]
+        };
+        fixture.Request = fixture.Request with
+        {
+            Analysis = approvedAnalysis,
+            MultiSourceAnalysis = AnalysisContractAdapter.ToMultiSource(approvedAnalysis)
+        };
+        fixture.Provider.OmitLastSegment = true;
+
+        PlanningResult.Rejected rejected = Assert.IsType<PlanningResult.Rejected>(
+            await fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+
+        Assert.Equal("planning.required_segment_missing", rejected.ErrorCode);
         Assert.Equal(0, fixture.Store.SaveCount);
         Assert.Equal(2, fixture.Provider.CreatePlanCount);
     }
@@ -210,6 +296,7 @@ public sealed class EditPlanPlannerTests
         public decimal EstimatedCostUsd { get; set; } = 0.01m;
         public decimal ActualCostUsd { get; set; } = 0.01m;
         public bool ReturnUnknownSegment { get; set; }
+        public bool OmitLastSegment { get; set; }
         public bool InvalidFirstResponse { get; set; }
         public string? NetworkFailure { get; set; }
         public int CreatePlanCount { get; private set; }
@@ -262,6 +349,15 @@ public sealed class EditPlanPlannerTests
                     VideoClips = response.VideoClips.SetItem(
                         0,
                         response.VideoClips[0] with { SegmentId = SegmentId.New() }),
+                    ActualCostUsd = ActualCostUsd
+                });
+            }
+
+            if (OmitLastSegment)
+            {
+                return Task.FromResult(response with
+                {
+                    VideoClips = response.VideoClips.RemoveAt(response.VideoClips.Length - 1),
                     ActualCostUsd = ActualCostUsd
                 });
             }

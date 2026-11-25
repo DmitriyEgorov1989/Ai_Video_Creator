@@ -16,6 +16,7 @@ namespace VideoFactory.VideoProduction.Application.Planning;
 /// <summary>
 /// Запрос построения одного монтажного плана.
 /// </summary>
+/// <param name="MultiSourceAnalysis">Analysis V3 или <see langword="null"/> для legacy V1/V2.</param>
 public sealed record PlanningRequest(
     JobId JobId,
     VariantId VariantId,
@@ -25,7 +26,8 @@ public sealed record PlanningRequest(
     IReadOnlyDictionary<ArtifactId, MediaAsset> Assets,
     IReadOnlyDictionary<TemplateId, TemplateDefinition> Templates,
     long? TelegramUserId = null,
-    decimal JobLimitUsd = 0m);
+    decimal JobLimitUsd = 0m,
+    MultiSourceAnalysisResult? MultiSourceAnalysis = null);
 
 /// <summary>
 /// Данные, передаваемые provider-адаптеру. Provider не получает пути и произвольные assets.

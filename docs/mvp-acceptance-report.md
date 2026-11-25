@@ -103,3 +103,31 @@ Production revision сохраняет resolved style и typed decisions в су
 revision без presentation по-прежнему рендерится через V1 path. При отсутствии
 CV observations Smart Reframe не заявляет tracking и безопасно показывает
 источник через fallback.
+
+## Multi-source intake и render
+
+25 ноября 2026 года реализован persistent Telegram intake для одного-пяти
+отдельных видео. Job создаётся только после `/done`; SQLite сохраняет порядок по
+`message_id`, instruction, style, duration, reservations, deduplication и receipt
+финализации. Лимиты session: пять файлов, `524288000` байт и `600` секунд.
+
+Pipeline подготавливает и анализирует sources независимо, публикует Analysis V3,
+строит Edit Plan V3 и RenderRequest V2. Каждый используемый Master получает свой
+video path, optional audio stem и frame rate; отсутствие audio означает тишину,
+а не fallback на другой source. Render reuse зависит от plan hash, renderer config
+и ordered source IDs/hashes. Legacy single-source и V1/V2 contracts остаются зелёными.
+
+Проверка текущего worktree:
+
+- .NET build: `0` warnings, `0` errors;
+- unit: `153` passed;
+- integration: `118` passed, `15` environment-dependent skipped;
+- Bot: `83` passed, `3` environment-dependent skipped;
+- render-host: `17` passed; typecheck, build и двухисточниковый smoke успешны;
+- smoke подтвердил красный/440 Гц, затем синий/880 Гц, отсутствие удалённого
+  1320 Гц, video/audio streams, длительность `2` секунды и полный decode.
+
+Положительный multi-source Telegram-to-delivery test добавлен, но в этом запуске
+пропущен из-за отсутствующих `ACCEPTANCE_MEDIA_ROOT` и `WHISPER_TEST_PYTHON`.
+Реальный Telegram Bot API, albums/`media_group_id` и облачный LLM этим запуском
+не проверялись. Поэтому сквозная реальная Telegram-публикация не заявляется.

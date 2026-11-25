@@ -1,10 +1,65 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using VideoFactory.VideoProduction.Domain.Validation;
 
 namespace VideoFactory.VideoProduction.UnitTests.Editing;
 
 public sealed class EditPlanContractDispatcherTests
 {
+    [Fact]
+    public void DispatchesV3WithTwoKnownMasterSources()
+    {
+        using JsonDocument document = CreateV3Document();
+
+        EditPlanContractDispatch result = EditPlanContractDispatcher.Dispatch(document.RootElement);
+
+        Assert.Equal(3, result.Version);
+        Assert.Equal(EditPlanContractStatus.Accepted, result.Status);
+        Assert.Empty(result.Issues);
+    }
+
+    [Theory]
+    [InlineData("duplicate", "source.duplicate")]
+    [InlineData("unknown", "source.unknown")]
+    [InlineData("out-of-bounds", "timeline.source_out_of_bounds")]
+    public void RejectsInvalidV3SourceReferences(string mutation, string expectedCode)
+    {
+        JsonObject plan = JsonNode.Parse(ValidV3Json)!.AsObject();
+        JsonArray sources = plan["sources"]!.AsArray();
+        JsonArray clips = plan["video"]!["clips"]!.AsArray();
+        if (mutation == "duplicate") sources[1]!["masterAssetId"] = "master-a";
+        if (mutation == "unknown") clips[1]!["sourceAssetId"] = "unknown-master";
+        if (mutation == "out-of-bounds") clips[1]!["master"]!["endMicroseconds"] = 1_000_001;
+        using JsonDocument document = JsonDocument.Parse(plan.ToJsonString());
+
+        EditPlanContractDispatch result = EditPlanContractDispatcher.Dispatch(document.RootElement);
+
+        Assert.Equal(EditPlanContractStatus.Invalid, result.Status);
+        Assert.Contains(result.Issues, issue => issue.Code == expectedCode);
+    }
+
+    private static JsonDocument CreateV3Document() => JsonDocument.Parse(ValidV3Json);
+
+    private const string ValidV3Json = """
+            {
+              "schemaVersion": 3,
+              "jobId": "job", "variantId": "variant", "revisionId": "revision", "analysisRevisionId": "analysis",
+              "output": { "durationFrames": 60 },
+              "sources": [
+                { "originalAssetId": "original-a", "masterAssetId": "master-a", "durationMicroseconds": 1000000 },
+                { "originalAssetId": "original-b", "masterAssetId": "master-b", "durationMicroseconds": 1000000 }
+              ],
+              "video": { "clips": [
+                { "sourceAssetId": "master-a", "source": { "startMicroseconds": 0, "endMicroseconds": 1000000 }, "master": { "startMicroseconds": 0, "endMicroseconds": 1000000 }, "output": { "startFrame": 0, "endFrame": 30 } },
+                { "sourceAssetId": "master-b", "source": { "startMicroseconds": 0, "endMicroseconds": 1000000 }, "master": { "startMicroseconds": 0, "endMicroseconds": 1000000 }, "output": { "startFrame": 30, "endFrame": 60 } }
+              ] },
+              "effects": [],
+              "captions": { "words": [] },
+              "audio": { "sourceGain": 1 },
+              "skills": []
+            }
+            """;
+
     [Fact]
     public void DispatchesV2AndReturnsNormalizedContract()
     {

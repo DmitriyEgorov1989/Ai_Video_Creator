@@ -130,7 +130,7 @@ FFmpeg/FFprobe: `speech.mp4` без перекодирования и его в�
 ## Сквозная приёмка через подменённый Telegram
 
 После сборки render-host и установки локальной Whisper-модели можно запустить
-сценарий `Telegram video + comment -> verified MP4 -> Telegram delivery` без
+сценарий `Telegram videos + instruction + /done -> verified MP4 -> Telegram delivery` без
 реального Bot API и облачного LLM:
 
 ```powershell
@@ -142,10 +142,20 @@ dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj `
   --filter FullyQualifiedName~TelegramToDeliveryAcceptanceTests
 ```
 
-Тест создаёт временную SQLite и каталог Job, подаёт видео и комментарий через
-`TelegramUpdateHandler`, запускает последовательный processor и сохраняет
-байты fake Telegram delivery. Основной сценарий требует локальную модель
-Whisper; отрицательный сценарий повреждённого входа не отправляет MP4.
+Тест создаёт временную SQLite и каталог Job, подаёт два отдельных видео,
+инструкцию и style через `TelegramUpdateHandler`, проверяет отсутствие Job до
+`/done`, создаёт новый Telegram adapter/store поверх той же SQLite и только затем
+финализирует intake. Последовательный processor должен сохранить ordered source
+lineage, Analysis V3, Edit Plan V3, один verified MP4 и одну fake delivery receipt.
+Основной сценарий требует локальную модель Whisper; без
+`ACCEPTANCE_MEDIA_ROOT` и `WHISPER_TEST_PYTHON` он явно пропускается. Быстрые
+сценарии cancel и duplicate `/done` не требуют внешних media. Отрицательный
+сценарий повреждённого входа не отправляет MP4.
+
+Render-host smoke отдельно создаёт два синтетических source с красным/синим
+marker и тонами 440/880 Гц. Проверяются порядок кадров и звука, отсутствие
+удалённого тона 1320 Гц, один video/audio stream, длительность и полный decode.
+Это локальная проверка adapter-а, а не реальная публикация через Telegram Bot API.
 
 ## Реальная Telegram-приёмка
 

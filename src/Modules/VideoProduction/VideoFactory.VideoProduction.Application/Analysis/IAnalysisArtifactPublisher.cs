@@ -11,6 +11,19 @@ public interface IAnalysisArtifactPublisher
         JobId jobId,
         AnalysisResult analysis,
         CancellationToken cancellationToken);
+
+    /// <summary>Атомарно публикует source-scoped Analysis V2 для последующего восстановления.</summary>
+    Task<AnalysisArtifactPublishResult> PublishSourceAsync(
+        JobId jobId,
+        AnalysisResult analysis,
+        string? masterSha256,
+        CancellationToken cancellationToken);
+
+    /// <summary>Атомарно публикует агрегированный Analysis V3.</summary>
+    Task<AnalysisArtifactPublishResult> PublishAggregateAsync(
+        JobId jobId,
+        MultiSourceAnalysisResult analysis,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>Результат публикации Analysis Artifact.</summary>

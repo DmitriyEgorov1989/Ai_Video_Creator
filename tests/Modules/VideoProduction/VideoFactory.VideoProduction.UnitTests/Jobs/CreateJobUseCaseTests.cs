@@ -7,6 +7,25 @@ namespace VideoFactory.VideoProduction.UnitTests.Jobs;
 public sealed class CreateJobUseCaseTests
 {
     [Fact]
+    public async Task CreatesJobWithOrderedSources()
+    {
+        ArtifactId first = ArtifactId.New();
+        ArtifactId second = ArtifactId.New();
+        FakeJobCreationStore store = new();
+        CreateJobUseCase useCase = new(store);
+
+        CreateJobResult result = await useCase.ExecuteAsync(
+            new CreateJobCommand(
+                [first, second],
+                "Собери единый обзор",
+                new ProductionSettings(null, true, false)));
+
+        Assert.IsType<CreateJobResult.Succeeded>(result);
+        JobCreationRecord created = Assert.Single(store.Records);
+        Assert.Equal([first, second], created.Request.SourceAssetIds.ToArray());
+    }
+
+    [Fact]
     public async Task CreatesFastJobWithOneVariant()
     {
         ArtifactId artifactId = ArtifactId.New();
@@ -89,7 +108,7 @@ public sealed class CreateJobUseCaseTests
         CreateJobCommand command = expectedCode switch
         {
             CreateJobErrorCode.InvalidSourceArtifactId => new(
-                default,
+                default(ArtifactId),
                 "Комментарий",
                 new ProductionSettings(null, captionsEnabled: false, musicEnabled: false)),
             CreateJobErrorCode.EmptyComment => new(

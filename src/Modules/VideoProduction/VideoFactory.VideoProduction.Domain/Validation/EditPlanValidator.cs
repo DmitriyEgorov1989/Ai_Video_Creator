@@ -28,10 +28,35 @@ public static class EditPlanValidator
 
         Dictionary<SegmentId, AllowedSegment> segments = BuildSegmentCatalog(analysis);
         ValidateVideo(plan, segments, issues);
-        ValidateAudio(plan, analysis, segments, assets, issues);
+        ValidateAudio(plan, segments, assets, issues);
         ValidateCaptions(plan, issues);
         ValidateOverlays(plan, assets, issues);
 
+        return [.. issues];
+    }
+
+    /// <summary>Проверяет Edit Plan V3 относительно агрегированного Analysis V3.</summary>
+    public static ImmutableArray<ValidationIssue> Validate(
+        EditPlan plan,
+        MultiSourceAnalysisResult analysis,
+        IReadOnlyDictionary<ArtifactId, MediaAsset> assets,
+        IReadOnlyDictionary<TemplateId, TemplateDefinition> templates)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(analysis);
+        ArgumentNullException.ThrowIfNull(assets);
+        ArgumentNullException.ThrowIfNull(templates);
+
+        List<ValidationIssue> issues = [.. AnalysisValidator.Validate(analysis, assets)];
+        ValidateIdentity(plan, analysis, issues);
+        ValidateOutput(plan, issues);
+        ValidateTemplate(plan, templates, issues);
+        Dictionary<SegmentId, AllowedSegment> segments = BuildSegmentCatalog(analysis.AllowedSegments);
+        ValidateVideo(plan, segments, issues);
+        ValidateAudio(plan, segments, assets, issues);
+        ValidateCaptions(plan, issues);
+        ValidateOverlays(plan, assets, issues);
+        ValidateSources(plan, assets, issues);
         return [.. issues];
     }
 
@@ -48,6 +73,20 @@ public static class EditPlanValidator
         if (plan.AnalysisRevisionId.IsEmpty)
             Add(issues, "plan.analysis_revision_empty", "analysisRevisionId", "Analysis revision ID is required.");
         else if (plan.AnalysisRevisionId != analysis.RevisionId)
+            Add(issues, "plan.analysis_revision_mismatch", "analysisRevisionId", "Plan must use the supplied analysis revision.");
+    }
+
+    private static void ValidateIdentity(
+        EditPlan plan,
+        MultiSourceAnalysisResult analysis,
+        List<ValidationIssue> issues)
+    {
+        if (plan.SchemaVersion != 3)
+            Add(issues, "plan.schema_version", "schemaVersion", "Edit plan schema version 3 is required for multi-source analysis.");
+        if (plan.JobId.IsEmpty) Add(issues, "plan.job_id_empty", "jobId", "Job ID is required.");
+        if (plan.VariantId.IsEmpty) Add(issues, "plan.variant_id_empty", "variantId", "Variant ID is required.");
+        if (plan.RevisionId.IsEmpty) Add(issues, "plan.revision_id_empty", "revisionId", "Revision ID is required.");
+        if (plan.AnalysisRevisionId != analysis.RevisionId)
             Add(issues, "plan.analysis_revision_mismatch", "analysisRevisionId", "Plan must use the supplied analysis revision.");
     }
 
@@ -97,11 +136,14 @@ public static class EditPlanValidator
     }
 
     private static Dictionary<SegmentId, AllowedSegment> BuildSegmentCatalog(AnalysisResult analysis)
+        => BuildSegmentCatalog(analysis.AllowedSegments);
+
+    private static Dictionary<SegmentId, AllowedSegment> BuildSegmentCatalog(ImmutableArray<AllowedSegment> allowedSegments)
     {
         Dictionary<SegmentId, AllowedSegment> segments = [];
-        if (analysis.AllowedSegments.IsDefault) return segments;
+        if (allowedSegments.IsDefault) return segments;
 
-        foreach (AllowedSegment segment in analysis.AllowedSegments)
+        foreach (AllowedSegment segment in allowedSegments)
         {
             if (!segment.Id.IsEmpty) segments.TryAdd(segment.Id, segment);
         }
@@ -165,7 +207,6 @@ public static class EditPlanValidator
 
     private static void ValidateAudio(
         EditPlan plan,
-        AnalysisResult analysis,
         IReadOnlyDictionary<SegmentId, AllowedSegment> segments,
         IReadOnlyDictionary<ArtifactId, MediaAsset> assets,
         List<ValidationIssue> issues)
@@ -180,15 +221,14 @@ public static class EditPlanValidator
             Add(issues, "audio.source_uninitialized", "audio.sourceClips", "Source audio clips must be initialized.");
         else
         {
-            bool masterHasAudio = assets.TryGetValue(analysis.MasterAssetId, out MediaAsset? master)
-                && master.Metadata.AudioStreams.Length > 0;
             for (int index = 0; index < plan.Audio.SourceClips.Length; index++)
             {
                 SourceAudioClip clip = plan.Audio.SourceClips[index];
                 string path = $"audio.sourceClips[{index}]";
-                if (!segments.ContainsKey(clip.SegmentId))
+                if (!segments.TryGetValue(clip.SegmentId, out AllowedSegment? segment))
                     Add(issues, "segment.unknown", $"{path}.segmentId", "Source audio refers to an unknown segment.");
-                if (!masterHasAudio)
+                else if (!assets.TryGetValue(segment.Mapping.MasterAssetId, out MediaAsset? master)
+                    || master.Metadata.AudioStreams.Length == 0)
                     Add(issues, "audio.source_stream_missing", path, "Master asset has no audio stream.");
                 CheckGain(clip.Gain, $"{path}.gain", issues);
                 CheckOutputBounds(clip.Output, plan.Output?.DurationFrames ?? 0, $"{path}.output", issues);
@@ -233,6 +273,29 @@ public static class EditPlanValidator
                     Add(issues, "audio.music_duration_mismatch", $"{path}.output", "Music source and output durations must match when no loop or rate operation is defined.");
             }
         }
+    }
+
+    private static void ValidateSources(
+        EditPlan plan,
+        IReadOnlyDictionary<ArtifactId, MediaAsset> assets,
+        List<ValidationIssue> issues)
+    {
+        if (plan.Sources.IsDefaultOrEmpty)
+        {
+            Add(issues, "plan.sources_empty", "sources", "Edit Plan V3 requires at least one source.");
+            return;
+        }
+
+        EditPlanSource[] expected = plan.Video.Clips
+            .Select(clip => clip.Mapping)
+            .DistinctBy(mapping => (mapping.OriginalAssetId, mapping.MasterAssetId))
+            .Select(mapping => new EditPlanSource(
+                mapping.OriginalAssetId,
+                mapping.MasterAssetId,
+                assets.TryGetValue(mapping.MasterAssetId, out MediaAsset? master) ? master.Metadata.DurationMicroseconds : 0))
+            .ToArray();
+        if (!plan.Sources.SequenceEqual(expected))
+            Add(issues, "plan.sources_mismatch", "sources", "Plan sources must match Analysis sources and Master durations in order.");
     }
 
     private static void ValidateCaptions(EditPlan plan, List<ValidationIssue> issues)

@@ -126,6 +126,15 @@ public sealed record ImageOverlay(ArtifactId AssetId, OutputRange Output) : Over
 /// <param name="Items">Элементы, наложенные на выходное видео; элементы не могут быть <see langword="null"/>.</param>
 public sealed record OverlayTrack(ImmutableArray<Overlay> Items);
 
+/// <summary>Объявляет один Original/Master source Edit Plan V3.</summary>
+/// <param name="OriginalAssetId">Идентификатор Original-артефакта.</param>
+/// <param name="MasterAssetId">Идентификатор соответствующего Master-артефакта.</param>
+/// <param name="DurationMicroseconds">Полная длительность Master в микросекундах.</param>
+public sealed record EditPlanSource(
+    ArtifactId OriginalAssetId,
+    ArtifactId MasterAssetId,
+    long DurationMicroseconds);
+
 /// <summary>
 /// Представляет версионированный монтажный план одного варианта видео.
 /// </summary>
@@ -155,4 +164,8 @@ public sealed record EditPlan(
     VideoTrack Video,
     AudioTrack Audio,
     CaptionTrack Captions,
-    OverlayTrack Overlays);
+    OverlayTrack Overlays)
+{
+    /// <summary>Source catalog для V3; пуст для legacy V1/V2.</summary>
+    public ImmutableArray<EditPlanSource> Sources { get; init; } = [];
+}

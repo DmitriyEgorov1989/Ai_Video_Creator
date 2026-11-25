@@ -38,6 +38,7 @@ public sealed class SqliteMigrationRunner
         await connection.OpenAsync(cancellationToken);
 
         await ConfigureConnectionAsync(connection, cancellationToken);
+        await ExecuteAsync(connection, transaction: null, "PRAGMA foreign_keys = OFF;", cancellationToken);
         await using SqliteTransaction transaction =
             (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
 
@@ -160,7 +161,24 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 11, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, OrderedJobSourcesSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (11, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, 12, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, TelegramIntakeSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (12, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
+        await ExecuteAsync(connection, transaction: null, "PRAGMA foreign_keys = ON;", cancellationToken);
     }
 
     private static async Task ConfigureConnectionAsync(
@@ -353,6 +371,128 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_repeat_delivery_requests_job
             ON repeat_delivery_requests (job_id, created_at);
+        """;
+
+    private const string OrderedJobSourcesSchemaSql = """
+        CREATE TABLE jobs_v11 (
+            job_id TEXT PRIMARY KEY,
+            source_artifact_id TEXT NOT NULL,
+            comment TEXT NOT NULL,
+            requested_mode INTEGER NOT NULL,
+            target_duration_seconds INTEGER NULL,
+            captions_enabled INTEGER NOT NULL,
+            music_enabled INTEGER NOT NULL,
+            status INTEGER NOT NULL,
+            stage INTEGER NOT NULL,
+            effective_mode INTEGER NULL,
+            pending_confirmation INTEGER NULL,
+            current_approved_edit_plan_revision_id TEXT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            heartbeat_at TEXT NULL,
+            lease_owner TEXT NULL,
+            completed_at TEXT NULL,
+            cleanup_started_at TEXT NULL,
+            files_deleted_at TEXT NULL,
+            telegram_user_id INTEGER NULL,
+            edit_tempo INTEGER NOT NULL DEFAULT 1,
+            requested_style INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT INTO jobs_v11 (
+            job_id, source_artifact_id, comment, requested_mode,
+            target_duration_seconds, captions_enabled, music_enabled,
+            status, stage, effective_mode, pending_confirmation,
+            current_approved_edit_plan_revision_id, created_at, updated_at,
+            heartbeat_at, lease_owner, completed_at, cleanup_started_at,
+            files_deleted_at, telegram_user_id, edit_tempo, requested_style)
+        SELECT
+            job_id, source_artifact_id, comment, requested_mode,
+            target_duration_seconds, captions_enabled, music_enabled,
+            status, stage, effective_mode, pending_confirmation,
+            current_approved_edit_plan_revision_id, created_at, updated_at,
+            heartbeat_at, lease_owner, completed_at, cleanup_started_at,
+            files_deleted_at, telegram_user_id, 1, 0
+        FROM jobs;
+
+        DROP TABLE jobs;
+        ALTER TABLE jobs_v11 RENAME TO jobs;
+
+        CREATE INDEX ix_jobs_work_status_heartbeat
+            ON jobs (status, heartbeat_at, created_at);
+        CREATE INDEX ix_jobs_retention
+            ON jobs (status, completed_at, files_deleted_at);
+
+        CREATE TABLE job_sources (
+            job_id TEXT NOT NULL,
+            source_artifact_id TEXT NOT NULL,
+            source_order INTEGER NOT NULL CHECK (source_order >= 0),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (job_id, source_artifact_id),
+            UNIQUE (job_id, source_order),
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (source_artifact_id) REFERENCES artifacts (artifact_id)
+        );
+
+        INSERT INTO job_sources (job_id, source_artifact_id, source_order, created_at)
+        SELECT job_id, source_artifact_id, 0, created_at FROM jobs;
+        """;
+
+    private const string TelegramIntakeSchemaSql = """
+        CREATE TABLE telegram_intake_sessions (
+            session_id TEXT PRIMARY KEY,
+            completion_identity TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            status INTEGER NOT NULL CHECK (status IN (0, 1, 2)),
+            instruction TEXT NULL,
+            requested_style INTEGER NOT NULL DEFAULT 0,
+            target_duration_seconds INTEGER NULL,
+            job_id TEXT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id)
+        );
+
+        CREATE UNIQUE INDEX ux_telegram_intake_one_open_user
+            ON telegram_intake_sessions (user_id) WHERE status = 0;
+
+        CREATE TABLE telegram_intake_items (
+            session_id TEXT NOT NULL,
+            chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            file_unique_id TEXT NULL,
+            status INTEGER NOT NULL CHECK (status IN (0, 1, 2)),
+            temporary_relative_path TEXT NOT NULL,
+            reserved_bytes INTEGER NOT NULL CHECK (reserved_bytes > 0),
+            artifact_id TEXT NULL,
+            sha256 TEXT NULL,
+            actual_size_bytes INTEGER NULL,
+            duration_microseconds INTEGER NULL,
+            error_code TEXT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, message_id),
+            FOREIGN KEY (session_id) REFERENCES telegram_intake_sessions (session_id) ON DELETE CASCADE,
+            FOREIGN KEY (artifact_id) REFERENCES artifacts (artifact_id)
+        );
+
+        CREATE INDEX ix_telegram_intake_items_session_message
+            ON telegram_intake_items (session_id, message_id);
+        CREATE UNIQUE INDEX ux_telegram_intake_items_file_unique
+            ON telegram_intake_items (session_id, file_unique_id)
+            WHERE file_unique_id IS NOT NULL AND status IN (0, 1);
+
+        CREATE TABLE telegram_intake_completion_receipts (
+            chat_id INTEGER NOT NULL,
+            done_message_id INTEGER NOT NULL,
+            session_id TEXT NOT NULL,
+            job_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (chat_id, done_message_id),
+            FOREIGN KEY (session_id) REFERENCES telegram_intake_sessions (session_id),
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id)
+        );
         """;
 
     private const string PlanningAttemptSchemaSql = """

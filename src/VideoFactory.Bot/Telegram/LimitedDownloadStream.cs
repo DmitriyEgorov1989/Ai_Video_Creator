@@ -2,7 +2,12 @@ using VideoFactory.VideoProduction.Application.Storage;
 
 namespace VideoFactory.Bot.Telegram;
 
-internal sealed class LimitedDownloadStream(Stream output, long limit, IStorageBudget budget, string directory) : Stream
+internal sealed class LimitedDownloadStream(
+    Stream output,
+    long limit,
+    Func<long, CancellationToken, Task<long?>> tryExpandReservation,
+    IStorageBudget budget,
+    string directory) : Stream
 {
     private long written;
     public override bool CanRead => false;
@@ -21,7 +26,14 @@ internal sealed class LimitedDownloadStream(Stream output, long limit, IStorageB
 
     public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
-        if (buffer.Length > limit - written) throw new IOException("Upload exceeds the configured byte limit.");
+        long required = checked(written + buffer.Length);
+        if (required > limit)
+        {
+            long? expanded = await tryExpandReservation(required, cancellationToken);
+            if (expanded is null || expanded.Value < required)
+                throw new IOException("Upload exceeds the reserved byte limit.");
+            limit = expanded.Value;
+        }
         StorageBudgetFailure? failure = await budget.CheckAsync(directory, buffer.Length, cancellationToken);
         if (failure is not null) throw new IOException(failure.Code);
         await output.WriteAsync(buffer, cancellationToken);

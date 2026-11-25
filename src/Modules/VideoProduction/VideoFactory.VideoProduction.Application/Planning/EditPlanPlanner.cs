@@ -38,6 +38,7 @@ public sealed class EditPlanPlanner
         this.approvalStore = approvalStore;
         this.editingSkillEngine = editingSkillEngine ?? new EditingSkillEngine(
         [
+            new MultiClipDirectorSkill(),
             new SemanticStorySkill(),
             new HookBuilderSkill(),
             new SmartCutSkill(),
@@ -80,16 +81,19 @@ public sealed class EditPlanPlanner
             return new PlanningResult.Existing(approved);
         }
 
-        ReelsStyleConfiguration style = new ReelsProfileCatalog().Resolve(ReelsStyle.Auto, request.Analysis);
+        ReelsStyleConfiguration style = new ReelsProfileCatalog().Resolve(
+            ToReelsStyle(request.Settings.RequestedStyle), request.Analysis);
         EditingEvaluation editingEvaluation = editingSkillEngine.Evaluate(
             new EditingContext(
                 request.Analysis,
                 request.Settings,
                 request.Comment,
                 KnownAssetIds: request.Assets.Keys.Select(id => id.ToString()).ToHashSet(StringComparer.Ordinal),
-                Style: style),
+                Style: style,
+                MultiSourceAnalysis: request.MultiSourceAnalysis),
             new EditingSkillConfiguration(
             [
+                new("multi-clip-director", true),
                 new("semantic-story", true),
                 new("hook-builder", true),
                 new("smart-cut", true),
@@ -178,11 +182,13 @@ public sealed class EditPlanPlanner
             {
                 AnalysisResult effectiveAnalysis = ApplyEditingEvaluation(request.Analysis, editingEvaluation);
                 EditPlan plan = CreatePlan(request, response, effectiveAnalysis, editingEvaluation);
-                ImmutableArray<ValidationIssue> issues = EditPlanValidator.Validate(
-                    plan,
-                    effectiveAnalysis,
-                    request.Assets,
-                    request.Templates);
+                ImmutableArray<ValidationIssue> issues = request.MultiSourceAnalysis is null
+                    ? EditPlanValidator.Validate(plan, effectiveAnalysis, request.Assets, request.Templates)
+                    : EditPlanValidator.Validate(
+                        plan,
+                        request.MultiSourceAnalysis with { AllowedSegments = effectiveAnalysis.AllowedSegments },
+                        request.Assets,
+                        request.Templates);
 
                 if (!issues.IsEmpty)
                 {
@@ -288,11 +294,27 @@ public sealed class EditPlanPlanner
         return null;
     }
 
+    private static ReelsStyle ToReelsStyle(VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle style) => style switch
+    {
+        VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle.Auto => ReelsStyle.Auto,
+        VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle.ExpertClean => ReelsStyle.ExpertClean,
+        VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle.DynamicViral => ReelsStyle.DynamicViral,
+        VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle.Cinematic => ReelsStyle.Cinematic,
+        VideoFactory.VideoProduction.Domain.Jobs.RequestedReelsStyle.PremiumAds => ReelsStyle.PremiumAds,
+        _ => throw new ArgumentOutOfRangeException(nameof(style))
+    };
+
     private static ProviderPlanningRequest CreateProviderRequest(
         PlanningRequest request,
         EditingEvaluation editingEvaluation)
     {
         AnalysisResult effectiveAnalysis = ApplyEditingEvaluation(request.Analysis, editingEvaluation);
+        MultiClipDecision? multiClip = editingEvaluation.Decisions
+            .OfType<MultiClipDecision>()
+            .FirstOrDefault(decision => decision.Status == EditingDecisionStatus.Applied);
+        HashSet<SegmentId>? selectedSegments = multiClip?.Selections
+            .Select(selection => selection.SegmentId)
+            .ToHashSet();
         return new(
             request.Comment,
             request.Settings.Tempo,
@@ -303,6 +325,7 @@ public sealed class EditPlanPlanner
             request.Settings.CaptionsEnabled,
             effectiveAnalysis.AllowedSegments
                 .Where(segment => request.Analysis.SchemaVersion < 2 || segment.IsApproved)
+                .Where(segment => selectedSegments is null || selectedSegments.Contains(segment.Id))
                 .Select(segment => new ProviderSegment(
                     segment.Id,
                     segment.Mapping.Master.DurationMicroseconds))
@@ -367,6 +390,18 @@ public sealed class EditPlanPlanner
             .Where(decision => decision.Status == EditingDecisionStatus.Applied)
             .SelectMany(decision => decision.Shots)
             .ToDictionary(shot => shot.SegmentId, shot => shot.Output);
+        ImmutableArray<SegmentId> requiredSegments = editingEvaluation.Decisions
+            .OfType<MultiClipDecision>()
+            .Where(decision => decision.Status == EditingDecisionStatus.Applied)
+            .SelectMany(decision => decision.Selections)
+            .Select(selection => selection.SegmentId)
+            .ToImmutableArray();
+        if (requiredSegments.Any(required => response.VideoClips.All(clip => clip.SegmentId != required)))
+        {
+            throw new PlanConstructionException(
+                "planning.required_segment_missing",
+                "Provider omitted a segment selected by the multi-clip director.");
+        }
         List<VideoClip> clips = [];
         foreach (ProviderVideoClip providerClip in response.VideoClips)
         {
@@ -416,7 +451,7 @@ public sealed class EditPlanPlanner
         }
 
         return new EditPlan(
-            1,
+            request.MultiSourceAnalysis is null ? 1 : 3,
             request.JobId,
             request.VariantId,
             CreateRevisionId(request, response),
@@ -438,7 +473,18 @@ public sealed class EditPlanPlanner
                     1m)).ToImmutableArray(),
                 ImmutableArray<MusicClip>.Empty),
             new CaptionTrack(captions),
-            new OverlayTrack(ImmutableArray<Overlay>.Empty));
+            new OverlayTrack(ImmutableArray<Overlay>.Empty))
+        {
+            Sources = request.MultiSourceAnalysis is null
+                ? []
+                : [.. clips
+                    .Select(clip => clip.Mapping)
+                    .DistinctBy(mapping => (mapping.OriginalAssetId, mapping.MasterAssetId))
+                    .Select(mapping => new EditPlanSource(
+                        mapping.OriginalAssetId,
+                        mapping.MasterAssetId,
+                        request.Assets[mapping.MasterAssetId].Metadata.DurationMicroseconds))]
+        };
     }
 
     private static RevisionId CreateRevisionId(

@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text.Json;
 using System.Security.Cryptography;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
@@ -69,36 +70,60 @@ public sealed class PlanningStageExecutor : IJobStageExecutor
                     "The saved analysis result was not found.");
             }
 
-            AnalysisResult? analysis = await ReadAnalysisAsync(analysisArtifact, cancellationToken);
-            if (analysis is null)
+            StoredAnalysis? storedAnalysis = await ReadAnalysisAsync(analysisArtifact, cancellationToken);
+            if (storedAnalysis is null)
             {
                 return StageExecutionResult.Permanent(
                     "planning.analysis_invalid",
                     "The saved analysis result is invalid.");
             }
 
-            if (analysis.OriginalAssetId != job.Request.SourceAssetId
-                || analysisArtifact.ParentArtifactId != analysis.MasterAssetId)
+            AnalysisResult analysis = storedAnalysis.Compatibility;
+            MultiSourceAnalysisResult? multiSourceAnalysis = storedAnalysis.MultiSource;
+            if (multiSourceAnalysis is null
+                && (analysis.OriginalAssetId != job.Request.SourceAssetId
+                    || analysisArtifact.ParentArtifactId != analysis.MasterAssetId))
             {
                 return StageExecutionResult.Permanent(
                     "planning.analysis_source_mismatch",
                     "The analysis result belongs to another source artifact.");
             }
 
-            ArtifactRecord? master = await artifactStore.GetAsync(analysis.MasterAssetId, cancellationToken);
-            ArtifactRecord? original = await artifactStore.GetAsync(analysis.OriginalAssetId, cancellationToken);
-            if (master is null || original is null || master.ParentArtifactId != original.ArtifactId
-                || master.JobId != job.JobId)
+            IReadOnlyList<(ArtifactId OriginalId, ArtifactId MasterId)> sourcePairs = multiSourceAnalysis is null
+                ? [(analysis.OriginalAssetId, analysis.MasterAssetId)]
+                : [.. multiSourceAnalysis.Sources.Select(source => (source.OriginalAssetId, source.MasterAssetId))];
+            if (multiSourceAnalysis is not null
+                && !sourcePairs.Select(pair => pair.OriginalId).SequenceEqual(job.Request.SourceAssetIds))
             {
                 return StageExecutionResult.Permanent(
-                    "planning.asset_missing",
-                    "An artifact referenced by the analysis result was not found.");
+                    "planning.analysis_source_mismatch",
+                    "The analysis source order differs from the Job source order.");
             }
 
-            IReadOnlyDictionary<ArtifactId, MediaAsset> assets = CreateAssets(original, master);
-            if (!AnalysisValidator.Validate(analysis, assets).IsEmpty)
+            List<(ArtifactRecord Original, ArtifactRecord Master)> sourceArtifacts = [];
+            foreach ((ArtifactId originalId, ArtifactId masterId) in sourcePairs)
             {
-                return StageExecutionResult.Permanent("planning.analysis_invalid", "The saved analysis result failed validation.");
+                ArtifactRecord? master = await artifactStore.GetAsync(masterId, cancellationToken);
+                ArtifactRecord? original = await artifactStore.GetAsync(originalId, cancellationToken);
+                if (master is null || original is null || master.ParentArtifactId != original.ArtifactId
+                    || master.JobId != job.JobId)
+                {
+                    return StageExecutionResult.Permanent(
+                        "planning.asset_missing",
+                        "An artifact referenced by the analysis result was not found.");
+                }
+                sourceArtifacts.Add((original, master));
+            }
+
+            IReadOnlyDictionary<ArtifactId, MediaAsset> assets = CreateAssets(sourceArtifacts);
+            ImmutableArray<ValidationIssue> analysisIssues = multiSourceAnalysis is null
+                ? AnalysisValidator.Validate(analysis, assets)
+                : AnalysisValidator.Validate(multiSourceAnalysis, assets);
+            if (!analysisIssues.IsEmpty)
+            {
+                return StageExecutionResult.Permanent(
+                    "planning.analysis_invalid",
+                    "The saved analysis result failed validation.");
             }
             PlanningResult result = await planner.PlanAsync(
                 new PlanningRequest(
@@ -110,7 +135,8 @@ public sealed class PlanningStageExecutor : IJobStageExecutor
                     assets,
                     CreateTemplates(),
                     job.TelegramUserId,
-                    jobLimitUsd),
+                    jobLimitUsd,
+                    multiSourceAnalysis),
                 cancellationToken);
 
             return result switch
@@ -144,7 +170,7 @@ public sealed class PlanningStageExecutor : IJobStageExecutor
         }
     }
 
-    private async Task<AnalysisResult?> ReadAnalysisAsync(
+    private async Task<StoredAnalysis?> ReadAnalysisAsync(
         ArtifactRecord artifact,
         CancellationToken cancellationToken)
     {
@@ -163,22 +189,56 @@ public sealed class PlanningStageExecutor : IJobStageExecutor
         string hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken));
         if (!string.Equals(hash, artifact.Sha256, StringComparison.OrdinalIgnoreCase)) return null;
         stream.Position = 0;
-        return await JsonSerializer.DeserializeAsync<AnalysisResult>(stream, JsonOptions, cancellationToken);
+        using JsonDocument document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!document.RootElement.TryGetProperty("schemaVersion", out JsonElement version)
+            || !version.TryGetInt32(out int schemaVersion))
+            return null;
+        if (schemaVersion == 3)
+        {
+            MultiSourceAnalysisResult? aggregate = document.RootElement.Deserialize<MultiSourceAnalysisResult>(JsonOptions);
+            if (aggregate is null
+                || aggregate.Sources.IsDefaultOrEmpty
+                || aggregate.Sources.Select(source => source.OriginalAssetId).Distinct().Count() != aggregate.Sources.Length
+                || aggregate.Sources.Select(source => source.MasterAssetId).Distinct().Count() != aggregate.Sources.Length)
+                return null;
+            return new StoredAnalysis(CreateCompatibilityAnalysis(aggregate), aggregate);
+        }
+
+        AnalysisResult? legacy = document.RootElement.Deserialize<AnalysisResult>(JsonOptions);
+        return legacy is null ? null : new StoredAnalysis(legacy, null);
     }
 
     private static IReadOnlyDictionary<ArtifactId, MediaAsset> CreateAssets(
-        ArtifactRecord original,
-        ArtifactRecord master)
+        IEnumerable<(ArtifactRecord Original, ArtifactRecord Master)> sourceArtifacts)
     {
-        using JsonDocument document = JsonDocument.Parse(master.MetadataJson ?? throw new JsonException("Master metadata is missing."));
-        JsonElement root = document.RootElement;
-        MediaMetadata masterMetadata = ReadMetadata(root, "mediaMetadata");
-        MediaMetadata originalMetadata = ReadMetadata(root, "originalMetadata");
-
-        return new Dictionary<ArtifactId, MediaAsset>
+        Dictionary<ArtifactId, MediaAsset> assets = [];
+        foreach ((ArtifactRecord original, ArtifactRecord master) in sourceArtifacts)
         {
-            [original.ArtifactId] = new MediaAsset(original.ArtifactId, originalMetadata),
-            [master.ArtifactId] = new MediaAsset(master.ArtifactId, masterMetadata)
+            using JsonDocument document = JsonDocument.Parse(master.MetadataJson ?? throw new JsonException("Master metadata is missing."));
+            JsonElement root = document.RootElement;
+            assets.Add(original.ArtifactId, new MediaAsset(original.ArtifactId, ReadMetadata(root, "originalMetadata")));
+            assets.Add(master.ArtifactId, new MediaAsset(master.ArtifactId, ReadMetadata(root, "mediaMetadata")));
+        }
+        return assets;
+    }
+
+    private static AnalysisResult CreateCompatibilityAnalysis(MultiSourceAnalysisResult analysis)
+    {
+        AnalysisSource first = analysis.Sources[0];
+        return new AnalysisResult(
+            2,
+            analysis.RevisionId,
+            first.OriginalAssetId,
+            first.MasterAssetId,
+            [.. analysis.Sources.SelectMany(source => source.Speech)],
+            first.Pauses,
+            first.Scenes,
+            analysis.AllowedSegments)
+        {
+            Features = new AnalysisFeatureSet([.. analysis.Sources.SelectMany(source => source.Features.Segments)])
+            {
+                FocalObservations = [.. analysis.Sources.SelectMany(source => source.Features.FocalObservations)]
+            }
         };
     }
 
@@ -198,4 +258,6 @@ public sealed class PlanningStageExecutor : IJobStageExecutor
                 [CaptionPreset.None, CaptionPreset.Minimal, CaptionPreset.Emphasis],
                 supportsTitle: true)
         };
+
+    private sealed record StoredAnalysis(AnalysisResult Compatibility, MultiSourceAnalysisResult? MultiSource);
 }
