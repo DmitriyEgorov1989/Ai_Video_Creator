@@ -97,6 +97,10 @@ public sealed class SequentialJobProcessor
             }, cancellationToken);
         }
         int attemptNumber = (previousAttempt?.AttemptNumber ?? 0) + 1;
+        int visitAttemptNumber = await attemptStore.CountCurrentVisitAttemptsAsync(
+            job.JobId,
+            stage,
+            cancellationToken) + 1;
         DateTimeOffset startedAt = DateTimeOffset.UtcNow;
         Guid attemptId = Guid.NewGuid();
 
@@ -181,7 +185,7 @@ public sealed class SequentialJobProcessor
         {
             StageExecutionKind.Completed => StageAttemptStatus.Completed,
             StageExecutionKind.WaitingForApproval => StageAttemptStatus.Completed,
-            StageExecutionKind.Retryable when attemptNumber < maxStageAttempts => StageAttemptStatus.Retryable,
+            StageExecutionKind.Retryable when visitAttemptNumber < maxStageAttempts => StageAttemptStatus.Retryable,
             StageExecutionKind.Retryable => StageAttemptStatus.Permanent,
             StageExecutionKind.Permanent => StageAttemptStatus.Permanent,
             StageExecutionKind.Cancelled => StageAttemptStatus.Cancelled,
@@ -206,7 +210,9 @@ public sealed class SequentialJobProcessor
 
         if (result.Kind == StageExecutionKind.Completed)
         {
-            JobProgress nextProgress = JobStageTransitions.Complete(job.Progress);
+            JobProgress nextProgress = JobStageTransitions.Complete(
+                job.Progress,
+                result.CompletionAction);
             await PersistTransitionAsync(
                 job.JobId,
                 job.Progress.Status,
@@ -239,7 +245,7 @@ public sealed class SequentialJobProcessor
             }
         }
         else if (result.Kind is StageExecutionKind.Permanent
-            || (result.Kind == StageExecutionKind.Retryable && attemptNumber >= maxStageAttempts))
+            || (result.Kind == StageExecutionKind.Retryable && visitAttemptNumber >= maxStageAttempts))
         {
             await PersistTransitionAsync(
                 job.JobId,

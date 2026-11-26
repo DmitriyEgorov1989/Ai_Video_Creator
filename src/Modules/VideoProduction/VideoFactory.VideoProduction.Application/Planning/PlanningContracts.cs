@@ -381,6 +381,17 @@ public interface IEditPlanRevisionStore
         VariantId variantId,
         CancellationToken cancellationToken);
 
+    /// <summary>Находит утверждённую ревизию непосредственного родительского Variant.</summary>
+    /// <param name="jobId">Идентификатор Job.</param>
+    /// <param name="variantId">Идентификатор дочернего Variant.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Ревизия родителя или <see langword="null"/>, если Variant не имеет родителя.</returns>
+    Task<EditPlanRevision?> FindParentApprovedAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<EditPlanRevision?>(null);
+
     /// <summary>Находит ревизию по её идентификатору.</summary>
     /// <param name="revisionId">Идентификатор ревизии.</param>
     /// <param name="cancellationToken">Токен отмены.</param>

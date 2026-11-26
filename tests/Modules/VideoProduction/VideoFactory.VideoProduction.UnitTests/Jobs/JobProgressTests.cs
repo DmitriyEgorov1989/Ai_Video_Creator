@@ -13,6 +13,7 @@ public sealed class JobProgressTests
             .CompleteAnalysis()
             .CompletePlanning()
             .CompleteRendering()
+            .CompleteCritique()
             .CompleteVerification()
             .CompletePackaging()
             .ConfirmDelivery();
@@ -114,6 +115,27 @@ public sealed class JobProgressTests
         Assert.Equal(ProductionStage.Preparation, queued.Stage);
     }
 
+    [Fact]
+    public void CritiqueCanRequestRemountAndEvaluateTheNextRender()
+    {
+        JobProgress critique = JobProgress.Create(ProductionMode.Fast)
+            .Start()
+            .CompletePreparation()
+            .CompleteAnalysis()
+            .CompletePlanning()
+            .CompleteRendering();
+
+        Assert.Equal(ProductionStage.Critique, critique.Stage);
+
+        JobProgress secondCritique = critique
+            .RequestRemount()
+            .CompleteRendering();
+
+        Assert.Equal(JobStatus.Running, secondCritique.Status);
+        Assert.Equal(ProductionStage.Critique, secondCritique.Stage);
+        Assert.Equal(ProductionStage.Verification, secondCritique.CompleteCritique().Stage);
+    }
+
     [Theory]
     [InlineData(JobStatus.Completed)]
     [InlineData(JobStatus.Failed)]
@@ -138,6 +160,7 @@ public sealed class JobProgressTests
         .CompleteAnalysis()
         .CompletePlanning()
         .CompleteRendering()
+        .CompleteCritique()
         .CompleteVerification()
         .CompletePackaging()
         .ConfirmDelivery();

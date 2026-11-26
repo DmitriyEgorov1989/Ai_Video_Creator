@@ -172,6 +172,79 @@ public sealed class SequentialJobProcessorTests
         Assert.Equal(StageAttemptStatus.Cancelled, attempts.Last?.Status);
     }
 
+    [Fact]
+    public async Task CritiqueRemountActionReturnsJobToRendering()
+    {
+        JobCreationRecord job = CreateJob() with
+        {
+            Progress = JobProgress.Restore(
+                JobStatus.Running,
+                ProductionStage.Critique,
+                ProductionMode.Fast,
+                ProductionMode.Fast,
+                null)
+        };
+        FakeStateStore stateStore = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            stateStore,
+            new FakeAttemptStore(),
+            new FakeExecutor(StageExecutionResult.Success(
+                completionAction: StageCompletionAction.Remount)));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Equal(JobStatus.Running, stateStore.NextProgress?.Status);
+        Assert.Equal(ProductionStage.Rendering, stateStore.NextProgress?.Stage);
+    }
+
+    [Fact]
+    public async Task CompletedPreviousVisitDoesNotConsumeNewRetryBudget()
+    {
+        JobCreationRecord job = CreateJob() with
+        {
+            Progress = JobProgress.Restore(
+                JobStatus.Running,
+                ProductionStage.Rendering,
+                ProductionMode.Fast,
+                ProductionMode.Fast,
+                null)
+        };
+        FakeAttemptStore attempts = new()
+        {
+            Previous = new StageAttemptRecord(
+                Guid.NewGuid(),
+                job.JobId,
+                job.VariantId,
+                ProductionStage.Rendering,
+                3,
+                StageAttemptStatus.Completed,
+                null,
+                null,
+                DateTimeOffset.UtcNow.AddMinutes(-1),
+                DateTimeOffset.UtcNow.AddMinutes(-1))
+        };
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            new FakeStateStore(),
+            attempts,
+            new FakeExecutor(StageExecutionResult.Retryable("render.transient", "Retry.")));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        Assert.Equal(StageAttemptStatus.Retryable, attempts.Last?.Status);
+    }
+
     private static JobCreationRecord CreateJob() => new(
         JobId.New(),
         VariantId.New(),
@@ -269,6 +342,7 @@ public sealed class SequentialJobProcessorTests
     private sealed class FakeAttemptStore : IStageAttemptStore
     {
         public StageAttemptRecord? Last { get; private set; }
+        public StageAttemptRecord? Previous { get; init; }
 
         public Task AppendAsync(
             StageAttemptRecord attempt,
@@ -282,6 +356,6 @@ public sealed class SequentialJobProcessorTests
             JobId jobId,
             ProductionStage stage,
             CancellationToken cancellationToken) =>
-            Task.FromResult<StageAttemptRecord?>(null);
+            Task.FromResult(Previous);
     }
 }

@@ -248,6 +248,22 @@ public sealed class OutputQualityOptions
     public long DeliveryEncodeAudioBitrateBitsPerSecond { get; init; } = 96_000;
 }
 
+/// <summary>Параметры объективной критики готового монтажа.</summary>
+public sealed class CriticOptions
+{
+    /// <summary>Имя секции конфигурации.</summary>
+    public const string SectionName = "Critic";
+
+    /// <summary>Максимальное число повторных рендеров одного Variant.</summary>
+    public int MaxRemounts { get; init; } = 2;
+
+    /// <summary>Минимальная длительность подтверждаемого чёрного интервала в миллисекундах.</summary>
+    public int BlackMinimumDurationMilliseconds { get; init; } = 200;
+
+    /// <summary>Минимальная длительность незапланированного неподвижного интервала в миллисекундах.</summary>
+    public int FreezeMinimumDurationMilliseconds { get; init; } = 1_000;
+}
+
 /// <summary>
 /// Параметры подключения к внешнему API искусственного интеллекта.
 /// Экземпляр параметров не должен быть <see langword="null"/>.

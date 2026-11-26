@@ -29,6 +29,8 @@ using VideoFactory.VideoProduction.Infrastructure.Planning;
 using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Events;
+using VideoFactory.VideoProduction.Application.Critique;
+using VideoFactory.VideoProduction.Application.Variants;
 using VideoFactory.VideoProduction.Application.TelegramIntake;
 using Telegram.Bot;
 
@@ -157,6 +159,10 @@ public static class VideoFactoryHost
                 services.GetRequiredService<IProcessRunner>(),
                 options.FfmpegPath);
         });
+         builder.Services.AddSingleton<IOutputAudioQualityAnalyzer>(services =>
+             new FfmpegOutputAudioQualityAnalyzer(
+                 services.GetRequiredService<IProcessRunner>(),
+                 services.GetRequiredService<IOptions<FfmpegOptions>>().Value.FfmpegPath));
          builder.Services.AddSingleton<IOutputQualityAssurance>(services =>
          {
             ProcessTimeoutOptions timeouts = services
@@ -166,9 +172,7 @@ public static class VideoFactoryHost
                  services.GetRequiredService<IMediaDecodeVerifier>(),
                  TimeSpan.FromSeconds(timeouts.ProbeSeconds),
                   timeouts.MaxOutputBytes,
-                  new FfmpegOutputAudioQualityAnalyzer(
-                      services.GetRequiredService<IProcessRunner>(),
-                      services.GetRequiredService<IOptions<FfmpegOptions>>().Value.FfmpegPath));
+                   services.GetRequiredService<IOutputAudioQualityAnalyzer>());
          });
          builder.Services.AddSingleton<IVideoFeatureAnalyzer>(services =>
          {
@@ -230,8 +234,16 @@ public static class VideoFactoryHost
             new SqliteEditPlanRevisionStore(BuildConnectionString(services)));
          builder.Services.AddSingleton<IPlanningAttemptStore>(services =>
              new SqlitePlanningAttemptStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<ICritiqueAttemptStore>(services =>
+             new SqliteCritiqueAttemptStore(BuildConnectionString(services)));
          builder.Services.AddSingleton<IPlanningApprovalStore>(services =>
              new SqlitePlanningApprovalStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<IVariantChangeStore>(services =>
+             new SqliteVariantChangeStore(BuildConnectionString(services)));
+         builder.Services.AddSingleton<RequestVariantChangeUseCase>(services =>
+             new RequestVariantChangeUseCase(
+                 services.GetRequiredService<IVariantChangeStore>(),
+                 services.GetRequiredService<IJobSignal>()));
           builder.Services.AddSingleton<IPlanningCostPolicy>(services =>
          {
              PlanningOptions options = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
@@ -305,9 +317,11 @@ public static class VideoFactoryHost
                services.GetRequiredService<ILogger<TelegramUpdateHandler>>(),
                services.GetRequiredService<PlanningApprovalUseCase>(),
                 services.GetRequiredService<CancelJobUseCase>(),
-                services.GetRequiredService<RepeatDeliveryUseCase>(),
-                services.GetRequiredService<IJobSignal>(),
-                BuildWorkspaceRoot(services)));
+                 services.GetRequiredService<RepeatDeliveryUseCase>(),
+                 services.GetRequiredService<IJobSignal>(),
+                 BuildWorkspaceRoot(services),
+                 services.GetRequiredService<RequestVariantChangeUseCase>(),
+                 services.GetRequiredService<IJobStateStore>()));
          builder.Services.AddHostedService<TelegramPollingService>();
          builder.Services.AddHostedService<TelegramJobNotificationWorker>();
         builder.Services.AddSingleton<PreparationStageExecutor>(services =>
@@ -378,6 +392,40 @@ public static class VideoFactoryHost
                     string.IsNullOrWhiteSpace(options.ExpectedPixelFormat) ? null : options.ExpectedPixelFormat,
                     options.MaxTelegramBytes));
         });
+        builder.Services.AddSingleton<IRenderedMediaObserver>(services =>
+        {
+            CriticOptions critic = services.GetRequiredService<IOptions<CriticOptions>>().Value;
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            return new FfmpegRenderedMediaObserver(
+                services.GetRequiredService<IProcessRunner>(),
+                services.GetRequiredService<IOptions<FfmpegOptions>>().Value.FfmpegPath,
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes,
+                critic.BlackMinimumDurationMilliseconds,
+                minimumFreezeDurationMilliseconds: critic.FreezeMinimumDurationMilliseconds);
+        });
+        builder.Services.AddSingleton<ICritiqueAnalysisSource>(services =>
+            new ArtifactCritiqueAnalysisSource(
+                services.GetRequiredService<IArtifactStore>(),
+                BuildWorkspaceRoot(services)));
+        builder.Services.AddSingleton<CritiqueStageExecutor>(services =>
+        {
+            ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+            AudioNormalizationOptions audio = services.GetRequiredService<IOptions<AudioNormalizationOptions>>().Value;
+            return
+            new CritiqueStageExecutor(
+                services.GetRequiredService<IEditPlanRevisionStore>(),
+                services.GetRequiredService<IArtifactStore>(),
+                services.GetRequiredService<IRenderedMediaObserver>(),
+                BuildWorkspaceRoot(services),
+                services.GetRequiredService<IOptions<CriticOptions>>().Value.MaxRemounts,
+                services.GetRequiredService<ICritiqueAnalysisSource>(),
+                services.GetRequiredService<ICritiqueAttemptStore>(),
+                services.GetRequiredService<IOutputAudioQualityAnalyzer>(),
+                (decimal)audio.TruePeakDbtp,
+                TimeSpan.FromSeconds(timeouts.DecodeSeconds),
+                timeouts.MaxOutputBytes);
+        });
          builder.Services.AddSingleton<PackagingStageExecutor>(services =>
          {
              OutputQualityOptions options = services.GetRequiredService<IOptions<OutputQualityOptions>>().Value;
@@ -412,8 +460,9 @@ public static class VideoFactoryHost
                  services.GetRequiredService<PreparationStageExecutor>(),
                  services.GetRequiredService<AnalysisStageExecutor>(),
                  services.GetRequiredService<PlanningStageExecutor>(),
-                 services.GetRequiredService<RenderingStageExecutor>(),
-                services.GetRequiredService<VerificationStageExecutor>(),
+                  services.GetRequiredService<RenderingStageExecutor>(),
+                 services.GetRequiredService<CritiqueStageExecutor>(),
+                 services.GetRequiredService<VerificationStageExecutor>(),
                  services.GetRequiredService<PackagingStageExecutor>(),
                  services.GetRequiredService<DeliveryStageExecutor>()));
         builder.Services.AddSingleton<SequentialJobProcessor>();

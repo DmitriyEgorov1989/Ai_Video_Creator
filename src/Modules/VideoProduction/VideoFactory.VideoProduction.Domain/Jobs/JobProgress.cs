@@ -44,47 +44,52 @@ public enum ProductionStage
     /// <summary>
     /// Подготовка исходных материалов.
     /// </summary>
-    Preparation,
+    Preparation = 0,
 
     /// <summary>
     /// Анализ подготовленного видео.
     /// </summary>
-    Analysis,
+    Analysis = 1,
 
     /// <summary>
     /// Подготовка и согласование творческого брифа.
     /// </summary>
-    Briefing,
+    Briefing = 2,
 
     /// <summary>
     /// Формирование монтажных планов.
     /// </summary>
-    Planning,
+    Planning = 3,
 
     /// <summary>
     /// Подготовка и согласование предварительного просмотра.
     /// </summary>
-    Preview,
+    Preview = 4,
 
     /// <summary>
     /// Рендеринг итоговых видео.
     /// </summary>
-    Rendering,
+    Rendering = 5,
 
     /// <summary>
     /// Проверка готовых видео.
     /// </summary>
-    Verification,
+    Verification = 6,
 
     /// <summary>
     /// Финализация проверенного результата: QA report, manifest и MP4 без ZIP.
     /// </summary>
-    Packaging,
+    Packaging = 7,
 
     /// <summary>
     /// Доставка результатов пользователю.
     /// </summary>
-    Delivery
+    Delivery = 8,
+
+    /// <summary>
+    /// Объективная и субъективная критика готового рендера до финальной проверки.
+    /// </summary>
+    Critique = 9
 }
 
 /// <summary>
@@ -367,12 +372,28 @@ public sealed class JobProgress
     }
 
     /// <summary>
-    /// Завершает рендеринг и переводит задание к проверке результатов.
+    /// Завершает рендеринг и переводит задание к критике монтажа.
     /// </summary>
-    /// <returns>Новое состояние выполняемой проверки.</returns>
+    /// <returns>Новое состояние выполняемой критики.</returns>
     public JobProgress CompleteRendering() => AdvanceRunning(
         ProductionStage.Rendering,
+        ProductionStage.Critique);
+
+    /// <summary>
+    /// Завершает критику принятого рендера и переводит задание к технической проверке.
+    /// </summary>
+    /// <returns>Новое состояние выполняемой проверки.</returns>
+    public JobProgress CompleteCritique() => AdvanceRunning(
+        ProductionStage.Critique,
         ProductionStage.Verification);
+
+    /// <summary>
+    /// Возвращает задание из критики к рендерингу новой ревизии монтажного плана.
+    /// </summary>
+    /// <returns>Новое состояние повторного рендеринга.</returns>
+    public JobProgress RequestRemount() => AdvanceRunning(
+        ProductionStage.Critique,
+        ProductionStage.Rendering);
 
     /// <summary>
     /// Завершает проверку и переводит задание к упаковке результатов.

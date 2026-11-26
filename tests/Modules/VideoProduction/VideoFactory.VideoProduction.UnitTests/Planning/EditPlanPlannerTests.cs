@@ -135,6 +135,27 @@ public sealed class EditPlanPlannerTests
     }
 
     [Fact]
+    public async Task AlternativeVariantIdenticalToParentIsRejectedAndNotSaved()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        EditPlan parentPlan = fixture.Source.Plan with { VariantId = VariantId.New() };
+        fixture.Store.ParentApproved = new EditPlanRevision(
+            parentPlan.RevisionId,
+            parentPlan.JobId,
+            parentPlan.VariantId,
+            "parent-hash",
+            parentPlan,
+            0m);
+
+        PlanningResult.Rejected rejected = Assert.IsType<PlanningResult.Rejected>(
+            await fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+
+        Assert.Equal("planning.variant_not_diverse", rejected.ErrorCode);
+        Assert.Equal(0, fixture.Store.SaveCount);
+        Assert.Equal(2, fixture.Provider.CreatePlanCount);
+    }
+
+    [Fact]
     public async Task ProviderCannotOmitMultiClipDirectorSelection()
     {
         PlanningFixture fixture = PlanningFixture.Create();
@@ -402,6 +423,13 @@ public sealed class EditPlanPlannerTests
     {
         private EditPlanRevision? revision;
         public int SaveCount { get; private set; }
+        public EditPlanRevision? ParentApproved { get; set; }
+
+        public Task<EditPlanRevision?> FindParentApprovedAsync(
+            JobId jobId,
+            VariantId variantId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(ParentApproved);
 
         public Task<EditPlanRevision?> GetAsync(
             RevisionId revisionId,

@@ -21,6 +21,15 @@ public interface IArtifactStore
         string artifactType,
         CancellationToken cancellationToken);
 
+    /// <summary>Находит последний артефакт заданного типа для Variant.</summary>
+    async Task<ArtifactRecord?> FindLatestAsync(
+        JobId jobId,
+        VariantId variantId,
+        string artifactType,
+        CancellationToken cancellationToken) =>
+        (await ListAsync(jobId, artifactType, cancellationToken))
+            .LastOrDefault(record => record.VariantId == variantId);
+
     /// <summary>Возвращает все артефакты заданного типа для Job в порядке регистрации.</summary>
     /// <param name="jobId">Идентификатор Job.</param>
     /// <param name="artifactType">Непустой тип артефакта.</param>
@@ -30,6 +39,16 @@ public interface IArtifactStore
         JobId jobId,
         string artifactType,
         CancellationToken cancellationToken);
+
+    /// <summary>Возвращает артефакты заданного типа для Variant в порядке регистрации.</summary>
+    async Task<IReadOnlyList<ArtifactRecord>> ListAsync(
+        JobId jobId,
+        VariantId variantId,
+        string artifactType,
+        CancellationToken cancellationToken) =>
+        (await ListAsync(jobId, artifactType, cancellationToken))
+            .Where(record => record.VariantId == variantId)
+            .ToArray();
 
     /// <summary>
     /// Регистрирует описание Artifact или возвращает уже существующее описание.

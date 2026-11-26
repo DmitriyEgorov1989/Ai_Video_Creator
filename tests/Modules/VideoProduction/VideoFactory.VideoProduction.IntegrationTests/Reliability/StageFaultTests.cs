@@ -21,6 +21,7 @@ using VideoFactory.VideoProduction.Infrastructure.Packaging;
 using VideoFactory.VideoProduction.Infrastructure.Delivery;
 using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.Stages;
+using VideoFactory.VideoProduction.Application.Critique;
 
 namespace VideoFactory.VideoProduction.IntegrationTests.Reliability;
 
@@ -127,17 +128,20 @@ public sealed class StageFaultTests
             Assert.True(await Processor().ProcessNextAsync("restarted", TimeSpan.FromSeconds(1), TimeSpan.FromHours(1), 3, CancellationToken.None));
             JobCreationRecord? recovered = await new SqliteJobStateStore(cs).GetAsync(created.JobId, CancellationToken.None);
             Assert.Equal(created.VariantId, recovered?.VariantId);
-            Assert.Equal(ProductionStage.Verification, recovered?.Progress.Stage);
+            Assert.Equal(ProductionStage.Critique, recovered?.Progress.Stage);
             Assert.NotNull(await artifacts.FindLatestAsync(created.JobId, "render-output", CancellationToken.None));
             JobCreationRecord renderingReplay = recovered! with { Progress = JobProgress.Restore(JobStatus.Running, ProductionStage.Rendering, ProductionMode.Fast, ProductionMode.Fast, null) };
             Assert.Equal(StageExecutionKind.Completed, (await Executor().ExecuteAsync(renderingReplay, CancellationToken.None)).Kind);
             Assert.Equal(fault == "storage.insufficient_space" ? 1 : 2, host.Calls);
             Assert.Equal(new byte[] { 7, 8, 9 }, await File.ReadAllBytesAsync(Path.Combine(root, "source.mp4")));
+            CritiqueStageExecutor critique = new(plans, artifacts, new NoDefectObserver(), root, 2);
+            Assert.Equal(StageExecutionKind.Completed, (await critique.ExecuteAsync(recovered!, CancellationToken.None)).Kind);
+            JobCreationRecord verificationJob = recovered! with { Progress = recovered.Progress.CompleteCritique() };
             VerificationStageExecutor verification = new(plans, artifacts, new Qa(), root,
                 new OutputQualityOptionsProfile(1080, 1920, 1, false, "yuv420p", 1000));
-            Assert.Equal(StageExecutionKind.Completed, (await verification.ExecuteAsync(recovered!, CancellationToken.None)).Kind);
+            Assert.Equal(StageExecutionKind.Completed, (await verification.ExecuteAsync(verificationJob, CancellationToken.None)).Kind);
             ArtifactRecord? firstReport = await artifacts.FindLatestAsync(created.JobId, "qa-report", CancellationToken.None);
-            Assert.Equal(StageExecutionKind.Completed, (await verification.ExecuteAsync(recovered!, CancellationToken.None)).Kind);
+            Assert.Equal(StageExecutionKind.Completed, (await verification.ExecuteAsync(verificationJob, CancellationToken.None)).Kind);
             Assert.Equal(firstReport?.ArtifactId, (await artifacts.FindLatestAsync(created.JobId, "qa-report", CancellationToken.None))?.ArtifactId);
             JobCreationRecord packagingJob = recovered! with { Progress = JobProgress.Restore(JobStatus.Running, ProductionStage.Packaging, ProductionMode.Fast, ProductionMode.Fast, null) };
             PackagingStageExecutor packaging = new(artifacts, root, 1000, null, null, plans, null, null, 0);
@@ -269,6 +273,14 @@ public sealed class StageFaultTests
     {
         public Task<OutputQualityResult> VerifyAsync(OutputQualityRequest request, CancellationToken token) =>
             Task.FromResult(OutputQualityResult.Succeeded(1080, 1920, 30));
+    }
+    private sealed class NoDefectObserver : IRenderedMediaObserver
+    {
+        public Task<RenderedMediaObservationResult> ObserveAsync(
+            RenderedMediaObservationRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<RenderedMediaObservationResult>(
+                new RenderedMediaObservationResult.Succeeded(new RenderedMediaObservation([])));
     }
     private sealed class Delivery : IVideoDelivery
     {

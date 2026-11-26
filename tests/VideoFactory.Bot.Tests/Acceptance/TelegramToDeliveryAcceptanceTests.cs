@@ -244,10 +244,16 @@ public sealed class TelegramToDeliveryAcceptanceTests
             VerificationStageExecutor verification = new(
                 PlanRevisions, Artifacts,
                 new OutputQualityAssurance(Probe, Decode, TimeSpan.FromMinutes(1), 65_536), root, qualityProfile);
+            CritiqueStageExecutor critique = new(
+                PlanRevisions,
+                Artifacts,
+                new FfmpegRenderedMediaObserver(Runner, "ffmpeg", TimeSpan.FromMinutes(1), 65_536, 200),
+                root,
+                2);
             PackagingStageExecutor packaging = new(
                 Artifacts, root, 50_000_000, new PermissiveBudget(), null, PlanRevisions, null, null, 0);
             DeliveryStageExecutor delivery = new(Artifacts, Delivery, Receipts, root, 123456789, PlanRevisions);
-            ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, verification, packaging, delivery);
+            ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, critique, verification, packaging, delivery);
             Processor = new SequentialJobProcessor(Queue, State, Attempts, stages);
             JobSignal = new CapturingJobSignal();
             IntakeStore = new SqliteTelegramIntakeStore(connectionString);

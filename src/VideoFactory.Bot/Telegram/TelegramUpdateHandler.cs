@@ -10,6 +10,9 @@ using VideoFactory.VideoProduction.Application.Jobs.Cancellation;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Delivery;
 using VideoFactory.VideoProduction.Application.TelegramIntake;
+using VideoFactory.VideoProduction.Application.Variants;
+using VideoFactory.VideoProduction.Application.Jobs.State;
+using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 
 namespace VideoFactory.Bot.Telegram;
 
@@ -30,6 +33,8 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
     private readonly RepeatDeliveryUseCase? repeatDeliveryUseCase;
     private readonly IJobSignal? jobSignal;
     private readonly string workspaceRoot;
+    private readonly RequestVariantChangeUseCase? variantChangeUseCase;
+    private readonly IJobStateStore? jobStateStore;
 
     /// <summary>Создаёт обработчик intake.</summary>
     public TelegramUpdateHandler(
@@ -44,7 +49,9 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         CancelJobUseCase? cancelJobUseCase = null,
         RepeatDeliveryUseCase? repeatDeliveryUseCase = null,
         IJobSignal? jobSignal = null,
-        string? workspaceRoot = null)
+        string? workspaceRoot = null,
+        RequestVariantChangeUseCase? variantChangeUseCase = null,
+        IJobStateStore? jobStateStore = null)
     {
         ArgumentNullException.ThrowIfNull(telegramOptions);
         ArgumentNullException.ThrowIfNull(limitsOptions);
@@ -64,6 +71,8 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
         this.repeatDeliveryUseCase = repeatDeliveryUseCase;
         this.jobSignal = jobSignal;
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? Environment.CurrentDirectory);
+        this.variantChangeUseCase = variantChangeUseCase;
+        this.jobStateStore = jobStateStore;
     }
 
     /// <inheritdoc />
@@ -171,6 +180,12 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             return;
         }
 
+        if (update.Text?.StartsWith("/remount", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            await HandleVariantChangeAsync(update, cancellationToken);
+            return;
+        }
+
         if (update.Media is not null)
         {
             await HandleMediaAsync(update, update.Media, cancellationToken);
@@ -212,6 +227,56 @@ public sealed class TelegramUpdateHandler : IPlanningApprovalHandler
             update.ChatId,
             "Отправьте видео, инструкцию или команду /done.",
             cancellationToken);
+    }
+
+    private async Task HandleVariantChangeAsync(
+        TelegramUpdate update,
+        CancellationToken cancellationToken)
+    {
+        string[] parts = update.Text?.Trim().Split(' ', 3, StringSplitOptions.RemoveEmptyEntries) ?? [];
+        if (parts.Length != 3 || !Guid.TryParse(parts[1], out Guid jobGuid)
+            || string.IsNullOrWhiteSpace(parts[2]) || update.UpdateId <= 0)
+        {
+            await responder.SendTextAsync(
+                update.ChatId,
+                "Использование: /remount <jobId> <описание изменений>.",
+                cancellationToken);
+            return;
+        }
+
+        if (variantChangeUseCase is null || jobStateStore is null)
+        {
+            await responder.SendTextAsync(update.ChatId, "Изменение варианта сейчас недоступно.", cancellationToken);
+            return;
+        }
+
+        JobId jobId = new(jobGuid);
+        JobCreationRecord? job = await jobStateStore.GetAsync(jobId, cancellationToken);
+        if (job is null)
+        {
+            await responder.SendTextAsync(update.ChatId, "Завершённое задание не найдено.", cancellationToken);
+            return;
+        }
+
+        RequestVariantChangeResult result = await variantChangeUseCase.ExecuteAsync(
+            new RequestVariantChangeCommand(
+                jobId,
+                job.VariantId,
+                update.UserId,
+                parts[2].Trim(),
+                $"telegram:{update.UpdateId}"),
+            cancellationToken);
+        string message = result switch
+        {
+            RequestVariantChangeResult.Succeeded { WasCreated: true } =>
+                "Создаю альтернативный вариант с указанными изменениями.",
+            RequestVariantChangeResult.Succeeded =>
+                "Этот запрос альтернативного варианта уже обрабатывается.",
+            RequestVariantChangeResult.Forbidden => "Это задание принадлежит другому пользователю.",
+            RequestVariantChangeResult.Stale => "Изменить можно только завершённый активный вариант.",
+            _ => "Запрос изменения варианта некорректен."
+        };
+        await responder.SendTextAsync(update.ChatId, message, cancellationToken);
     }
 
     private void DeleteIntakeFile(string relativePath)

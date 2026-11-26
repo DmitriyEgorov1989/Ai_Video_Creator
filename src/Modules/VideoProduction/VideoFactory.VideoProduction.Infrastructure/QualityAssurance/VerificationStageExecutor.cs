@@ -54,7 +54,7 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent("verification.plan_not_found", "The approved edit plan was not found for this Job.");
         }
 
-        ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
+        ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "render-output", cancellationToken);
         if (render is null)
         {
             return StageExecutionResult.Retryable("verification.render_output_missing", "The render output is not available yet.");
@@ -101,7 +101,7 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
                 durationFrames = result.DurationFrames
             }
         }, JsonOptions);
-        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "qa-report", cancellationToken);
+        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "qa-report", cancellationToken);
         if (existing is not null && existing.ParentArtifactId == render.ArtifactId && existing.MetadataJson == reportJson
             && File.Exists(ResolvePath(existing.RelativePath))
             && await File.ReadAllTextAsync(ResolvePath(existing.RelativePath), cancellationToken) == reportJson)
@@ -128,7 +128,8 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
             reportJson,
             render.ArtifactId,
             "video-qa/1",
-            job.JobId);
+            job.JobId,
+            job.VariantId);
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(report, cancellationToken);
         if (registration is ArtifactRegistrationResult.Rejected rejected)
         {

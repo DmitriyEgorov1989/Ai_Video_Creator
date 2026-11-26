@@ -9,6 +9,7 @@ using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using Microsoft.Extensions.Logging;
 using System.Collections.Immutable;
+using VideoFactory.VideoProduction.Application.Variants;
 
 namespace VideoFactory.Bot.Tests.Telegram;
 
@@ -415,6 +416,46 @@ public sealed class TelegramUpdateHandlerTests
         }
     }
 
+    [Fact]
+    public async Task RemountCommandCreatesAlternativeVariantFromCompletedJob()
+    {
+        JobCreationRecord job = new(
+            JobId.New(),
+            VariantId.New(),
+            new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
+            JobProgress.Restore(JobStatus.Completed, ProductionStage.Delivery, ProductionMode.Fast, ProductionMode.Fast, null),
+            RevisionId.New())
+        {
+            TelegramUserId = 123456789
+        };
+        FakeVariantChangeStore store = new();
+        FakeResponder responder = new();
+        TelegramUpdateHandler handler = new(
+            new TelegramOptions { AllowedUserId = 123456789 },
+            new LimitsOptions(),
+            new FakeDownloader(),
+            new FakeArtifactStore(),
+            new FakePersistentIntakeStore(),
+            responder,
+            variantChangeUseCase: new RequestVariantChangeUseCase(store),
+            jobStateStore: new RepeatStateStore(job));
+
+        await handler.HandleAsync(
+            new TelegramUpdate(
+                123456789,
+                123456789,
+                $"/remount {job.JobId} Сделай короче и начни со второго фрагмента",
+                null)
+            {
+                UpdateId = 88
+            },
+            CancellationToken.None);
+
+        Assert.Equal(job.VariantId, store.Command?.SourceVariantId);
+        Assert.Equal("telegram:88", store.Command?.RequestKey);
+        Assert.Contains("альтернативный вариант", responder.Messages.Single());
+    }
+
     private static TelegramUpdateHandler CreateHandler(
         FakeDownloader downloader,
         FakePersistentIntakeStore? intake = null) =>
@@ -442,6 +483,21 @@ public sealed class TelegramUpdateHandlerTests
                 "jobs/source/video.mp4",
                 "hash",
                 input.SizeBytes ?? 0)));
+        }
+    }
+
+    private sealed class FakeVariantChangeStore : IVariantChangeStore
+    {
+        public RequestVariantChangeCommand? Command { get; private set; }
+
+        public Task<RequestVariantChangeResult> RequestAsync(
+            RequestVariantChangeCommand command,
+            VariantId newVariantId,
+            CancellationToken cancellationToken)
+        {
+            Command = command;
+            return Task.FromResult<RequestVariantChangeResult>(
+                new RequestVariantChangeResult.Succeeded(newVariantId, WasCreated: true));
         }
     }
 

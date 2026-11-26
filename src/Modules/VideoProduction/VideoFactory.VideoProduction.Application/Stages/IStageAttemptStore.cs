@@ -26,4 +26,14 @@ public interface IStageAttemptStore
         Domain.Identifiers.JobId jobId,
         ProductionStage stage,
         CancellationToken cancellationToken);
+
+    /// <summary>Возвращает число попыток текущего посещения этапа после последнего успешного завершения.</summary>
+    /// <param name="jobId">Идентификатор Job.</param>
+    /// <param name="stage">Этап выполнения.</param>
+    /// <param name="cancellationToken">Токен отмены операции.</param>
+    /// <returns>Неотрицательное число уже сохранённых попыток текущего посещения.</returns>
+    Task<int> CountCurrentVisitAttemptsAsync(
+        Domain.Identifiers.JobId jobId,
+        ProductionStage stage,
+        CancellationToken cancellationToken) => Task.FromResult(0);
 }

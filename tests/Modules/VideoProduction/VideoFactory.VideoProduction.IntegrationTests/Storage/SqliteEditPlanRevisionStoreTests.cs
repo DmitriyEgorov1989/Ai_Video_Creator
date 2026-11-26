@@ -11,6 +11,7 @@ using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
+using VideoFactory.VideoProduction.Application.Variants;
 
 namespace VideoFactory.VideoProduction.IntegrationTests.Storage;
 
@@ -100,6 +101,64 @@ public sealed class SqliteEditPlanRevisionStoreTests
         Assert.True(await attemptReader.ReadAsync());
         Assert.Equal("invalid", attemptReader.GetString(0));
         Assert.Equal("0.03", attemptReader.GetString(1));
+    }
+
+    [Fact]
+    public async Task ChildVariantFindsParentsApprovedRevision()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded job = await CreateJobAsync(database);
+        EditPlan plan = CreatePlan(job);
+        SqliteEditPlanRevisionStore store = new(database.ConnectionString);
+        EditPlanRevision parent = await store.SaveAsync(plan, "parent-hash", 0m, CancellationToken.None);
+        await using (SqliteConnection connection = new(database.ConnectionString))
+        {
+            await connection.OpenAsync();
+            await using SqliteCommand complete = connection.CreateCommand();
+            complete.CommandText = "UPDATE jobs SET status = $status, stage = $stage, telegram_user_id = 1 WHERE job_id = $jobId;";
+            complete.Parameters.AddWithValue("$status", (int)JobStatus.Completed);
+            complete.Parameters.AddWithValue("$stage", (int)ProductionStage.Delivery);
+            complete.Parameters.AddWithValue("$jobId", job.JobId.ToString());
+            await complete.ExecuteNonQueryAsync();
+        }
+        RequestVariantChangeResult.Succeeded child = Assert.IsType<RequestVariantChangeResult.Succeeded>(
+            await new RequestVariantChangeUseCase(new SqliteVariantChangeStore(database.ConnectionString))
+                .ExecuteAsync(
+                    new RequestVariantChangeCommand(job.JobId, job.VariantId, 1, "Сделай иначе", "parent-read"),
+                    CancellationToken.None));
+
+        EditPlanRevision? restored = await store.FindParentApprovedAsync(
+            job.JobId,
+            child.VariantId,
+            CancellationToken.None);
+
+        Assert.Equal(parent.RevisionId, restored?.RevisionId);
+    }
+
+    [Fact]
+    public async Task ArtifactLookupIsIsolatedByVariant()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded job = await CreateJobAsync(database);
+        VariantId otherVariant = VariantId.New();
+        ArtifactRecord first = new(
+            ArtifactId.New(), "render-output", "jobs/first.mp4", "first", 1, null, null, "test",
+            job.JobId, job.VariantId);
+        ArtifactRecord second = new(
+            ArtifactId.New(), "render-output", "jobs/second.mp4", "second", 2, null, null, "test",
+            job.JobId, otherVariant);
+        SqliteArtifactStore store = new(database.ConnectionString);
+        await store.RegisterAsync(first, CancellationToken.None);
+        await store.RegisterAsync(second, CancellationToken.None);
+
+        ArtifactRecord? restored = await store.FindLatestAsync(
+            job.JobId,
+            job.VariantId,
+            "render-output",
+            CancellationToken.None);
+
+        Assert.Equal(first.ArtifactId, restored?.ArtifactId);
+        Assert.Equal(job.VariantId, restored?.VariantId);
     }
 
     private static async Task<CreateJobResult.Succeeded> CreateJobAsync(

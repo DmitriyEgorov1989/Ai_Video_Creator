@@ -163,6 +163,8 @@ public sealed class SqliteMigrationRunner
 
         if (!await IsAppliedAsync(connection, transaction, 11, cancellationToken))
         {
+            await EnsureColumnAsync(
+                connection, transaction, "jobs", "active_variant_id", "TEXT NULL", cancellationToken);
             await ExecuteAsync(connection, transaction, OrderedJobSourcesSchemaSql, cancellationToken);
             await ExecuteAsync(connection, transaction,
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (11, $appliedAt);",
@@ -177,8 +179,72 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 13, cancellationToken))
+        {
+            await ExecuteAsync(connection, transaction, CritiqueAttemptSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (13, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, 14, cancellationToken))
+        {
+            await EnsureColumnAsync(
+                connection, transaction, "jobs", "active_variant_id", "TEXT NULL", cancellationToken);
+            await EnsureColumnAsync(
+                connection, transaction, "variants", "parent_variant_id", "TEXT NULL", cancellationToken);
+            await EnsureColumnAsync(
+                connection, transaction, "variants", "change_request", "TEXT NULL", cancellationToken);
+            await EnsureColumnAsync(
+                connection, transaction, "variants", "request_key", "TEXT NULL", cancellationToken);
+            await ExecuteAsync(connection, transaction, AlternativeVariantSchemaSql, cancellationToken);
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (14, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+
+        if (!await IsAppliedAsync(connection, transaction, 15, cancellationToken))
+        {
+            if (await TableExistsAsync(connection, transaction, "artifacts", cancellationToken))
+            {
+                await EnsureColumnAsync(
+                    connection, transaction, "artifacts", "variant_id", "TEXT NULL", cancellationToken);
+                await ExecuteAsync(connection, transaction,
+                    "CREATE INDEX IF NOT EXISTS ix_artifacts_variant_type_created " +
+                    "ON artifacts (job_id, variant_id, artifact_type, created_at);",
+                    cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    UPDATE artifacts
+                    SET variant_id = (
+                        SELECT jobs.active_variant_id FROM jobs WHERE jobs.job_id = artifacts.job_id)
+                    WHERE variant_id IS NULL
+                      AND artifact_type IN (
+                          'render-output', 'objective-critique-report', 'qa-report',
+                          'delivery-encode-output', 'final-mp4', 'manifest');
+                    """, cancellationToken);
+            }
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (15, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
         await ExecuteAsync(connection, transaction: null, "PRAGMA foreign_keys = ON;", cancellationToken);
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $table);";
+        command.Parameters.AddWithValue("$table", table);
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) != 0;
     }
 
     private static async Task ConfigureConnectionAsync(
@@ -204,6 +270,28 @@ public sealed class SqliteMigrationRunner
         command.Parameters.AddWithValue("$version", version);
         object? value = await command.ExecuteScalarAsync(cancellationToken);
         return Convert.ToInt64(value) == 1;
+    }
+
+    private static async Task EnsureColumnAsync(
+        SqliteConnection connection,
+        SqliteTransaction transaction,
+        string table,
+        string column,
+        string definition,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteCommand query = connection.CreateCommand();
+        query.Transaction = transaction;
+        query.CommandText = $"SELECT EXISTS (SELECT 1 FROM pragma_table_info('{table}') WHERE name = $column);";
+        query.Parameters.AddWithValue("$column", column);
+        if (Convert.ToInt64(await query.ExecuteScalarAsync(cancellationToken)) == 0)
+        {
+            await ExecuteAsync(
+                connection,
+                transaction,
+                $"ALTER TABLE {table} ADD COLUMN {column} {definition};",
+                cancellationToken);
+        }
     }
 
     private static async Task ExecuteAsync(
@@ -239,13 +327,17 @@ public sealed class SqliteMigrationRunner
             effective_mode INTEGER NULL,
             pending_confirmation INTEGER NULL,
             current_approved_edit_plan_revision_id TEXT NULL,
+            active_variant_id TEXT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
 
         CREATE TABLE variants (
             variant_id TEXT PRIMARY KEY,
-            job_id TEXT NOT NULL UNIQUE,
+            job_id TEXT NOT NULL,
+            parent_variant_id TEXT NULL,
+            change_request TEXT NULL,
+            request_key TEXT NULL,
             current_approved_edit_plan_revision_id TEXT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -396,7 +488,8 @@ public sealed class SqliteMigrationRunner
             files_deleted_at TEXT NULL,
             telegram_user_id INTEGER NULL,
             edit_tempo INTEGER NOT NULL DEFAULT 1,
-            requested_style INTEGER NOT NULL DEFAULT 0
+            requested_style INTEGER NOT NULL DEFAULT 0,
+            active_variant_id TEXT NULL
         );
 
         INSERT INTO jobs_v11 (
@@ -405,14 +498,15 @@ public sealed class SqliteMigrationRunner
             status, stage, effective_mode, pending_confirmation,
             current_approved_edit_plan_revision_id, created_at, updated_at,
             heartbeat_at, lease_owner, completed_at, cleanup_started_at,
-            files_deleted_at, telegram_user_id, edit_tempo, requested_style)
+            files_deleted_at, telegram_user_id, edit_tempo, requested_style,
+            active_variant_id)
         SELECT
             job_id, source_artifact_id, comment, requested_mode,
             target_duration_seconds, captions_enabled, music_enabled,
             status, stage, effective_mode, pending_confirmation,
             current_approved_edit_plan_revision_id, created_at, updated_at,
             heartbeat_at, lease_owner, completed_at, cleanup_started_at,
-            files_deleted_at, telegram_user_id, 1, 0
+            files_deleted_at, telegram_user_id, 1, 0, active_variant_id
         FROM jobs;
 
         DROP TABLE jobs;
@@ -550,5 +644,69 @@ public sealed class SqliteMigrationRunner
 
         CREATE INDEX ix_job_cancellation_requests_requested_at
             ON job_cancellation_requests (requested_at);
+        """;
+
+    private const string CritiqueAttemptSchemaSql = """
+        CREATE TABLE critique_attempts (
+            job_id TEXT NOT NULL,
+            variant_id TEXT NOT NULL,
+            source_revision_id TEXT NOT NULL,
+            render_artifact_id TEXT NOT NULL,
+            correction_revision_id TEXT NULL,
+            remount_number INTEGER NOT NULL CHECK (remount_number >= 0),
+            estimated_cost_usd TEXT NOT NULL,
+            actual_cost_usd TEXT NULL,
+            status TEXT NOT NULL,
+            error_code TEXT NULL,
+            error_message TEXT NULL,
+            created_at TEXT NOT NULL,
+            completed_at TEXT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE,
+            FOREIGN KEY (source_revision_id) REFERENCES edit_plan_revisions (revision_id),
+            FOREIGN KEY (render_artifact_id) REFERENCES artifacts (artifact_id),
+            FOREIGN KEY (correction_revision_id) REFERENCES edit_plan_revisions (revision_id),
+            UNIQUE (variant_id, source_revision_id, render_artifact_id)
+        );
+
+        CREATE INDEX ix_critique_attempts_job_variant
+            ON critique_attempts (job_id, variant_id, remount_number);
+        """;
+
+    private const string AlternativeVariantSchemaSql = """
+        CREATE TABLE variants_v14 (
+            variant_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            parent_variant_id TEXT NULL,
+            change_request TEXT NULL,
+            request_key TEXT NULL,
+            current_approved_edit_plan_revision_id TEXT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_variant_id) REFERENCES variants_v14 (variant_id)
+        );
+
+        INSERT INTO variants_v14 (
+            variant_id, job_id, parent_variant_id, change_request, request_key,
+            current_approved_edit_plan_revision_id, created_at, updated_at)
+        SELECT variant_id, job_id, parent_variant_id, change_request, request_key,
+               current_approved_edit_plan_revision_id, created_at, updated_at
+        FROM variants;
+
+        DROP TABLE variants;
+        ALTER TABLE variants_v14 RENAME TO variants;
+
+        CREATE INDEX ix_variants_job ON variants (job_id);
+        CREATE UNIQUE INDEX ux_variants_job_request_key
+            ON variants (job_id, request_key) WHERE request_key IS NOT NULL;
+
+        UPDATE jobs
+        SET active_variant_id = (
+            SELECT variant_id FROM variants
+            WHERE variants.job_id = jobs.job_id
+            ORDER BY created_at, variant_id
+            LIMIT 1)
+        WHERE active_variant_id IS NULL;
         """;
 }

@@ -100,7 +100,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         long sourceSize = jobSources.Sum(source => source.SizeBytes ?? 0);
         EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null ? null
             : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
-        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
+        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "render-output", cancellationToken);
         if (job.Progress.Stage == ProductionStage.Rendering && existing is not null && revision is not null
             && existing.ParentArtifactId == job.Request.SourceAssetId && existing.MetadataJson is not null)
         {
@@ -332,7 +332,8 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
             }, JsonOptions),
             job.Request.SourceAssetId,
             "remotion-render-host",
-            job.JobId);
+            job.JobId,
+            job.VariantId);
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(record, cancellationToken);
         return registration is ArtifactRegistrationResult.Rejected rejected
             ? StageExecutionResult.Permanent("render.artifact_rejected", rejected.Message)

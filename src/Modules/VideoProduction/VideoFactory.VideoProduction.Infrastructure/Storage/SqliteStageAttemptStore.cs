@@ -127,6 +127,35 @@ public sealed class SqliteStageAttemptStore : IStageAttemptStore
             reader.IsDBNull(7) ? null : DateTimeOffset.Parse(reader.GetString(7)));
     }
 
+    /// <inheritdoc />
+    public async Task<int> CountCurrentVisitAttemptsAsync(
+        JobId jobId,
+        ProductionStage stage,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT COUNT(*)
+            FROM stage_attempts
+            WHERE job_id = $jobId
+              AND stage = $stage
+              AND attempt_number > COALESCE((
+                  SELECT MAX(attempt_number)
+                  FROM stage_attempts
+                  WHERE job_id = $jobId
+                    AND stage = $stage
+                    AND status = 'Completed'
+              ), 0);
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$stage", (int)stage);
+        object? value = await command.ExecuteScalarAsync(cancellationToken);
+        return checked((int)Convert.ToInt64(value));
+    }
+
     private static string? GetNullableString(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
 }

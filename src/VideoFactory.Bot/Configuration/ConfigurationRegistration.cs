@@ -142,6 +142,15 @@ public static class ConfigurationRegistration
             .Validate(options => options.JobLimitUsd >= 0,
                 "Planning:JobLimitUsd must not be negative.");
 
+        OptionsBuilder<CriticOptions> critic = services.AddOptions<CriticOptions>()
+            .Bind(configuration.GetSection(CriticOptions.SectionName))
+            .Validate(options => options.MaxRemounts >= 0,
+                "Critic:MaxRemounts must not be negative.")
+            .Validate(options => options.BlackMinimumDurationMilliseconds > 0,
+                "Critic:BlackMinimumDurationMilliseconds must be greater than zero.")
+            .Validate(options => options.FreezeMinimumDurationMilliseconds > 0,
+                "Critic:FreezeMinimumDurationMilliseconds must be greater than zero.");
+
         OptionsBuilder<ProcessTimeoutOptions> processTimeouts = services
             .AddOptions<ProcessTimeoutOptions>()
             .Bind(configuration.GetSection(ProcessTimeoutOptions.SectionName))
@@ -170,6 +179,7 @@ public static class ConfigurationRegistration
             outputQuality.ValidateOnStart();
             aiApi.ValidateOnStart();
             planning.ValidateOnStart();
+            critic.ValidateOnStart();
             processTimeouts.ValidateOnStart();
         }
 

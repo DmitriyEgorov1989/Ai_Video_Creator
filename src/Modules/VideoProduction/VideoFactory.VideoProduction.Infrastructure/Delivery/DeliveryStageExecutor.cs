@@ -40,7 +40,7 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent("delivery.invalid_stage", "Delivery executor received an unexpected stage.");
         }
 
-        ArtifactRecord? finalArtifact = await artifactStore.FindLatestAsync(job.JobId, "final-mp4", cancellationToken);
+        ArtifactRecord? finalArtifact = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "final-mp4", cancellationToken);
         if (finalArtifact is null)
         {
             return StageExecutionResult.Retryable("delivery.final_missing", "The packaged MP4 is not available yet.");
@@ -57,7 +57,7 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
             if (file.Length != finalArtifact.SizeBytes || actualHash != finalArtifact.Sha256)
                 return StageExecutionResult.Permanent("delivery.file_changed", "The packaged MP4 changed after verification.");
         }
-        ArtifactRecord? manifest = await artifactStore.FindLatestAsync(job.JobId, "manifest", cancellationToken);
+        ArtifactRecord? manifest = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "manifest", cancellationToken);
         if (manifest is null || manifest.ParentArtifactId != finalArtifact.ArtifactId || !File.Exists(ResolvePath(manifest.RelativePath)))
             return StageExecutionResult.Permanent("delivery.manifest_missing", "Finalization has not completed.");
 
@@ -71,8 +71,8 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
 
             using JsonDocument document = JsonDocument.Parse(manifestBytes);
             JsonElement root = document.RootElement;
-            ArtifactRecord? qa = await artifactStore.FindLatestAsync(job.JobId, "qa-report", cancellationToken);
-            ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
+            ArtifactRecord? qa = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "qa-report", cancellationToken);
+            ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "render-output", cancellationToken);
             if (!MatchesId(root, "jobId", job.JobId.Value)
                 || !MatchesId(root, "variantId", job.VariantId.Value)
                 || !MatchesId(root, "finalArtifactId", finalArtifact.ArtifactId.Value))

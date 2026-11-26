@@ -24,7 +24,7 @@ public sealed class VerificationPrivacyTests
             JobCreationRecord job = new(fixture.Plan.JobId, fixture.Plan.VariantId,
                 new JobRequest(ArtifactId.New(), "private-comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
                 JobProgress.Restore(JobStatus.Running, ProductionStage.Verification, ProductionMode.Fast, ProductionMode.Fast, null), fixture.Plan.RevisionId);
-            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "output.mp4", "hash", 3, null, null, "test", job.JobId));
+            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "output.mp4", "hash", 3, null, null, "test", job.JobId, job.VariantId));
             const string diagnostic = "synthetic-token private-comment private-transcript";
             VerificationStageExecutor executor = new(new Plans(fixture.Plan), store, new Qa(diagnostic), root,
                 new OutputQualityOptionsProfile(1080, 1920, 1, true, "yuv420p", 1_000));

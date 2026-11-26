@@ -73,10 +73,10 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent("packaging.invalid_stage", "Packaging executor received an unexpected stage.");
         }
 
-        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, "final-mp4", cancellationToken);
+        ArtifactRecord? existing = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "final-mp4", cancellationToken);
 
-        ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, "render-output", cancellationToken);
-        ArtifactRecord? qa = await artifactStore.FindLatestAsync(job.JobId, "qa-report", cancellationToken);
+        ArtifactRecord? render = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "render-output", cancellationToken);
+        ArtifactRecord? qa = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "qa-report", cancellationToken);
         if (render is null || qa is null)
         {
             return StageExecutionResult.Retryable("packaging.input_missing", "A verified render output is not available yet.");
@@ -144,7 +144,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             if (controlledEncoder is null || planStore is null || qualityAssurance is null || qualityProfile is null || maxDeliveryEncodeAttempts == 0)
                 return StageExecutionResult.Permanent("packaging.telegram_size_exceeded", "The verified MP4 exceeds the configured Telegram delivery limit.");
 
-            ArtifactRecord? encoded = await artifactStore.FindLatestAsync(job.JobId, "delivery-encode-output", cancellationToken);
+            ArtifactRecord? encoded = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "delivery-encode-output", cancellationToken);
             if (encoded is null)
             {
                 EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null
@@ -180,7 +180,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     Path.GetRelativePath(workspaceRoot, encodedPath).Replace(Path.DirectorySeparatorChar, '/'), encodedHash,
                     encodedSize, JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId,
                         parentArtifactId = render.ArtifactId, encodeAttempts = 1, videoBitrateBitsPerSecond = deliveryEncodeVideoBitrate,
-                        audioBitrateBitsPerSecond = deliveryEncodeAudioBitrate }), render.ArtifactId, "ffmpeg-delivery-encode/1", job.JobId);
+                        audioBitrateBitsPerSecond = deliveryEncodeAudioBitrate }), render.ArtifactId, "ffmpeg-delivery-encode/1", job.JobId, job.VariantId);
                 ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(encoded, cancellationToken);
                 if (registration is ArtifactRegistrationResult.Rejected rejected)
                     return StageExecutionResult.Permanent("packaging.encode_artifact_rejected", rejected.Message);
@@ -205,7 +205,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 string qaHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(qaJson))).ToLowerInvariant();
                 qa = new ArtifactRecord(qaId, "qa-report",
                     Path.GetRelativePath(workspaceRoot, qaPath).Replace(Path.DirectorySeparatorChar, '/'), qaHash,
-                    new FileInfo(qaPath).Length, qaJson, encoded.ArtifactId, "video-qa/1", job.JobId);
+                    new FileInfo(qaPath).Length, qaJson, encoded.ArtifactId, "video-qa/1", job.JobId, job.VariantId);
                 ArtifactRegistrationResult qaRegistration = await artifactStore.RegisterAsync(qa, cancellationToken);
                 if (qaRegistration is ArtifactRegistrationResult.Rejected qaRejected)
                     return StageExecutionResult.Permanent("packaging.encode_qa_report_rejected", qaRejected.Message);
@@ -268,7 +268,8 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 JsonSerializer.Serialize(new { jobId = job.JobId, variantId = job.VariantId, qaArtifactId = qa.ArtifactId }),
                 render.ArtifactId,
                 "packaging/1",
-                job.JobId);
+                job.JobId,
+                job.VariantId);
             ArtifactRegistrationResult registration = existing is not null
                 ? new ArtifactRegistrationResult.Existing(existing)
                 : await artifactStore.RegisterAsync(finalArtifact, cancellationToken);
@@ -314,7 +315,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             {
                 manifestHash = Convert.ToHexString(await SHA256.HashDataAsync(manifestStream, cancellationToken)).ToLowerInvariant();
             }
-            ArtifactRecord? existingManifest = await artifactStore.FindLatestAsync(job.JobId, "manifest", cancellationToken);
+            ArtifactRecord? existingManifest = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "manifest", cancellationToken);
             ArtifactRegistrationResult manifestRegistration = existingManifest is not null
                 ? new ArtifactRegistrationResult.Existing(existingManifest) : await artifactStore.RegisterAsync(
                 new ArtifactRecord(
@@ -326,7 +327,8 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     manifestJson,
                     finalArtifact.ArtifactId,
                     "packaging/1",
-                    job.JobId),
+                    job.JobId,
+                    job.VariantId),
                 cancellationToken);
             if (manifestRegistration is ArtifactRegistrationResult.Rejected manifestRejected)
             {

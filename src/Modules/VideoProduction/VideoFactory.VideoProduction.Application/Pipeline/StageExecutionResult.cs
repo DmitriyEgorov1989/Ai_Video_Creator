@@ -21,6 +21,16 @@ public enum StageExecutionKind
     WaitingForApproval
 }
 
+/// <summary>Определяет переход после успешного завершения этапа.</summary>
+public enum StageCompletionAction
+{
+    /// <summary>Продолжить обычную последовательность этапов.</summary>
+    Advance,
+
+    /// <summary>Вернуть задание из Critique к Rendering новой ревизии.</summary>
+    Remount
+}
+
 /// <summary>
 /// Результат выполнения этапа с исходной диагностикой.
 /// </summary>
@@ -29,16 +39,21 @@ public enum StageExecutionKind
 /// <param name="ErrorMessage">Исходное сообщение ошибки или <see langword="null"/>.</param>
 /// <param name="EstimatedCostUsd">Оценочная стоимость ожидающего подтверждения вызова в долларах США или <see langword="null"/>.</param>
 /// <param name="ApprovalVersion">Версия сохранённого запроса подтверждения или <see langword="null"/>.</param>
+/// <param name="CompletionAction">Переход после успешного завершения; для ошибок должен быть <see cref="StageCompletionAction.Advance"/>.</param>
 public sealed record StageExecutionResult(
     StageExecutionKind Kind,
     string? ErrorCode,
     string? ErrorMessage,
     decimal? EstimatedCostUsd = null,
-    int? ApprovalVersion = null)
+    int? ApprovalVersion = null,
+    StageCompletionAction CompletionAction = StageCompletionAction.Advance)
 {
     /// <summary>Создаёт успешный результат.</summary>
-    public static StageExecutionResult Success(string? code = null, string? message = null) =>
-        new(StageExecutionKind.Completed, code, message);
+    public static StageExecutionResult Success(
+        string? code = null,
+        string? message = null,
+        StageCompletionAction completionAction = StageCompletionAction.Advance) =>
+        new(StageExecutionKind.Completed, code, message, CompletionAction: completionAction);
 
     /// <summary>Создаёт результат временной ошибки.</summary>
     public static StageExecutionResult Retryable(string code, string message) =>

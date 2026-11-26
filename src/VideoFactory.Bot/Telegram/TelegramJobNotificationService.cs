@@ -81,6 +81,7 @@ public sealed class TelegramJobNotificationService
                 ProductionStage.Analysis => "Анализирую видео.",
                 ProductionStage.Planning => "Готовлю план монтажа.",
                 ProductionStage.Rendering => "Рендерю видео.",
+                ProductionStage.Critique => "Проверяю монтаж ролика.",
                 ProductionStage.Verification => "Проверяю готовый MP4.",
                 ProductionStage.Packaging => "Финализирую результат.",
                 ProductionStage.Delivery => "Отправляю готовый ролик.",

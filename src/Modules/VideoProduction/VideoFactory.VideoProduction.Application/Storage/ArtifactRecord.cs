@@ -13,6 +13,8 @@ namespace VideoFactory.VideoProduction.Application.Storage;
 /// <param name="MetadataJson">Технические metadata в JSON или <see langword="null"/>.</param>
 /// <param name="ParentArtifactId">Родительский Artifact или <see langword="null"/>.</param>
 /// <param name="ToolVersion">Версия инструмента или <see langword="null"/>.</param>
+/// <param name="JobId">Идентификатор Job или <see langword="null"/> для ещё не связанного артефакта.</param>
+/// <param name="VariantId">Идентификатор Variant или <see langword="null"/> для общего артефакта Job.</param>
 public sealed record ArtifactRecord(
     ArtifactId ArtifactId,
     string ArtifactType,
@@ -22,4 +24,5 @@ public sealed record ArtifactRecord(
     string? MetadataJson,
     ArtifactId? ParentArtifactId,
     string? ToolVersion,
-    JobId? JobId = null);
+    JobId? JobId = null,
+    VariantId? VariantId = null);

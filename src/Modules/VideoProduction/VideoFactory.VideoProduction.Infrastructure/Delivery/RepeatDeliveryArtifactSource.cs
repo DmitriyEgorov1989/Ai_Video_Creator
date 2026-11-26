@@ -24,8 +24,8 @@ public sealed class RepeatDeliveryArtifactSource : IRepeatDeliveryArtifactSource
         JobCreationRecord job,
         CancellationToken cancellationToken)
     {
-        ArtifactRecord? finalArtifact = await artifactStore.FindLatestAsync(job.JobId, "final-mp4", cancellationToken);
-        ArtifactRecord? manifest = await artifactStore.FindLatestAsync(job.JobId, "manifest", cancellationToken);
+        ArtifactRecord? finalArtifact = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "final-mp4", cancellationToken);
+        ArtifactRecord? manifest = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "manifest", cancellationToken);
         if (finalArtifact is null || manifest is null || manifest.ParentArtifactId != finalArtifact.ArtifactId)
         {
             return new RepeatDeliveryArtifactResult.Rejected("delivery.final_missing", "The verified MP4 or its manifest is unavailable.");

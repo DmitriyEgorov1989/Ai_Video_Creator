@@ -45,6 +45,26 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
     }
 
     /// <inheritdoc />
+    public async Task<EditPlanRevision?> FindParentApprovedAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = SelectSql + " WHERE revision_id = (" +
+            "SELECT parent.current_approved_edit_plan_revision_id " +
+            "FROM variants child JOIN variants parent ON parent.variant_id = child.parent_variant_id " +
+            "WHERE child.job_id = $jobId AND child.variant_id = $variantId" +
+            ") AND job_id = $jobId;";
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$variantId", variantId.ToString());
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await ReadAsync(reader, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<EditPlanRevision?> GetAsync(
         RevisionId revisionId,
         CancellationToken cancellationToken)

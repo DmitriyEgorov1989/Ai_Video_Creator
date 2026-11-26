@@ -35,7 +35,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
-                   metadata_json, parent_artifact_id, tool_version
+                   metadata_json, parent_artifact_id, tool_version, variant_id
             FROM artifacts
             WHERE artifact_id = $artifactId;
             """;
@@ -61,13 +61,39 @@ public sealed class SqliteArtifactStore : IArtifactStore
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
-                   metadata_json, parent_artifact_id, tool_version
+                   metadata_json, parent_artifact_id, tool_version, variant_id
             FROM artifacts
             WHERE job_id = $jobId AND artifact_type = $artifactType
             ORDER BY created_at DESC
             LIMIT 1;
             """;
         command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$artifactType", artifactType);
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadRecord(reader) : null;
+    }
+
+    /// <inheritdoc />
+    public async Task<ArtifactRecord?> FindLatestAsync(
+        JobId jobId,
+        VariantId variantId,
+        string artifactType,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactType);
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
+                   metadata_json, parent_artifact_id, tool_version, variant_id
+            FROM artifacts
+            WHERE job_id = $jobId AND variant_id = $variantId AND artifact_type = $artifactType
+            ORDER BY created_at DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$variantId", variantId.ToString());
         command.Parameters.AddWithValue("$artifactType", artifactType);
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken) ? ReadRecord(reader) : null;
@@ -85,12 +111,39 @@ public sealed class SqliteArtifactStore : IArtifactStore
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
             SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
-                   metadata_json, parent_artifact_id, tool_version
+                   metadata_json, parent_artifact_id, tool_version, variant_id
             FROM artifacts
             WHERE job_id = $jobId AND artifact_type = $artifactType
             ORDER BY created_at, artifact_id;
             """;
         command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$artifactType", artifactType);
+        List<ArtifactRecord> records = [];
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken)) records.Add(ReadRecord(reader));
+        return records;
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ArtifactRecord>> ListAsync(
+        JobId jobId,
+        VariantId variantId,
+        string artifactType,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(artifactType);
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
+                   metadata_json, parent_artifact_id, tool_version, variant_id
+            FROM artifacts
+            WHERE job_id = $jobId AND variant_id = $variantId AND artifact_type = $artifactType
+            ORDER BY created_at, artifact_id;
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$variantId", variantId.ToString());
         command.Parameters.AddWithValue("$artifactType", artifactType);
         List<ArtifactRecord> records = [];
         await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -145,10 +198,10 @@ public sealed class SqliteArtifactStore : IArtifactStore
             """
             INSERT INTO artifacts (
                 artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
-                metadata_json, parent_artifact_id, tool_version, created_at)
+                metadata_json, parent_artifact_id, tool_version, created_at, variant_id)
             VALUES (
                 $artifactId, $jobId, $artifactType, $relativePath, $sha256, $sizeBytes,
-                $metadataJson, $parentArtifactId, $toolVersion, $createdAt);
+                $metadataJson, $parentArtifactId, $toolVersion, $createdAt, $variantId);
             """;
         command.Parameters.AddWithValue("$artifactId", record.ArtifactId.ToString());
         command.Parameters.AddWithValue("$jobId", record.JobId?.ToString() ?? (object)DBNull.Value);
@@ -162,6 +215,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
             record.ParentArtifactId?.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$toolVersion", (object?)record.ToolVersion ?? DBNull.Value);
         command.Parameters.AddWithValue("$createdAt", DateTimeOffset.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$variantId", record.VariantId?.ToString() ?? (object)DBNull.Value);
         await command.ExecuteNonQueryAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
 
@@ -199,7 +253,7 @@ public sealed class SqliteArtifactStore : IArtifactStore
         command.CommandText =
             """
             SELECT artifact_id, job_id, artifact_type, relative_path, sha256, size_bytes,
-                   metadata_json, parent_artifact_id, tool_version
+                   metadata_json, parent_artifact_id, tool_version, variant_id
             FROM artifacts
             WHERE artifact_id = $artifactId;
             """;
@@ -222,7 +276,8 @@ public sealed class SqliteArtifactStore : IArtifactStore
         GetNullableString(reader, 6),
         GetNullableArtifactId(reader, 7),
         GetNullableString(reader, 8),
-        reader.IsDBNull(1) ? null : new JobId(Guid.Parse(reader.GetString(1))));
+        reader.IsDBNull(1) ? null : new JobId(Guid.Parse(reader.GetString(1))),
+        reader.IsDBNull(9) ? null : new VariantId(Guid.Parse(reader.GetString(9))));
 
     private static string? GetNullableString(SqliteDataReader reader, int ordinal) =>
         reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);

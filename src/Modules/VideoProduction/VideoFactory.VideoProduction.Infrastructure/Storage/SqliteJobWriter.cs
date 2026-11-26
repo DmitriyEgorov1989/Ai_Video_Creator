@@ -132,13 +132,13 @@ internal static class SqliteJobWriter
                 job_id, source_artifact_id, comment, requested_mode,
                 target_duration_seconds, captions_enabled, music_enabled,
                 status, stage, effective_mode, pending_confirmation,
-                current_approved_edit_plan_revision_id, telegram_user_id,
+                current_approved_edit_plan_revision_id, active_variant_id, telegram_user_id,
                 edit_tempo, requested_style, created_at, updated_at)
             VALUES (
                 $jobId, $sourceArtifactId, $comment, $requestedMode,
                 $targetDurationSeconds, $captionsEnabled, $musicEnabled,
                 $status, $stage, $effectiveMode, $pendingConfirmation,
-                $currentApprovedRevisionId, $telegramUserId,
+                $currentApprovedRevisionId, $activeVariantId, $telegramUserId,
                 $editTempo, $requestedStyle, $createdAt, $updatedAt);
             """;
         ProductionSettings settings = record.Request.Settings;
@@ -155,6 +155,7 @@ internal static class SqliteJobWriter
         command.Parameters.AddWithValue("$effectiveMode", progress.EffectiveMode is null ? (object)DBNull.Value : (int)progress.EffectiveMode.Value);
         command.Parameters.AddWithValue("$pendingConfirmation", progress.PendingConfirmation is null ? (object)DBNull.Value : (int)progress.PendingConfirmation.Value);
         command.Parameters.AddWithValue("$currentApprovedRevisionId", record.CurrentApprovedEditPlanRevisionId?.ToString() ?? (object)DBNull.Value);
+        command.Parameters.AddWithValue("$activeVariantId", record.VariantId.ToString());
         command.Parameters.AddWithValue("$telegramUserId", record.TelegramUserId is long userId ? userId : (object)DBNull.Value);
         command.Parameters.AddWithValue("$editTempo", (int)settings.Tempo);
         command.Parameters.AddWithValue("$requestedStyle", (int)settings.RequestedStyle);
@@ -242,13 +243,13 @@ internal static class SqliteJobWriter
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT j.job_id, j.comment, j.requested_mode, j.target_duration_seconds,
+            SELECT j.job_id, COALESCE(v.change_request, j.comment), j.requested_mode, j.target_duration_seconds,
                    j.captions_enabled, j.music_enabled, j.status, j.stage,
                    j.effective_mode, j.pending_confirmation,
-                   j.current_approved_edit_plan_revision_id, j.telegram_user_id,
+                   v.current_approved_edit_plan_revision_id, j.telegram_user_id,
                    v.variant_id, j.edit_tempo, j.requested_style
             FROM jobs AS j
-            INNER JOIN variants AS v ON v.job_id = j.job_id
+            INNER JOIN variants AS v ON v.variant_id = j.active_variant_id
             WHERE j.job_id = $jobId;
             """;
         command.Parameters.AddWithValue("$jobId", jobId.ToString());

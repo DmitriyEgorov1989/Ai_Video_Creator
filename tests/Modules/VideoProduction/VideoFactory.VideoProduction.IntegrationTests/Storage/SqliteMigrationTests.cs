@@ -42,6 +42,12 @@ public sealed class SqliteMigrationTests
                     cleanup_started_at TEXT NULL,
                     files_deleted_at TEXT NULL,
                     telegram_user_id INTEGER NULL);
+                CREATE TABLE variants (
+                    variant_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL UNIQUE,
+                    current_approved_edit_plan_revision_id TEXT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL);
                 CREATE TABLE artifacts (
                     artifact_id TEXT PRIMARY KEY,
                     job_id TEXT NULL,
@@ -113,6 +119,12 @@ public sealed class SqliteMigrationTests
                     updated_at TEXT NOT NULL,
                     heartbeat_at TEXT NULL,
                     lease_owner TEXT NULL);
+                CREATE TABLE variants (
+                    variant_id TEXT PRIMARY KEY,
+                    job_id TEXT NOT NULL UNIQUE,
+                    current_approved_edit_plan_revision_id TEXT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL);
                 CREATE TABLE artifacts (
                     artifact_id TEXT PRIMARY KEY,
                     job_id TEXT NULL,
@@ -185,11 +197,26 @@ public sealed class SqliteMigrationTests
                  Assert.Contains("telegram_intake_sessions", tables);
                  Assert.Contains("telegram_intake_items", tables);
                  Assert.Contains("telegram_intake_completion_receipts", tables);
+                 Assert.Contains("critique_attempts", tables);
 
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                 Assert.Equal(12, migrationCount);
+                 Assert.Equal(15, migrationCount);
+
+                 await using SqliteCommand critiqueIndexCommand = connection.CreateCommand();
+                 critiqueIndexCommand.CommandText = """
+                     SELECT COUNT(*)
+                     FROM pragma_index_list('critique_attempts') AS indexes
+                     WHERE indexes.[unique] = 1
+                       AND (
+                           SELECT group_concat(name, ',')
+                           FROM (
+                               SELECT columns.name
+                               FROM pragma_index_info(indexes.name) AS columns
+                               ORDER BY columns.seqno)) = 'variant_id,source_revision_id,render_artifact_id';
+                     """;
+                 Assert.Equal(1L, (long)(await critiqueIndexCommand.ExecuteScalarAsync())!);
 
                 await using SqliteCommand retentionCommand = connection.CreateCommand();
                 retentionCommand.CommandText = "SELECT completed_at, cleanup_started_at, files_deleted_at FROM jobs LIMIT 0;";

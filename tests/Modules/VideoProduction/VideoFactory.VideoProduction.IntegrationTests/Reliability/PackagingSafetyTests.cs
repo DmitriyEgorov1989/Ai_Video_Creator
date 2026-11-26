@@ -26,8 +26,8 @@ public sealed class PackagingSafetyTests
                 JobProgress.Restore(JobStatus.Running, ProductionStage.Packaging,
                     ProductionMode.Fast, ProductionMode.Fast, null), RevisionId.New());
             MemoryArtifacts artifacts = new(
-                new ArtifactRecord(ArtifactId.New(), "render-output", "render.mp4", "abc", 3, null, null, "test", jobId),
-                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", "abc", 3, null, null, "test", jobId));
+                new ArtifactRecord(ArtifactId.New(), "render-output", "render.mp4", "abc", 3, null, null, "test", jobId, job.VariantId),
+                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", "abc", 3, null, null, "test", jobId, job.VariantId));
 
             StageExecutionResult result = await new PackagingStageExecutor(
                 artifacts, root, 1_000, null, null, new MissingPlanStore(), null, null, 0)
@@ -58,8 +58,8 @@ public sealed class PackagingSafetyTests
             await File.WriteAllBytesAsync(Path.Combine(root, "render.mp4"), [1, 2, 3]);
             await File.WriteAllTextAsync(Path.Combine(root, "qa.json"), reportJson);
             MemoryArtifacts artifacts = new(
-                new ArtifactRecord(ArtifactId.New(), "render-output", "render.mp4", null, 3, null, null, "test", jobId),
-                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", null, null, null, null, "test", jobId));
+                new ArtifactRecord(ArtifactId.New(), "render-output", "render.mp4", null, 3, null, null, "test", jobId, job.VariantId),
+                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", null, null, null, null, "test", jobId, job.VariantId));
             IJobStageExecutor executor = new PackagingStageExecutor(artifacts, root, 1_000);
 
             StageExecutionResult result = await executor.ExecuteAsync(job, CancellationToken.None);
@@ -112,7 +112,7 @@ public sealed class PackagingSafetyTests
             byte[] bytes = [1, 2, 3];
             string hash = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
             await File.WriteAllBytesAsync(Path.Combine(root, "render.mp4"), bytes);
-            ArtifactRecord render = new(ArtifactId.New(), "render-output", "render.mp4", hash, 3, null, null, "test", id);
+            ArtifactRecord render = new(ArtifactId.New(), "render-output", "render.mp4", hash, 3, null, null, "test", id, job.VariantId);
             string report = JsonSerializer.Serialize(new
             {
                 status = "passed", jobId = id, variantId = job.VariantId, planRevisionId = revision,
@@ -121,7 +121,7 @@ public sealed class PackagingSafetyTests
             await File.WriteAllTextAsync(Path.Combine(root, "qa.json"), report);
             string qaHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(tamperedReport ? report + " " : report))).ToLowerInvariant();
             MemoryArtifacts store = new(render,
-                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", qaHash, System.Text.Encoding.UTF8.GetByteCount(report), report, render.ArtifactId, "test", id))
+                new ArtifactRecord(ArtifactId.New(), "qa-report", "qa.json", qaHash, System.Text.Encoding.UTF8.GetByteCount(report), report, render.ArtifactId, "test", id, job.VariantId))
             { FailNextFinalRegistration = true };
             if (tamperedReport)
             {

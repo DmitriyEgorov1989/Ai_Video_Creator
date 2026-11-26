@@ -9,6 +9,7 @@ using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Domain.Validation;
 using VideoFactory.VideoProduction.Application.Editing;
+using VideoFactory.VideoProduction.Application.Critique;
 
 namespace VideoFactory.VideoProduction.Application.Planning;
 
@@ -21,6 +22,7 @@ public sealed class EditPlanPlanner
     private readonly IPlanningAttemptStore attemptStore;
     private readonly IPlanningApprovalStore? approvalStore;
     private readonly EditingSkillEngine editingSkillEngine;
+    private readonly VariantDiversityEvaluator diversityEvaluator;
 
     /// <summary>Создаёт planner.</summary>
     public EditPlanPlanner(
@@ -29,13 +31,15 @@ public sealed class EditPlanPlanner
         IEditPlanRevisionStore revisionStore,
         IPlanningAttemptStore attemptStore,
         IPlanningApprovalStore? approvalStore = null,
-        EditingSkillEngine? editingSkillEngine = null)
+        EditingSkillEngine? editingSkillEngine = null,
+        VariantDiversityEvaluator? diversityEvaluator = null)
     {
         this.provider = provider;
         this.costPolicy = costPolicy;
         this.revisionStore = revisionStore;
         this.attemptStore = attemptStore;
         this.approvalStore = approvalStore;
+        this.diversityEvaluator = diversityEvaluator ?? new VariantDiversityEvaluator();
         this.editingSkillEngine = editingSkillEngine ?? new EditingSkillEngine(
         [
             new MultiClipDirectorSkill(),
@@ -80,6 +84,11 @@ public sealed class EditPlanPlanner
         {
             return new PlanningResult.Existing(approved);
         }
+
+        EditPlanRevision? parentApproved = await revisionStore.FindParentApprovedAsync(
+            request.JobId,
+            request.VariantId,
+            cancellationToken);
 
         ReelsStyleConfiguration style = new ReelsProfileCatalog().Resolve(
             ToReelsStyle(request.Settings.RequestedStyle), request.Analysis);
@@ -196,6 +205,18 @@ public sealed class EditPlanPlanner
                         "planning.plan_validation_failed",
                         string.Join("; ", issues.Select(issue =>
                             $"{issue.Code} at {issue.Path}")));
+                }
+
+                if (parentApproved is not null)
+                {
+                    VariantDiversityResult diversity = diversityEvaluator.Evaluate(plan, parentApproved.Plan);
+                    if (!diversity.IsAccepted)
+                    {
+                        throw new PlanConstructionException(
+                            "planning.variant_not_diverse",
+                            $"Alternative variant differs on {diversity.DifferenceCount} objective axes; " +
+                            $"at least {diversity.RequiredDifferenceCount} are required.");
+                    }
                 }
 
                 string planHash = CalculateHash(plan, presentation);
