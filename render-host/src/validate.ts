@@ -75,11 +75,11 @@ function validatePlan(value: unknown, issues: ValidationIssue[]): boolean {
     return false;
   }
 
-  if (value.schemaVersion === 2 || value.schemaVersion === 3) {
+  if (value.schemaVersion === 2 || value.schemaVersion === 3 || value.schemaVersion === 4) {
     validatePlanV2(value, issues);
     return issues.length === 0;
   }
-  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema versions 1, 2 and 3 are supported."));
+  if (value.schemaVersion !== 1) issues.push(issue("schema_version", "plan.schemaVersion", "Only schema versions 1, 2, 3 and 4 are supported."));
   for (const name of ["jobId", "variantId", "revisionId", "analysisRevisionId"]) requiredString(value[name], `plan.${name}`, issues);
   if (!Number.isInteger(value.seed)) issues.push(issue("seed_invalid", "plan.seed", "Seed must be an integer."));
   if (value.template !== "dynamic") issues.push(issue("template_unknown", "plan.template", "Only the dynamic template is supported."));
@@ -172,7 +172,7 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
     duration = typeof output.durationFrames === "number" ? output.durationFrames : 0;
   }
   const sourceDurations = new Map<string, number>();
-  if (value.schemaVersion === 3) {
+  if (value.schemaVersion === 3 || value.schemaVersion === 4) {
     const sources = value.sources;
     if (!Array.isArray(sources) || sources.length === 0) {
       issues.push(issue("source_invalid", "plan.sources", "At least one source identity is required."));
@@ -214,7 +214,7 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
       const sourceAssetValid = requiredString(clip.sourceAssetId, `${path}.sourceAssetId`, issues);
       validSourceRange(clip.source, `${path}.source`, issues);
       const masterRangeValid = validSourceRange(clip.master, `${path}.master`, issues);
-      if (value.schemaVersion === 3 && sourceAssetValid) {
+      if ((value.schemaVersion === 3 || value.schemaVersion === 4) && sourceAssetValid) {
         const sourceDuration = sourceDurations.get(clip.sourceAssetId as string);
         if (sourceDuration === undefined) {
           issues.push(issue("source_unknown", `${path}.sourceAssetId`, "Clip must reference a declared Master source."));
@@ -350,12 +350,56 @@ function validatePlanV2(value: Record<string, unknown>, issues: ValidationIssue[
     }
   }
   if (!Array.isArray(value.skills)) issues.push(issue("skills_invalid", "plan.skills", "Applied skills must be an array."));
+  else if (value.schemaVersion === 4) validateV4Skills(value.skills, issues);
   if (value.profile !== undefined && value.profile !== "instagram-reels") issues.push(issue("enum_unknown", "plan.profile", "Unknown output profile."));
   if (value.style !== undefined && (!isRecord(value.style)
     || !["auto", "expert-clean", "dynamic-viral", "cinematic", "premium-ads"].includes(String(value.style.requested))
     || !["expert-clean", "dynamic-viral", "cinematic", "premium-ads"].includes(String(value.style.resolved)))) {
     issues.push(issue("enum_unknown", "plan.style", "Unknown requested or resolved style."));
   }
+}
+
+const editPlanV4SkillIds = new Set([
+  "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+  "best-shot", "pacing-director", "speech-tightening", "caption-director",
+  "visual-director", "smart-reframe", "audio-director",
+]);
+
+function validateV4Skills(skills: unknown[], issues: ValidationIssue[]): void {
+  const found = new Set<string>();
+  skills.forEach((skill, index) => {
+    const path = `plan.skills[${index}]`;
+    if (!isRecord(skill)) {
+      issues.push(issue("skill_invalid", path, "Each skill audit entry must be an object."));
+      return;
+    }
+    const idValid = requiredString(skill.id, `${path}.id`, issues);
+    requiredString(skill.version, `${path}.version`, issues);
+    if (idValid) {
+      const id = String(skill.id);
+      if (!editPlanV4SkillIds.has(id)) issues.push(issue("skill_unknown", `${path}.id`, "Skill audit contains an unknown skill."));
+      else if (found.has(id)) issues.push(issue("skill_duplicate", `${path}.id`, "Skill audit IDs must be unique."));
+      else found.add(id);
+    }
+    if (!["applied", "skipped", "unavailable"].includes(String(skill.status))) {
+      issues.push(issue("skill_status_invalid", `${path}.status`, "Skill status must be applied, skipped or unavailable."));
+    }
+    if (!Array.isArray(skill.reasons)) {
+      issues.push(issue("skill_reasons_required", `${path}.reasons`, "Skill reasons must be an array."));
+      return;
+    }
+    skill.reasons.forEach((reason, reasonIndex) => {
+      if (!isRecord(reason)) {
+        issues.push(issue("skill_reason_invalid", `${path}.reasons[${reasonIndex}]`, "Skill reason must be an object."));
+        return;
+      }
+      requiredString(reason.code, `${path}.reasons[${reasonIndex}].code`, issues);
+      requiredString(reason.message, `${path}.reasons[${reasonIndex}].message`, issues);
+    });
+  });
+  editPlanV4SkillIds.forEach((id) => {
+    if (!found.has(id)) issues.push(issue("skill_missing", "plan.skills", `Skill audit is missing '${id}'.`));
+  });
 }
 
 export function validateRenderRequest(value: unknown): ValidationIssue[] {
@@ -378,8 +422,8 @@ export function validateRenderRequest(value: unknown): ValidationIssue[] {
   }
   validatePlan(value.plan, issues);
   if (isRecord(value.plan)) {
-    if ((value.schemaVersion === 2) !== (value.plan.schemaVersion === 3)) {
-      issues.push(issue("contract_version_mismatch", "plan.schemaVersion", "RenderRequest V2 requires Edit Plan V3; legacy plans require RenderRequest V1."));
+    if ((value.schemaVersion === 2) !== (value.plan.schemaVersion === 3 || value.plan.schemaVersion === 4)) {
+      issues.push(issue("contract_version_mismatch", "plan.schemaVersion", "RenderRequest V2 requires Edit Plan V3 or V4; legacy plans require RenderRequest V1."));
     }
     if (value.plan.jobId !== value.jobId) {
       issues.push(issue("plan_job_id_mismatch", "plan.jobId", "Plan jobId must match the render request jobId."));

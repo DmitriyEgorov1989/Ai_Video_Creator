@@ -36,6 +36,14 @@ _Avoid_: Arbitrary clip, invented timestamp
 Версионированное детерминированное описание одного Variant, ссылающееся только на известные Artifacts и Allowed Segments.
 _Avoid_: Prompt, React composition
 
+**Editing Skill Audit**:
+Неизменяемая часть ревизии Edit Plan с идентификатором, версией, статусом и причинами решения каждого из 11 настроенных editing skills.
+_Avoid_: Reels Critic, runtime log
+
+**Evidence Manifest**:
+Версионированная связь утверждённой ревизии и её skill audit с critic/remount chain, render, QA и final MP4.
+_Avoid_: Mutable report, user content
+
 **Output Timeline**:
 Последовательность кадров итогового Variant.
 _Avoid_: Original timeline, master timeline

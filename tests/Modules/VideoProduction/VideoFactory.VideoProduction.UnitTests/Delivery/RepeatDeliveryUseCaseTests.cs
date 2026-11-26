@@ -89,5 +89,8 @@ public sealed class RepeatDeliveryUseCaseTests
     private sealed class ReceiptStore : IDeliveryReceiptStore
     {
         public Task AppendAsync(DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<bool> HasSucceededAsync(JobId jobId, VariantId variantId, ArtifactId artifactId, long recipientId, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
     }
 }

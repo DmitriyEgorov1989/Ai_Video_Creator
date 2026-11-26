@@ -110,6 +110,16 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
             };
         }
 
+        if (existingAttempt is not null
+            && job.CurrentApprovedEditPlanRevisionId != sourceRevisionId
+            && await TryRecoverCompletedRemountAsync(job, render, existingAttempt, cancellationToken))
+        {
+            return StageExecutionResult.Success(
+                "critic.remount_required",
+                "The persisted critic evidence restored the corrected plan revision.",
+                StageCompletionAction.Remount);
+        }
+
         if (job.CurrentApprovedEditPlanRevisionId != sourceRevisionId)
         {
             return StageExecutionResult.Permanent(
@@ -195,6 +205,7 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
                 measured,
                 "accepted",
                 null,
+                remountNumber,
                 cancellationToken);
             if (reportError is not null)
             {
@@ -255,24 +266,36 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent(rejected.ErrorCode, rejected.ErrorMessage);
         }
 
-        string planHash = CalculateHash(applied.Plan, revision.Presentation);
+        EditPlan correctedPlan = applied.Plan with
+        {
+            RevisionId = EditPlanRevisionIdentity.CalculateRevisionId(
+                applied.Plan,
+                revision.Presentation,
+                revision.Audit)
+        };
+        string planHash = EditPlanRevisionIdentity.CalculateHash(
+            correctedPlan,
+            revision.Presentation,
+            revision.Audit);
         string? correctionReportError = await PublishObjectiveReportAsync(
             job,
             revision,
             render,
             measured,
             "remount",
-            applied.Plan.RevisionId,
+            correctedPlan.RevisionId,
+            remountNumber,
             cancellationToken);
         if (correctionReportError is not null)
         {
             return StageExecutionResult.Permanent("critic.report_rejected", correctionReportError);
         }
         EditPlanRevision correctedRevision = await planStore.SaveAsync(
-            applied.Plan,
+            correctedPlan,
             planHash,
             revision.ActualCostUsd,
             revision.Presentation,
+            revision.Audit,
             cancellationToken);
         await SaveAttemptAsync(
             CreateCompletedAttempt(
@@ -328,6 +351,67 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
     private Task SaveAttemptAsync(CritiqueAttemptRecord attempt, CancellationToken cancellationToken) =>
         attemptStore?.SaveAsync(attempt, cancellationToken) ?? Task.CompletedTask;
 
+    private async Task<bool> TryRecoverCompletedRemountAsync(
+        JobCreationRecord job,
+        ArtifactRecord render,
+        CritiqueAttemptRecord runningAttempt,
+        CancellationToken cancellationToken)
+    {
+        if (attemptStore is null || job.CurrentApprovedEditPlanRevisionId is not RevisionId approvedRevisionId)
+            return false;
+        ArtifactRecord? report = await artifactStore.FindLatestAsync(
+            job.JobId,
+            job.VariantId,
+            "objective-critique-report",
+            cancellationToken);
+        if (report?.ParentArtifactId != render.ArtifactId || string.IsNullOrWhiteSpace(report.MetadataJson))
+            return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(report.MetadataJson);
+            JsonElement root = document.RootElement;
+            if (!root.TryGetProperty("schemaVersion", out JsonElement version)
+                || version.ValueKind != JsonValueKind.Number
+                || !version.TryGetInt32(out int schemaVersion)
+                || schemaVersion != 2
+                || root.GetProperty("sourceRevisionId").GetString() != runningAttempt.SourceRevisionId.ToString()
+                || root.GetProperty("renderArtifactId").GetString() != render.ArtifactId.ToString()
+                || !root.TryGetProperty("remountNumber", out JsonElement remount)
+                || remount.ValueKind != JsonValueKind.Number
+                || !remount.TryGetInt32(out int remountNumber)
+                || remountNumber != runningAttempt.RemountNumber
+                || root.GetProperty("decision").GetString() != "remount"
+                || !Guid.TryParse(root.GetProperty("correctionRevisionId").GetString(), out Guid correctionGuid)
+                || new RevisionId(correctionGuid) != approvedRevisionId)
+                return false;
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
+        {
+            return false;
+        }
+
+        EditPlanRevision? corrected = await planStore.GetAsync(approvedRevisionId, cancellationToken);
+        if (corrected is null || corrected.JobId != job.JobId || corrected.VariantId != job.VariantId)
+            return false;
+        await attemptStore.SaveAsync(
+            new CritiqueAttemptRecord(
+                runningAttempt.JobId,
+                runningAttempt.VariantId,
+                runningAttempt.SourceRevisionId,
+                runningAttempt.RenderArtifactId,
+                approvedRevisionId,
+                runningAttempt.RemountNumber,
+                runningAttempt.EstimatedCostUsd,
+                0m,
+                "remount",
+                null,
+                null,
+                runningAttempt.CreatedAt,
+                DateTimeOffset.UtcNow),
+            cancellationToken);
+        return true;
+    }
+
     private static CritiqueAttemptRecord CreateCompletedAttempt(
         JobCreationRecord job,
         EditPlanRevision revision,
@@ -361,12 +445,6 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
         && value.TryGetGuid(out Guid actual)
         && actual == expected;
 
-    private static string CalculateHash(EditPlan plan, ReelsPresentationPlan? presentation)
-    {
-        string canonical = JsonSerializer.Serialize(new { plan, presentation });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
-    }
-
     private async Task<string?> PublishObjectiveReportAsync(
         JobCreationRecord job,
         EditPlanRevision revision,
@@ -374,6 +452,7 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
         RenderedMediaObservation observation,
         string decision,
         RevisionId? correctionRevisionId,
+        int remountNumber,
         CancellationToken cancellationToken)
     {
         ArtifactRecord? existing = await artifactStore.FindLatestAsync(
@@ -384,7 +463,15 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
         if (existing?.ParentArtifactId == render.ArtifactId
             && File.Exists(SafeFileTree.Resolve(workspaceRoot, existing.RelativePath)))
         {
-            return null;
+            return ExistingReportMatches(
+                existing,
+                revision,
+                render,
+                decision,
+                correctionRevisionId,
+                remountNumber)
+                ? null
+                : "An immutable objective critique report already exists with different identity.";
         }
 
         ArtifactId reportId = ArtifactId.New();
@@ -392,29 +479,46 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
         string reportPath = Path.Combine(
             Path.GetDirectoryName(renderPath)!,
             $"objective-critique-{reportId}.json");
+        List<object> findings =
+        [
+            .. observation.BlackIntervals.Select(interval => (object)new
+            {
+                code = "critic.black_frames",
+                kind = "blackFrames",
+                output = new { interval.StartFrame, interval.EndFrame }
+            }),
+            .. observation.FrozenIntervals.Select(interval => (object)new
+            {
+                code = "critic.frozen_frames",
+                kind = "frozenFrames",
+                output = new { interval.StartFrame, interval.EndFrame }
+            })
+        ];
+        if (observation.TruePeakDbtp is decimal measuredPeak && measuredPeak > maximumTruePeakDbtp)
+        {
+            findings.Add(new
+            {
+                code = "critic.audio_true_peak",
+                kind = "audioTruePeak",
+                measuredTruePeakDbtp = measuredPeak,
+                maximumTruePeakDbtp
+            });
+        }
+
         string reportJson = JsonSerializer.Serialize(new
         {
-            schemaVersion = 1,
-            jobId = job.JobId,
-            variantId = job.VariantId,
-            sourceRevisionId = revision.RevisionId,
-            correctionRevisionId,
-            renderArtifactId = render.ArtifactId,
+            schemaVersion = 2,
+            jobId = job.JobId.ToString(),
+            variantId = job.VariantId.ToString(),
+            sourceRevisionId = revision.RevisionId.ToString(),
+            sourcePlanHash = revision.PlanHash,
+            correctionRevisionId = correctionRevisionId?.ToString(),
+            renderArtifactId = render.ArtifactId.ToString(),
+            remountNumber,
             decision,
             truePeakDbtp = observation.TruePeakDbtp,
             maximumTruePeakDbtp,
-            findings = observation.BlackIntervals.Select(interval => new
-                {
-                    code = "critic.black_frames",
-                    kind = "blackFrames",
-                    output = new { interval.StartFrame, interval.EndFrame }
-                })
-                .Concat(observation.FrozenIntervals.Select(interval => new
-                {
-                    code = "critic.frozen_frames",
-                    kind = "frozenFrames",
-                    output = new { interval.StartFrame, interval.EndFrame }
-                }))
+            findings
         }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         string temporaryPath = reportPath + ".tmp";
         try
@@ -442,5 +546,38 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
             job.VariantId);
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(report, cancellationToken);
         return registration is ArtifactRegistrationResult.Rejected rejected ? rejected.Message : null;
+    }
+
+    private static bool ExistingReportMatches(
+        ArtifactRecord report,
+        EditPlanRevision revision,
+        ArtifactRecord render,
+        string decision,
+        RevisionId? correctionRevisionId,
+        int remountNumber)
+    {
+        if (string.IsNullOrWhiteSpace(report.MetadataJson)) return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(report.MetadataJson);
+            JsonElement root = document.RootElement;
+            return root.TryGetProperty("schemaVersion", out JsonElement version)
+                && version.ValueKind == JsonValueKind.Number
+                && version.TryGetInt32(out int schemaVersion)
+                && schemaVersion == 2
+                && root.GetProperty("sourceRevisionId").GetString() == revision.RevisionId.ToString()
+                && root.GetProperty("sourcePlanHash").GetString() == revision.PlanHash
+                && root.GetProperty("renderArtifactId").GetString() == render.ArtifactId.ToString()
+                && root.GetProperty("decision").GetString() == decision
+                && root.TryGetProperty("remountNumber", out JsonElement storedRemount)
+                && storedRemount.ValueKind == JsonValueKind.Number
+                && storedRemount.TryGetInt32(out int storedRemountNumber)
+                && storedRemountNumber == remountNumber
+                && root.GetProperty("correctionRevisionId").GetString() == correctionRevisionId?.ToString();
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
+        {
+            return false;
+        }
     }
 }

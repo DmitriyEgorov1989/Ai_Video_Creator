@@ -3,6 +3,9 @@ using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using System.Collections.Immutable;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 
 namespace VideoFactory.VideoProduction.Application.Critique;
 
@@ -37,11 +40,12 @@ public sealed class EditPlanCorrectionService
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(analysis);
         ArgumentNullException.ThrowIfNull(correction);
+        RevisionId correctionRevisionId = CreateRevisionId(plan.RevisionId, correction);
 
         return correction switch
         {
-            ReplaceVideoClipCorrection replacement => ApplyReplacement(plan, analysis, replacement),
-            ScaleAudioGainCorrection scale => ApplyAudioScale(plan, scale),
+            ReplaceVideoClipCorrection replacement => ApplyReplacement(plan, analysis, replacement, correctionRevisionId),
+            ScaleAudioGainCorrection scale => ApplyAudioScale(plan, scale, correctionRevisionId),
             _ => new EditPlanCorrectionResult.Rejected(
                 "correction.unsupported",
                 "The correction operation is not supported.")
@@ -51,7 +55,8 @@ public sealed class EditPlanCorrectionService
     private static EditPlanCorrectionResult ApplyReplacement(
         EditPlan plan,
         MultiSourceAnalysisResult analysis,
-        ReplaceVideoClipCorrection correction)
+        ReplaceVideoClipCorrection correction,
+        RevisionId correctionRevisionId)
     {
 
         AllowedSegment? replacement = analysis.AllowedSegments.FirstOrDefault(segment =>
@@ -92,7 +97,7 @@ public sealed class EditPlanCorrectionService
         };
         EditPlan corrected = plan with
         {
-            RevisionId = RevisionId.New(),
+            RevisionId = correctionRevisionId,
             Video = plan.Video with { Clips = plan.Video.Clips.SetItem(videoIndex, video) },
             Audio = plan.Audio with { SourceClips = plan.Audio.SourceClips.SetItem(audioIndex, audio) }
         };
@@ -101,7 +106,8 @@ public sealed class EditPlanCorrectionService
 
     private static EditPlanCorrectionResult ApplyAudioScale(
         EditPlan plan,
-        ScaleAudioGainCorrection correction)
+        ScaleAudioGainCorrection correction,
+        RevisionId correctionRevisionId)
     {
         if (correction.Factor is <= 0m or > 1m)
         {
@@ -126,9 +132,16 @@ public sealed class EditPlanCorrectionService
         ];
         return new EditPlanCorrectionResult.Applied(plan with
         {
-            RevisionId = RevisionId.New(),
+            RevisionId = correctionRevisionId,
             Audio = new AudioTrack(sourceClips, musicClips)
         });
+    }
+
+    private static RevisionId CreateRevisionId(RevisionId sourceRevisionId, CorrectionProposal correction)
+    {
+        string correctionJson = JsonSerializer.Serialize(correction, correction.GetType());
+        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{sourceRevisionId}|{correctionJson}"));
+        return new RevisionId(new Guid(hash[..16]));
     }
 
     private static int FindVideoIndex(EditPlan plan, ReplaceVideoClipCorrection correction)

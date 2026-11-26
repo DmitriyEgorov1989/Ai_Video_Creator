@@ -19,7 +19,14 @@ public enum EditPlanContractStatus
 /// <summary>Выбирает реализацию контракта без исполнения произвольного JSON-кода.</summary>
 public static class EditPlanContractDispatcher
 {
-    /// <summary>Проверяет JSON-документ V1, V2 или V3.</summary>
+    private static readonly HashSet<string> V4SkillIds = new(StringComparer.Ordinal)
+    {
+        "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+        "best-shot", "pacing-director", "speech-tightening", "caption-director",
+        "visual-director", "smart-reframe", "audio-director"
+    };
+
+    /// <summary>Проверяет JSON-документ V1, V2, V3 или V4.</summary>
     /// <param name="document">JSON-документ монтажного плана; не может быть <see langword="null"/>.</param>
     /// <returns>Результат dispatch с диагностикой ошибок.</returns>
     public static EditPlanContractDispatch Dispatch(JsonElement document)
@@ -41,6 +48,7 @@ public static class EditPlanContractDispatcher
             1 => new(1, EditPlanContractStatus.Accepted, []),
             2 => ValidateV2(document),
             3 => ValidateV3(document),
+            4 => ValidateV4(document),
             _ => new(schemaVersion, EditPlanContractStatus.UnsupportedVersion,
                 [new ValidationIssue("plan.schema_version_unsupported", "schemaVersion", "Unsupported edit plan schema version.")])
         };
@@ -122,6 +130,7 @@ public static class EditPlanContractDispatcher
         HashSet<string> appliedSkills = skills.EnumerateArray()
             .Where(skill => skill.ValueKind == JsonValueKind.Object
                 && skill.TryGetProperty("status", out JsonElement status)
+                && status.ValueKind == JsonValueKind.String
                 && status.GetString() == "applied"
                 && skill.TryGetProperty("id", out JsonElement id)
                 && id.ValueKind == JsonValueKind.String)
@@ -287,6 +296,67 @@ public static class EditPlanContractDispatcher
         ValidateAudio(document.GetProperty("audio"), issues);
     }
 
+    private static EditPlanContractDispatch ValidateV4(JsonElement document)
+    {
+        List<ValidationIssue> issues = [.. ValidateV3(document).Issues];
+        if (document.TryGetProperty("skills", out JsonElement skills)
+            && skills.ValueKind == JsonValueKind.Array)
+        {
+            ValidateV4Skills(skills, issues);
+        }
+
+        return new(4, issues.Count == 0 ? EditPlanContractStatus.Accepted : EditPlanContractStatus.Invalid, issues);
+    }
+
+    private static void ValidateV4Skills(JsonElement skills, List<ValidationIssue> issues)
+    {
+        HashSet<string> found = new(StringComparer.Ordinal);
+        foreach (JsonElement skill in skills.EnumerateArray())
+        {
+            if (skill.ValueKind != JsonValueKind.Object)
+            {
+                issues.Add(new ValidationIssue("skill.invalid", "skills", "Each skill audit entry must be an object."));
+                continue;
+            }
+
+            string? id = ReadRequiredString(skill, "id", "skills.id", issues);
+            RequiredString(skill, "version", "skills.version", issues);
+            if (id is not null && !V4SkillIds.Contains(id))
+                issues.Add(new ValidationIssue("skill.unknown", "skills.id", "Skill audit contains an unknown skill."));
+            else if (id is not null && !found.Add(id))
+                issues.Add(new ValidationIssue("skill.duplicate", "skills.id", "Skill audit IDs must be unique."));
+
+            if (!skill.TryGetProperty("status", out JsonElement status)
+                || status.ValueKind != JsonValueKind.String
+                || status.GetString() is not ("applied" or "skipped" or "unavailable"))
+            {
+                issues.Add(new ValidationIssue("skill.status_invalid", "skills.status", "Skill status must be applied, skipped or unavailable."));
+            }
+
+            if (!skill.TryGetProperty("reasons", out JsonElement reasons)
+                || reasons.ValueKind != JsonValueKind.Array)
+            {
+                issues.Add(new ValidationIssue("skill.reasons_required", "skills.reasons", "Skill reasons must be an array."));
+                continue;
+            }
+
+            foreach (JsonElement reason in reasons.EnumerateArray())
+            {
+                if (reason.ValueKind != JsonValueKind.Object)
+                {
+                    issues.Add(new ValidationIssue("skill.reason_invalid", "skills.reasons", "Each skill reason must be an object."));
+                    continue;
+                }
+
+                RequiredString(reason, "code", "skills.reasons.code", issues);
+                RequiredString(reason, "message", "skills.reasons.message", issues);
+            }
+        }
+
+        foreach (string missing in V4SkillIds.Except(found, StringComparer.Ordinal))
+            issues.Add(new ValidationIssue("skill.missing", "skills", $"Skill audit is missing '{missing}'."));
+    }
+
     private static void ValidateCaptions(JsonElement captions, int duration, List<ValidationIssue> issues)
     {
         if (!captions.TryGetProperty("words", out JsonElement words) || words.ValueKind != JsonValueKind.Array)
@@ -380,7 +450,8 @@ public static class EditPlanContractDispatcher
 
     private static int PositiveInt(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)
     {
-        if (objectValue.TryGetProperty(property, out JsonElement value)
+        if (objectValue.ValueKind == JsonValueKind.Object
+            && objectValue.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.Number
             && value.TryGetInt32(out int number)
             && number > 0)
@@ -391,7 +462,8 @@ public static class EditPlanContractDispatcher
 
     private static int PositiveOrZeroInt(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)
     {
-        if (objectValue.TryGetProperty(property, out JsonElement value)
+        if (objectValue.ValueKind == JsonValueKind.Object
+            && objectValue.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.Number
             && value.TryGetInt32(out int number)
             && number >= 0)
@@ -402,7 +474,8 @@ public static class EditPlanContractDispatcher
 
     private static long PositiveLong(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)
     {
-        if (objectValue.TryGetProperty(property, out JsonElement value)
+        if (objectValue.ValueKind == JsonValueKind.Object
+            && objectValue.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.Number
             && value.TryGetInt64(out long number)
             && number > 0)
@@ -417,7 +490,8 @@ public static class EditPlanContractDispatcher
         string path,
         List<ValidationIssue> issues)
     {
-        if (objectValue.TryGetProperty(property, out JsonElement value)
+        if (objectValue.ValueKind == JsonValueKind.Object
+            && objectValue.TryGetProperty(property, out JsonElement value)
             && value.ValueKind == JsonValueKind.String
             && !string.IsNullOrWhiteSpace(value.GetString()))
             return value.GetString();
@@ -433,8 +507,10 @@ public static class EditPlanContractDispatcher
     {
         if (range.ValueKind != JsonValueKind.Object
             || !range.TryGetProperty("startMicroseconds", out JsonElement startValue)
+            || startValue.ValueKind != JsonValueKind.Number
             || !startValue.TryGetInt64(out long start)
             || !range.TryGetProperty("endMicroseconds", out JsonElement endValue)
+            || endValue.ValueKind != JsonValueKind.Number
             || !endValue.TryGetInt64(out long end)
             || start < 0
             || end <= start
@@ -446,7 +522,8 @@ public static class EditPlanContractDispatcher
 
     private static void RequiredString(JsonElement objectValue, string property, string path, List<ValidationIssue> issues)
     {
-        if (!objectValue.TryGetProperty(property, out JsonElement value)
+        if (objectValue.ValueKind != JsonValueKind.Object
+            || !objectValue.TryGetProperty(property, out JsonElement value)
             || value.ValueKind != JsonValueKind.String
             || string.IsNullOrWhiteSpace(value.GetString()))
             issues.Add(new ValidationIssue("plan.required_string", path, "A non-empty string is required."));

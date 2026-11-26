@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/final-manifest.v2.schema.json",
+  "title": "FinalManifestV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "variantId", "planRevisionId", "planHash", "audit", "criticChain", "render", "qa", "final"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "jobId": { "type": "string", "minLength": 1 },
+    "variantId": { "type": "string", "minLength": 1 },
+    "planRevisionId": { "type": "string", "minLength": 1 },
+    "planHash": { "type": "string", "minLength": 1 },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "skillCount", "sha256"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "skillCount": { "const": 11 },
+        "sha256": { "type": "string", "minLength": 1 }
+      }
+    },
+    "criticChain": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/criticAttempt" } },
+    "render": { "$ref": "#/$defs/artifact" },
+    "qa": { "$ref": "#/$defs/artifact" },
+    "final": { "$ref": "#/$defs/artifact" }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "sha256", "sizeBytes"],
+      "properties": {
+        "artifactId": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "minLength": 1 },
+        "sizeBytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "criticAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remountNumber", "sourceRevisionId", "sourcePlanHash", "render", "criticReport", "status", "correctionRevisionId"],
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "remount" } } },
+          "then": { "properties": { "correctionRevisionId": { "type": "string", "minLength": 1 } } },
+          "else": { "properties": { "correctionRevisionId": { "type": "null" } } }
+        }
+      ],
+      "properties": {
+        "remountNumber": { "type": "integer", "minimum": 0 },
+        "sourceRevisionId": { "type": "string", "minLength": 1 },
+        "sourcePlanHash": { "type": "string", "minLength": 1 },
+        "render": { "$ref": "#/$defs/artifact" },
+        "criticReport": { "$ref": "#/$defs/artifact" },
+        "status": { "enum": ["accepted", "remount"] },
+        "correctionRevisionId": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

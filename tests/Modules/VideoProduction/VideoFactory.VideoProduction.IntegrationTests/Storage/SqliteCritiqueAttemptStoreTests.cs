@@ -38,6 +38,9 @@ public sealed class SqliteCritiqueAttemptStoreTests
             renderArtifactId,
             CancellationToken.None);
         Assert.Equal(attempt, restored);
+        CritiqueAttemptRecord listed = Assert.Single(
+            await store.ListAsync(jobId, variantId, CancellationToken.None));
+        Assert.Equal(attempt, listed);
 
         await using SqliteConnection connection = new(database.ConnectionString);
         await connection.OpenAsync();

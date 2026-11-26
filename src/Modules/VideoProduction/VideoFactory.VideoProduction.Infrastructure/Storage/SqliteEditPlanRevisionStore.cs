@@ -101,7 +101,7 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         string planHash,
         decimal actualCostUsd,
         CancellationToken cancellationToken) =>
-        await SaveAsync(plan, planHash, actualCostUsd, null, cancellationToken);
+        await SaveAsync(plan, planHash, actualCostUsd, null, null, cancellationToken);
 
     /// <inheritdoc />
     public async Task<EditPlanRevision> SaveAsync(
@@ -109,6 +109,16 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         string planHash,
         decimal actualCostUsd,
         ReelsPresentationPlan? presentation,
+        CancellationToken cancellationToken) =>
+        await SaveAsync(plan, planHash, actualCostUsd, presentation, null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<EditPlanRevision> SaveAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        EditPlanAudit? audit,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -124,10 +134,11 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
             planHash,
             plan,
             actualCostUsd,
-            presentation);
-        string planJson = presentation is null
+            presentation,
+            audit);
+        string planJson = presentation is null && audit is null
             ? JsonSerializer.Serialize(plan, JsonOptions)
-            : JsonSerializer.Serialize(new StoredPlanDocument(plan, presentation), JsonOptions);
+            : JsonSerializer.Serialize(new StoredPlanDocument(1, plan, presentation, audit), JsonOptions);
 
         await using SqliteConnection connection = new(connectionString);
         await connection.OpenAsync(cancellationToken);
@@ -226,7 +237,8 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
             reader.GetString(4),
             plan,
             decimal.Parse(reader.GetString(6), System.Globalization.CultureInfo.InvariantCulture),
-            stored?.Presentation);
+            stored?.Presentation,
+            stored?.Audit);
     }
 
     private const string SelectSql = """
@@ -235,5 +247,9 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         FROM edit_plan_revisions
         """;
 
-    private sealed record StoredPlanDocument(EditPlan Plan, ReelsPresentationPlan Presentation);
+    private sealed record StoredPlanDocument(
+        int SchemaVersion,
+        EditPlan Plan,
+        ReelsPresentationPlan? Presentation,
+        EditPlanAudit? Audit);
 }

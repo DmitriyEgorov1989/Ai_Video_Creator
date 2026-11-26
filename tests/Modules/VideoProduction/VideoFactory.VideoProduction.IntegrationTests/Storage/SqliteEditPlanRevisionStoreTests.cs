@@ -42,6 +42,41 @@ public sealed class SqliteEditPlanRevisionStoreTests
     }
 
     [Fact]
+    public async Task FullEditingSkillAuditSurvivesSqliteRoundTrip()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded job = await CreateJobAsync(database);
+        EditPlan plan = CreatePlan(job);
+        string[] skillIds =
+        [
+            "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+            "best-shot", "pacing-director", "speech-tightening", "caption-director",
+            "visual-director", "smart-reframe", "audio-director"
+        ];
+        EditPlanAudit audit = new(
+            1,
+            [.. skillIds.Select((id, index) => new EditingSkillAuditEntry(
+                id,
+                "1.0.0",
+                index == 6 ? EditingDecisionStatus.Unavailable : EditingDecisionStatus.Applied,
+                [new EditingDecisionReason($"reason.{index}", $"Decision {index}.")]))]);
+        SqliteEditPlanRevisionStore store = new(database.ConnectionString);
+
+        await store.SaveAsync(plan, "audit-hash", 0m, null, audit, CancellationToken.None);
+        EditPlanRevision? restored = await new SqliteEditPlanRevisionStore(database.ConnectionString)
+            .GetAsync(plan.RevisionId, CancellationToken.None);
+
+        Assert.Equal(1, restored?.Audit?.SchemaVersion);
+        Assert.Equal(skillIds, restored?.Audit?.Skills.Select(skill => skill.SkillId));
+        Assert.Equal(
+            audit.Skills.Select(skill => (skill.SkillVersion, skill.Status)),
+            restored?.Audit?.Skills.Select(skill => (skill.SkillVersion, skill.Status)));
+        Assert.Equal(
+            audit.Skills.SelectMany(skill => skill.Reasons).Select(reason => (reason.Code, reason.Message)),
+            restored?.Audit?.Skills.SelectMany(skill => skill.Reasons).Select(reason => (reason.Code, reason.Message)));
+    }
+
+    [Fact]
     public async Task SamePlanHashIsRestoredWithoutCreatingSecondRevision()
     {
         await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();

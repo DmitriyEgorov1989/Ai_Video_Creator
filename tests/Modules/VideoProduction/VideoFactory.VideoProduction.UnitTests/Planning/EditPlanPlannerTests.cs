@@ -119,6 +119,69 @@ public sealed class EditPlanPlannerTests
     }
 
     [Fact]
+    public async Task CreatedRevisionPreservesAuditForAllConfiguredEditingSkills()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+
+        PlanningResult.Created created = Assert.IsType<PlanningResult.Created>(
+            await fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+
+        EditPlanAudit audit = Assert.IsType<EditPlanAudit>(created.Revision.Audit);
+        Assert.Equal(1, audit.SchemaVersion);
+        Assert.Equal(
+            [
+                "multi-clip-director",
+                "semantic-story",
+                "hook-builder",
+                "smart-cut",
+                "best-shot",
+                "pacing-director",
+                "speech-tightening",
+                "caption-director",
+                "visual-director",
+                "smart-reframe",
+                "audio-director"
+            ],
+            audit.Skills.Select(skill => skill.SkillId));
+        Assert.All(audit.Skills, skill =>
+        {
+            Assert.Equal("1.0.0", skill.SkillVersion);
+            Assert.True(Enum.IsDefined(skill.Status));
+            Assert.False(skill.Reasons.IsDefault);
+        });
+    }
+
+    [Fact]
+    public void SkillDecisionChangeChangesRevisionHash()
+    {
+        EditPlan plan = ValidPlanFixture.Create().Plan;
+        EditPlanAudit first = new(
+            1,
+            [new EditingSkillAuditEntry(
+                "smart-cut",
+                "1.0.0",
+                EditingDecisionStatus.Applied,
+                [new EditingDecisionReason("cut.applied", "First decision.")])]);
+        EditPlanAudit second = first with
+        {
+            Skills = [first.Skills[0] with
+            {
+                Reasons = [new EditingDecisionReason("cut.applied", "Changed decision.")]
+            }]
+        };
+
+        string firstHash = EditPlanRevisionIdentity.CalculateHash(plan, null, first);
+        string repeatedHash = EditPlanRevisionIdentity.CalculateHash(plan, null, first);
+        string secondHash = EditPlanRevisionIdentity.CalculateHash(plan, null, second);
+        RevisionId firstRevisionId = EditPlanRevisionIdentity.CalculateRevisionId(plan, null, first);
+        RevisionId secondRevisionId = EditPlanRevisionIdentity.CalculateRevisionId(plan, null, second);
+
+        Assert.Equal(firstHash, repeatedHash);
+        Assert.NotEqual(firstHash, secondHash);
+        Assert.NotEqual(firstRevisionId, secondRevisionId);
+    }
+
+    [Fact]
     public async Task UnknownProviderSegmentIsRejectedAndNotSaved()
     {
         PlanningFixture fixture = PlanningFixture.Create();
@@ -463,6 +526,15 @@ public sealed class EditPlanPlannerTests
             string planHash,
             decimal actualCostUsd,
             CancellationToken cancellationToken)
+            => SaveAsync(plan, planHash, actualCostUsd, null, null, cancellationToken);
+
+        public Task<EditPlanRevision> SaveAsync(
+            EditPlan plan,
+            string planHash,
+            decimal actualCostUsd,
+            ReelsPresentationPlan? presentation,
+            EditPlanAudit? audit,
+            CancellationToken cancellationToken)
         {
             SaveCount++;
             revision = new EditPlanRevision(
@@ -471,7 +543,9 @@ public sealed class EditPlanPlannerTests
                 plan.VariantId,
                 planHash,
                 plan,
-                actualCostUsd);
+                actualCostUsd,
+                presentation,
+                audit);
             return Task.FromResult(revision);
         }
     }

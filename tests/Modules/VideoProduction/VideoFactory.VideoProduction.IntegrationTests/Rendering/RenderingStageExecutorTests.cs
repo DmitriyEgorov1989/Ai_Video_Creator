@@ -23,12 +23,14 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Rendering;
 public sealed class RenderingStageExecutorTests
 {
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
     public async Task SendsPersistedReelsPresentationWithVerifiedSourceSpecificAssetsToRenderHost(
         bool multiSource,
-        bool corruptMaster)
+        bool corruptMaster,
+        bool fullAudit)
     {
         string root = Path.Combine(Path.GetTempPath(), $"render-mapping-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -122,7 +124,22 @@ public sealed class RenderingStageExecutorTests
                 new AudioDirectorDecision(
                     "audio-director", "1.0.0", EditingDecisionStatus.Applied, [],
                     -18m, -2m, 6, 6, true, null, null));
-            await plans.SaveAsync(plan, "plan-hash", 0m, presentation, CancellationToken.None);
+            EditPlanAudit? audit = fullAudit
+                ? new EditPlanAudit(1,
+                [
+                    .. new[]
+                    {
+                        "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+                        "best-shot", "pacing-director", "speech-tightening", "caption-director",
+                        "visual-director", "smart-reframe", "audio-director"
+                    }.Select(id => new EditingSkillAuditEntry(
+                        id,
+                        "1.0.0",
+                        id == "speech-tightening" ? EditingDecisionStatus.Unavailable : EditingDecisionStatus.Applied,
+                        [new EditingDecisionReason("decision.recorded", "Decision recorded.")]))
+                ])
+                : null;
+            await plans.SaveAsync(plan, "plan-hash", 0m, presentation, audit, CancellationToken.None);
 
             await using (SqliteConnection connection = new(connectionString))
             {
@@ -171,8 +188,17 @@ public sealed class RenderingStageExecutorTests
             Assert.Equal(StageExecutionKind.Completed, result.Kind);
             using JsonDocument request = JsonDocument.Parse(Assert.IsType<string>(host.RequestJson));
             JsonElement serializedPlan = request.RootElement.GetProperty("plan");
-            Assert.Equal(multiSource ? 2 : 1, request.RootElement.GetProperty("schemaVersion").GetInt32());
-            Assert.Equal(multiSource ? 3 : 2, serializedPlan.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal(multiSource || fullAudit ? 2 : 1, request.RootElement.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal(fullAudit ? 4 : multiSource ? 3 : 2, serializedPlan.GetProperty("schemaVersion").GetInt32());
+            if (fullAudit)
+            {
+                JsonElement skills = serializedPlan.GetProperty("skills");
+                Assert.Equal(11, skills.GetArrayLength());
+                Assert.Contains(skills.EnumerateArray(), skill =>
+                    skill.GetProperty("id").GetString() == "speech-tightening"
+                    && skill.GetProperty("status").GetString() == "unavailable"
+                    && skill.GetProperty("reasons").GetArrayLength() == 1);
+            }
             Assert.Equal("instagram-reels", serializedPlan.GetProperty("profile").GetString());
             Assert.Equal("dynamic-viral", serializedPlan.GetProperty("style").GetProperty("resolved").GetString());
             JsonElement clip = serializedPlan.GetProperty("video").GetProperty("clips")[0];
@@ -184,11 +210,12 @@ public sealed class RenderingStageExecutorTests
             Assert.Equal("Привет", serializedPlan.GetProperty("captions").GetProperty("groups")[0].GetProperty("text").GetString());
             Assert.Equal(-18m, serializedPlan.GetProperty("audio").GetProperty("targetLoudnessLufs").GetDecimal());
 
+            bool modernRequest = multiSource || fullAudit;
             JsonElement masterAsset = Assert.Single(
                 request.RootElement.GetProperty("assets").EnumerateArray(),
-                asset => asset.GetProperty(multiSource ? "sourceAssetId" : "id").GetString() == masterId.ToString());
-            Assert.Equal(masterId.ToString(), masterAsset.GetProperty(multiSource ? "sourceAssetId" : "id").GetString());
-            Assert.Equal(Path.GetFullPath(Path.Combine(root, "master.mp4")), masterAsset.GetProperty(multiSource ? "videoPath" : "path").GetString());
+                asset => asset.GetProperty(modernRequest ? "sourceAssetId" : "id").GetString() == masterId.ToString());
+            Assert.Equal(masterId.ToString(), masterAsset.GetProperty(modernRequest ? "sourceAssetId" : "id").GetString());
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "master.mp4")), masterAsset.GetProperty(modernRequest ? "videoPath" : "path").GetString());
             Assert.Equal(30, masterAsset.GetProperty("frameRate").GetProperty("numerator").GetInt32());
             Assert.Equal(1, masterAsset.GetProperty("frameRate").GetProperty("denominator").GetInt32());
             if (multiSource)

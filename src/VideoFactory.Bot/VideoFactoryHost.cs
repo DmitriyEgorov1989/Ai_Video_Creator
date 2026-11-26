@@ -441,8 +441,9 @@ public static class VideoFactoryHost
                  new OutputQualityOptionsProfile(options.ExpectedWidth, options.ExpectedHeight, options.DurationToleranceFrames,
                      options.RequireAudio, string.IsNullOrWhiteSpace(options.ExpectedPixelFormat) ? null : options.ExpectedPixelFormat,
                      options.MaxTelegramBytes),
-                 options.MaxDeliveryEncodeAttempts, options.DeliveryEncodeVideoBitrateBitsPerSecond,
-                 options.DeliveryEncodeAudioBitrateBitsPerSecond);
+                  options.MaxDeliveryEncodeAttempts, options.DeliveryEncodeVideoBitrateBitsPerSecond,
+                  options.DeliveryEncodeAudioBitrateBitsPerSecond,
+                  services.GetRequiredService<ICritiqueAttemptStore>());
          });
         builder.Services.AddSingleton<DeliveryStageExecutor>(services =>
         {

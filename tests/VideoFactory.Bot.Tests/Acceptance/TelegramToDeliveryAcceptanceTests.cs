@@ -86,10 +86,14 @@ public sealed class TelegramToDeliveryAcceptanceTests
         byte[] finalBytes = await File.ReadAllBytesAsync(finalPath);
         Assert.Equal(final.Sha256, Convert.ToHexStringLower(SHA256.HashData(finalBytes)));
         Assert.Equal(finalBytes, fixture.Delivery.Files.Single());
+        StageExecutionResult repeatedDelivery = await fixture.DeliveryExecutor.ExecuteAsync(completed, CancellationToken.None);
+        Assert.Equal(StageExecutionKind.Completed, repeatedDelivery.Kind);
+        Assert.Single(fixture.Delivery.Files);
 
         string manifestPath = Path.Combine(fixture.Root, manifest.RelativePath.Replace('/', Path.DirectorySeparatorChar));
         using JsonDocument manifestDocument = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
         JsonElement manifestRoot = manifestDocument.RootElement;
+        Assert.Equal(2, manifestRoot.GetProperty("schemaVersion").GetInt32());
         Assert.Equal(fixture.JobId.ToString(), GetIdentifier(manifestRoot.GetProperty("jobId")));
         Assert.Equal(completed.VariantId.ToString(), GetIdentifier(manifestRoot.GetProperty("variantId")));
         Assert.Equal(approvedPlan.RevisionId.ToString(), GetIdentifier(manifestRoot.GetProperty("planRevisionId")));
@@ -99,6 +103,13 @@ public sealed class TelegramToDeliveryAcceptanceTests
         Assert.Equal(final.ArtifactId.ToString(), GetIdentifier(manifestRoot.GetProperty("final").GetProperty("artifactId")));
         Assert.Equal(final.Sha256, manifestRoot.GetProperty("final").GetProperty("sha256").GetString());
         Assert.Equal(finalBytes.LongLength, manifestRoot.GetProperty("final").GetProperty("sizeBytes").GetInt64());
+        Assert.Equal(11, manifestRoot.GetProperty("audit").GetProperty("skillCount").GetInt32());
+        Assert.Equal(
+            EditPlanRevisionIdentity.CalculateAuditHash(Assert.IsType<EditPlanAudit>(approvedPlan.Audit)),
+            manifestRoot.GetProperty("audit").GetProperty("sha256").GetString());
+        JsonElement criticChain = manifestRoot.GetProperty("criticChain");
+        Assert.NotEmpty(criticChain.EnumerateArray());
+        Assert.Equal("accepted", criticChain.EnumerateArray().Last().GetProperty("status").GetString());
 
         MediaProbeResult probe = await fixture.Probe.ProbeAsync(new ProbeRequest(finalPath, TimeSpan.FromMinutes(1), 65_536), CancellationToken.None);
         Assert.True(probe.IsSuccess, probe.ErrorMessage);
@@ -252,8 +263,8 @@ public sealed class TelegramToDeliveryAcceptanceTests
                 2);
             PackagingStageExecutor packaging = new(
                 Artifacts, root, 50_000_000, new PermissiveBudget(), null, PlanRevisions, null, null, 0);
-            DeliveryStageExecutor delivery = new(Artifacts, Delivery, Receipts, root, 123456789, PlanRevisions);
-            ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, critique, verification, packaging, delivery);
+            DeliveryExecutor = new DeliveryStageExecutor(Artifacts, Delivery, Receipts, root, 123456789, PlanRevisions);
+            ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, critique, verification, packaging, DeliveryExecutor);
             Processor = new SequentialJobProcessor(Queue, State, Attempts, stages);
             JobSignal = new CapturingJobSignal();
             IntakeStore = new SqliteTelegramIntakeStore(connectionString);
@@ -277,6 +288,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public SqliteDeliveryReceiptStore Receipts { get; }
         public LocalArtifactStorage LocalStorage { get; }
         public CapturingDelivery Delivery { get; }
+        public DeliveryStageExecutor DeliveryExecutor { get; }
         public SequentialJobProcessor Processor { get; }
         public TelegramUpdateHandler Handler { get; private set; }
         public SqliteTelegramIntakeStore IntakeStore { get; private set; }

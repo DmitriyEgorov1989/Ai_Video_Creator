@@ -396,12 +396,14 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         OutputEncodingProfile encodingProfile)
     {
         EditPlan plan = revision.Plan;
-        object serializedPlan = revision.Presentation is null
+        object serializedPlan = revision.Presentation is not null && revision.Audit is not null
+            ? BuildV4Plan(plan, revision.Presentation, revision.Audit, renderSources)
+            : revision.Presentation is null
             ? BuildV1Plan(plan)
             : plan.SchemaVersion == 3
                 ? BuildV3Plan(plan, revision.Presentation, renderSources)
                 : BuildV2Plan(plan, revision.Presentation);
-        if (plan.SchemaVersion == 3)
+        if (plan.SchemaVersion == 3 || revision.Audit is not null)
         {
             object v2Request = new
             {
@@ -469,12 +471,41 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         document["schemaVersion"] = 3;
         document.Remove("source");
         document["sources"] = JsonSerializer.SerializeToNode(
-            plan.Sources.Select(source => new
+            plan.Video.Clips
+                .Select(clip => clip.Mapping)
+                .DistinctBy(mapping => (mapping.OriginalAssetId, mapping.MasterAssetId))
+                .Select(mapping => new
                 {
-                    originalAssetId = source.OriginalAssetId.ToString(),
-                    masterAssetId = source.MasterAssetId.ToString(),
-                    durationMicroseconds = renderSources[source.MasterAssetId].DurationMicroseconds
+                    originalAssetId = mapping.OriginalAssetId.ToString(),
+                    masterAssetId = mapping.MasterAssetId.ToString(),
+                    durationMicroseconds = renderSources[mapping.MasterAssetId].DurationMicroseconds
                 }),
+            JsonOptions);
+        return document;
+    }
+
+    private static JsonNode BuildV4Plan(
+        EditPlan plan,
+        ReelsPresentationPlan presentation,
+        EditPlanAudit audit,
+        IReadOnlyDictionary<ArtifactId, RenderSource> renderSources)
+    {
+        JsonObject document = BuildV3Plan(plan, presentation, renderSources).AsObject();
+        document["schemaVersion"] = 4;
+        document["skills"] = JsonSerializer.SerializeToNode(
+            audit.Skills.Select(skill => new
+            {
+                id = skill.SkillId,
+                version = skill.SkillVersion,
+                status = skill.Status switch
+                {
+                    EditingDecisionStatus.Applied => "applied",
+                    EditingDecisionStatus.Skipped => "skipped",
+                    EditingDecisionStatus.Unavailable => "unavailable",
+                    _ => throw new ArgumentOutOfRangeException(nameof(skill.Status))
+                },
+                reasons = skill.Reasons.Select(reason => new { code = reason.Code, message = reason.Message })
+            }),
             JsonOptions);
         return document;
     }

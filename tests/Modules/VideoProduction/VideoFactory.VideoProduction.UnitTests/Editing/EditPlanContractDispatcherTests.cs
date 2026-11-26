@@ -18,6 +18,69 @@ public sealed class EditPlanContractDispatcherTests
         Assert.Empty(result.Issues);
     }
 
+    [Fact]
+    public void DispatchesV4WithCompleteEditingSkillAudit()
+    {
+        using JsonDocument document = CreateV4Document();
+
+        EditPlanContractDispatch result = EditPlanContractDispatcher.Dispatch(document.RootElement);
+
+        Assert.Equal(4, result.Version);
+        Assert.Equal(EditPlanContractStatus.Accepted, result.Status);
+        Assert.Empty(result.Issues);
+    }
+
+    [Theory]
+    [InlineData("missing", "skill.missing")]
+    [InlineData("duplicate", "skill.duplicate")]
+    [InlineData("unknown", "skill.unknown")]
+    public void RejectsIncompleteOrUnknownV4SkillAudit(string mutation, string expectedCode)
+    {
+        JsonObject plan = CreateV4Node();
+        JsonArray skills = plan["skills"]!.AsArray();
+        if (mutation == "missing") skills.RemoveAt(skills.Count - 1);
+        if (mutation == "duplicate") skills[skills.Count - 1]!["id"] = "smart-reframe";
+        if (mutation == "unknown") skills[skills.Count - 1]!["id"] = "free-form-code";
+        using JsonDocument document = JsonDocument.Parse(plan.ToJsonString());
+
+        EditPlanContractDispatch result = EditPlanContractDispatcher.Dispatch(document.RootElement);
+
+        Assert.Equal(EditPlanContractStatus.Invalid, result.Status);
+        Assert.Contains(result.Issues, issue => issue.Code == expectedCode);
+    }
+
+    [Fact]
+    public void MalformedV4SkillStatusReturnsIssueWithoutThrowing()
+    {
+        JsonObject plan = CreateV4Node();
+        plan["skills"]![0]!["status"] = 42;
+        using JsonDocument document = JsonDocument.Parse(plan.ToJsonString());
+
+        EditPlanContractDispatch? result = null;
+        Exception? exception = Record.Exception(() =>
+            result = EditPlanContractDispatcher.Dispatch(document.RootElement));
+
+        Assert.Null(exception);
+        Assert.Equal(EditPlanContractStatus.Invalid, result?.Status);
+        Assert.Contains(result!.Issues, issue => issue.Code == "skill.status_invalid");
+    }
+
+    [Fact]
+    public void MalformedV4OutputRangeReturnsIssueWithoutThrowing()
+    {
+        JsonObject plan = CreateV4Node();
+        plan["video"]!["clips"]![0]!["output"] = 42;
+        using JsonDocument document = JsonDocument.Parse(plan.ToJsonString());
+
+        EditPlanContractDispatch? result = null;
+        Exception? exception = Record.Exception(() =>
+            result = EditPlanContractDispatcher.Dispatch(document.RootElement));
+
+        Assert.Null(exception);
+        Assert.Equal(EditPlanContractStatus.Invalid, result?.Status);
+        Assert.Contains(result!.Issues, issue => issue.Code == "plan.non_negative_integer_required");
+    }
+
     [Theory]
     [InlineData("duplicate", "source.duplicate")]
     [InlineData("unknown", "source.unknown")]
@@ -39,6 +102,32 @@ public sealed class EditPlanContractDispatcherTests
     }
 
     private static JsonDocument CreateV3Document() => JsonDocument.Parse(ValidV3Json);
+
+    private static JsonDocument CreateV4Document() => JsonDocument.Parse(CreateV4Node().ToJsonString());
+
+    private static JsonObject CreateV4Node()
+    {
+        JsonObject plan = JsonNode.Parse(ValidV3Json)!.AsObject();
+        plan["schemaVersion"] = 4;
+        string[] skillIds =
+        [
+            "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+            "best-shot", "pacing-director", "speech-tightening", "caption-director",
+            "visual-director", "smart-reframe", "audio-director"
+        ];
+        plan["skills"] = new JsonArray(skillIds.Select(id => (JsonNode)new JsonObject
+        {
+            ["id"] = id,
+            ["version"] = "1.0.0",
+            ["status"] = id == "speech-tightening" ? "unavailable" : "applied",
+            ["reasons"] = new JsonArray(new JsonObject
+            {
+                ["code"] = "decision.recorded",
+                ["message"] = "The deterministic decision was recorded."
+            })
+        }).ToArray());
+        return plan;
+    }
 
     private const string ValidV3Json = """
             {

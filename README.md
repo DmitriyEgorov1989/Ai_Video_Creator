@@ -31,7 +31,12 @@ Smart Reframe и Audio decisions. Профиль `instagram-reels` фиксир�
 `cinematic` и `premium-ads` настраивают одни и те же editing skills.
 Новый pipeline сохраняет source-scoped Analysis V3 и Edit Plan V3 и передаёт
 RenderRequest V2 с отдельными video/audio paths каждого используемого Master.
-Legacy Analysis V1/V2, Edit Plan V1/V2 и RenderRequest V1 остаются читаемыми.
+Новые ревизии публикуются как Edit Plan V4: hash учитывает ID, версию, статус
+`Applied`/`Skipped`/`Unavailable` и причины решений всех 11 editing skills.
+Reels Critic остаётся отдельным компонентом, а Manifest V2 связывает полную
+critic/remount chain, утверждённую ревизию, render, QA и final MP4. Legacy
+Analysis V1/V2, Edit Plan V1/V2/V3, Manifest V1 и RenderRequest V1 остаются
+читаемыми.
 
 ## Режимы работы
 

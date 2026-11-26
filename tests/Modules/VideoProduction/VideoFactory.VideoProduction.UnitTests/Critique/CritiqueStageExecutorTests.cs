@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VideoFactory.VideoProduction.Application.Critique;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Planning;
@@ -25,13 +26,16 @@ public sealed class CritiqueStageExecutorTests
         try
         {
             ValidPlanFixture fixture = ValidPlanFixture.Create();
+            EditPlanAudit audit = CreateAudit();
             EditPlanRevision revision = new(
                 fixture.Plan.RevisionId,
                 fixture.Plan.JobId,
                 fixture.Plan.VariantId,
                 "plan-hash",
                 fixture.Plan,
-                0m);
+                0m,
+                null,
+                audit);
             string relativePath = "data/render.mp4";
             string outputPath = Path.Combine(root, "data", "render.mp4");
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
@@ -93,13 +97,16 @@ public sealed class CritiqueStageExecutorTests
         try
         {
             ValidPlanFixture fixture = ValidPlanFixture.Create();
+            EditPlanAudit audit = CreateAudit();
             EditPlanRevision revision = new(
                 fixture.Plan.RevisionId,
                 fixture.Plan.JobId,
                 fixture.Plan.VariantId,
                 "plan-hash",
                 fixture.Plan,
-                0m);
+                0m,
+                null,
+                audit);
             string outputPath = Path.Combine(root, "data", "render.mp4");
             await File.WriteAllBytesAsync(outputPath, [1, 2, 3]);
             ArtifactRecord render = CreateRender(revision, fixture.Plan.JobId, "data/render.mp4");
@@ -133,9 +140,22 @@ public sealed class CritiqueStageExecutorTests
             Assert.NotNull(plans.Saved);
             Assert.NotEqual(revision.RevisionId, plans.Saved!.RevisionId);
             Assert.Equal(analysis.AllowedSegments[1].Id, plans.Saved.Video.Clips[0].SegmentId);
-            Assert.Contains(artifacts.Registered, artifact =>
+            Assert.Same(audit, plans.SavedAudit);
+            Assert.Equal(
+                EditPlanRevisionIdentity.CalculateHash(plans.Saved, revision.Presentation, audit),
+                plans.SavedRevision?.PlanHash);
+            ArtifactRecord report = Assert.Single(artifacts.Registered, artifact =>
                 artifact.ArtifactType == "objective-critique-report"
                 && artifact.ParentArtifactId == render.ArtifactId);
+            using (JsonDocument reportDocument = JsonDocument.Parse(report.MetadataJson!))
+            {
+                Assert.Equal(2, reportDocument.RootElement.GetProperty("schemaVersion").GetInt32());
+                Assert.Equal(revision.PlanHash, reportDocument.RootElement.GetProperty("sourcePlanHash").GetString());
+                Assert.Equal(0, reportDocument.RootElement.GetProperty("remountNumber").GetInt32());
+                Assert.Equal(plans.Saved.RevisionId.ToString(), reportDocument.RootElement.GetProperty("correctionRevisionId").GetString());
+            }
+
+            attempts.SimulateInterruptionBeforeAttemptCompletion();
 
             StageExecutionResult recovered = await executor.ExecuteAsync(
                 CreateJob(fixture, plans.Saved.RevisionId),
@@ -143,6 +163,8 @@ public sealed class CritiqueStageExecutorTests
 
             Assert.Equal(StageCompletionAction.Remount, recovered.CompletionAction);
             Assert.Equal(1, plans.SaveCalls);
+            Assert.Equal("remount", attempts.Attempt?.Status);
+            Assert.NotNull(attempts.Attempt?.CompletedAt);
         }
         finally
         {
@@ -165,6 +187,21 @@ public sealed class CritiqueStageExecutorTests
             ProductionMode.Fast,
             null),
         revisionId);
+
+    private static EditPlanAudit CreateAudit() => new(
+        1,
+        [
+            .. new[]
+            {
+                "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+                "best-shot", "pacing-director", "speech-tightening", "caption-director",
+                "visual-director", "smart-reframe", "audio-director"
+            }.Select(id => new EditingSkillAuditEntry(
+                id,
+                "1.0.0",
+                EditingDecisionStatus.Applied,
+                [new EditingDecisionReason("decision.recorded", "Decision recorded.")]))
+        ]);
 
     private static ArtifactRecord CreateRender(EditPlanRevision revision, JobId jobId, string relativePath) => new(
         ArtifactId.New(),
@@ -211,6 +248,8 @@ public sealed class CritiqueStageExecutorTests
     private sealed class FakePlanStore(EditPlanRevision revision) : IEditPlanRevisionStore
     {
         public EditPlan? Saved { get; private set; }
+        public EditPlanAudit? SavedAudit { get; private set; }
+        public EditPlanRevision? SavedRevision => savedRevision;
         public int SaveCalls { get; private set; }
         private EditPlanRevision? savedRevision;
 
@@ -224,11 +263,15 @@ public sealed class CritiqueStageExecutorTests
             Task.FromResult<EditPlanRevision?>(null);
 
         public Task<EditPlanRevision> SaveAsync(EditPlan plan, string planHash, decimal actualCostUsd, CancellationToken cancellationToken) =>
-            SaveAsync(plan, planHash, actualCostUsd, null, cancellationToken);
+            SaveAsync(plan, planHash, actualCostUsd, null, null, cancellationToken);
 
         public Task<EditPlanRevision> SaveAsync(EditPlan plan, string planHash, decimal actualCostUsd, ReelsPresentationPlan? presentation, CancellationToken cancellationToken)
+            => SaveAsync(plan, planHash, actualCostUsd, presentation, null, cancellationToken);
+
+        public Task<EditPlanRevision> SaveAsync(EditPlan plan, string planHash, decimal actualCostUsd, ReelsPresentationPlan? presentation, EditPlanAudit? audit, CancellationToken cancellationToken)
         {
             Saved = plan;
+            SavedAudit = audit;
             SaveCalls++;
             savedRevision = new EditPlanRevision(
                 plan.RevisionId,
@@ -237,7 +280,8 @@ public sealed class CritiqueStageExecutorTests
                 planHash,
                 plan,
                 actualCostUsd,
-                presentation);
+                presentation,
+                audit);
             return Task.FromResult(savedRevision);
         }
     }
@@ -245,6 +289,26 @@ public sealed class CritiqueStageExecutorTests
     private sealed class FakeCritiqueAttemptStore : ICritiqueAttemptStore
     {
         private CritiqueAttemptRecord? attempt;
+        public CritiqueAttemptRecord? Attempt => attempt;
+
+        public void SimulateInterruptionBeforeAttemptCompletion()
+        {
+            Assert.NotNull(attempt);
+            attempt = new CritiqueAttemptRecord(
+                attempt.JobId,
+                attempt.VariantId,
+                attempt.SourceRevisionId,
+                attempt.RenderArtifactId,
+                null,
+                attempt.RemountNumber,
+                attempt.EstimatedCostUsd,
+                null,
+                "running",
+                null,
+                null,
+                attempt.CreatedAt,
+                null);
+        }
 
         public Task SaveAsync(CritiqueAttemptRecord value, CancellationToken cancellationToken)
         {
@@ -273,10 +337,14 @@ public sealed class CritiqueStageExecutorTests
             Task.FromResult<ArtifactRecord?>(null);
 
         public Task<ArtifactRecord?> FindLatestAsync(JobId jobId, string artifactType, CancellationToken cancellationToken) =>
-            Task.FromResult<ArtifactRecord?>(artifactType == "render-output" ? render : null);
+            Task.FromResult<ArtifactRecord?>(artifactType == "render-output"
+                ? render
+                : Registered.LastOrDefault(artifact => artifact.ArtifactType == artifactType));
 
         public Task<IReadOnlyList<ArtifactRecord>> ListAsync(JobId jobId, string artifactType, CancellationToken cancellationToken) =>
-            Task.FromResult<IReadOnlyList<ArtifactRecord>>(artifactType == "render-output" ? [render] : []);
+            Task.FromResult<IReadOnlyList<ArtifactRecord>>(artifactType == "render-output"
+                ? [render]
+                : Registered.Where(artifact => artifact.ArtifactType == artifactType).ToArray());
 
         public Task<ArtifactRegistrationResult> RegisterAsync(ArtifactRecord record, CancellationToken cancellationToken)
         {

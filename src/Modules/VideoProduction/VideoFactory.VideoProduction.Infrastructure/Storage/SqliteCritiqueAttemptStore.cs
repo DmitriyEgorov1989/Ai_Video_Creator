@@ -86,7 +86,35 @@ public sealed class SqliteCritiqueAttemptStore : ICritiqueAttemptStore
             return null;
         }
 
-        return new CritiqueAttemptRecord(
+        return ReadRecord(reader);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<CritiqueAttemptRecord>> ListAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken)
+    {
+        await using SqliteConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT job_id, variant_id, source_revision_id, render_artifact_id,
+                   correction_revision_id, remount_number, estimated_cost_usd,
+                   actual_cost_usd, status, error_code, error_message, created_at, completed_at
+            FROM critique_attempts
+            WHERE job_id = $jobId AND variant_id = $variantId
+            ORDER BY remount_number, created_at;
+            """;
+        command.Parameters.AddWithValue("$jobId", jobId.ToString());
+        command.Parameters.AddWithValue("$variantId", variantId.ToString());
+        await using SqliteDataReader reader = await command.ExecuteReaderAsync(cancellationToken);
+        List<CritiqueAttemptRecord> attempts = [];
+        while (await reader.ReadAsync(cancellationToken)) attempts.Add(ReadRecord(reader));
+        return attempts;
+    }
+
+    private static CritiqueAttemptRecord ReadRecord(SqliteDataReader reader) => new(
             new JobId(Guid.Parse(reader.GetString(0))),
             new VariantId(Guid.Parse(reader.GetString(1))),
             new RevisionId(Guid.Parse(reader.GetString(2))),
@@ -102,7 +130,6 @@ public sealed class SqliteCritiqueAttemptStore : ICritiqueAttemptStore
             reader.IsDBNull(12)
                 ? null
                 : DateTimeOffset.Parse(reader.GetString(12), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind));
-    }
 
     private static void AddIdentityParameters(
         SqliteCommand command,

@@ -1,7 +1,4 @@
 using System.Collections.Immutable;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using VideoFactory.VideoProduction.Domain.Analysis;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
@@ -115,6 +112,7 @@ public sealed class EditPlanPlanner
                 new("audio-director", true)
             ]));
         ReelsPresentationPlan presentation = ReelsPresentationPlan.FromEvaluation(style, editingEvaluation);
+        EditPlanAudit audit = EditPlanAudit.FromEvaluation(editingEvaluation);
         ProviderPlanningRequest providerRequest = CreateProviderRequest(request, editingEvaluation);
         decimal accumulatedActualCostUsd = 0m;
         PlanConstructionException? lastError = null;
@@ -191,6 +189,10 @@ public sealed class EditPlanPlanner
             {
                 AnalysisResult effectiveAnalysis = ApplyEditingEvaluation(request.Analysis, editingEvaluation);
                 EditPlan plan = CreatePlan(request, response, effectiveAnalysis, editingEvaluation);
+                plan = plan with
+                {
+                    RevisionId = EditPlanRevisionIdentity.CalculateRevisionId(plan, presentation, audit)
+                };
                 ImmutableArray<ValidationIssue> issues = request.MultiSourceAnalysis is null
                     ? EditPlanValidator.Validate(plan, effectiveAnalysis, request.Assets, request.Templates)
                     : EditPlanValidator.Validate(
@@ -219,7 +221,7 @@ public sealed class EditPlanPlanner
                     }
                 }
 
-                string planHash = CalculateHash(plan, presentation);
+                string planHash = EditPlanRevisionIdentity.CalculateHash(plan, presentation, audit);
                 EditPlanRevision? existing = await revisionStore.FindAsync(
                     request.JobId,
                     request.VariantId,
@@ -239,6 +241,7 @@ public sealed class EditPlanPlanner
                     planHash,
                     accumulatedActualCostUsd,
                     presentation,
+                    audit,
                     cancellationToken);
 
                 await attemptStore.SaveAsync(
@@ -475,7 +478,7 @@ public sealed class EditPlanPlanner
             request.MultiSourceAnalysis is null ? 1 : 3,
             request.JobId,
             request.VariantId,
-            CreateRevisionId(request, response),
+            new RevisionId(new Guid("00000000-0000-0000-0000-000000000001")),
             request.Analysis.RevisionId,
             response.Seed,
             new OutputProfile(1080, 1920, new FrameRate(30, 1), durationFrames),
@@ -508,26 +511,4 @@ public sealed class EditPlanPlanner
         };
     }
 
-    private static RevisionId CreateRevisionId(
-        PlanningRequest request,
-        ProviderPlanResponse response)
-    {
-        string content = string.Join(
-            "|",
-            request.JobId,
-            request.VariantId,
-            request.Analysis.RevisionId,
-            response.SchemaVersion,
-            response.Seed,
-            string.Join(",", response.VideoClips),
-            string.Join(",", response.Captions));
-        byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(content));
-        return new RevisionId(new Guid(hash[..16]));
-    }
-
-    private static string CalculateHash(EditPlan plan, ReelsPresentationPlan presentation)
-    {
-        string canonical = JsonSerializer.Serialize(new { plan, presentation });
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
-    }
 }

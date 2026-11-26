@@ -734,5 +734,8 @@ public sealed class TelegramUpdateHandlerTests
     private sealed class RepeatReceiptStore : IDeliveryReceiptStore
     {
         public Task AppendAsync(DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<bool> HasSucceededAsync(JobId jobId, VariantId variantId, ArtifactId artifactId, long recipientId, CancellationToken cancellationToken) =>
+            Task.FromResult(false);
     }
 }

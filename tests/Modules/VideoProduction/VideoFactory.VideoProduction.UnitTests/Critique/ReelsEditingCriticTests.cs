@@ -132,8 +132,11 @@ public sealed class ReelsEditingCriticTests
 
         EditPlan corrected = Assert.IsType<EditPlanCorrectionResult.Applied>(
             new EditPlanCorrectionService().Apply(fixture.Plan, analysis, correction)).Plan;
+        EditPlan repeated = Assert.IsType<EditPlanCorrectionResult.Applied>(
+            new EditPlanCorrectionService().Apply(fixture.Plan, analysis, correction)).Plan;
         Assert.All(corrected.Audio.SourceClips, clip => Assert.True(clip.Gain < 1m));
         Assert.All(corrected.Audio.MusicClips, clip => Assert.True(clip.Gain < 0.25m));
+        Assert.Equal(corrected.RevisionId, repeated.RevisionId);
     }
 
     [Fact]

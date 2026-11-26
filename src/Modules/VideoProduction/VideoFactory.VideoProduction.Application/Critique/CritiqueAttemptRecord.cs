@@ -109,4 +109,15 @@ public interface ICritiqueAttemptStore
         RevisionId sourceRevisionId,
         ArtifactId renderArtifactId,
         CancellationToken cancellationToken);
+
+    /// <summary>Возвращает всю историю critic/remount для варианта по номеру перемонтажа.</summary>
+    /// <param name="jobId">Идентификатор задания.</param>
+    /// <param name="variantId">Идентификатор варианта.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Упорядоченные попытки; пустой список означает отсутствие критики.</returns>
+    Task<IReadOnlyList<CritiqueAttemptRecord>> ListAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<CritiqueAttemptRecord>>([]);
 }

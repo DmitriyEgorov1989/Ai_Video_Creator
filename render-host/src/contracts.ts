@@ -104,6 +104,16 @@ export type EditPlanV3 = Omit<EditPlanV2, "schemaVersion" | "source"> & {
   sources: EditPlanSourceV3[];
 };
 
+export type EditPlanV4 = Omit<EditPlanV3, "schemaVersion" | "skills"> & {
+  schemaVersion: 4;
+  skills: Array<{
+    id: string;
+    version: string;
+    status: "applied" | "skipped" | "unavailable";
+    reasons: Array<{ code: string; message: string }>;
+  }>;
+};
+
 export interface RenderAsset {
   id: string;
   path: string;
@@ -134,7 +144,7 @@ export interface RenderRequestV2 {
   schemaVersion: 2;
   jobId: string;
   variantId: string;
-  plan: EditPlanV3;
+  plan: EditPlanV3 | EditPlanV4;
   assets: RenderSourceAssetV2[];
   outputPath: string;
   encoding: {

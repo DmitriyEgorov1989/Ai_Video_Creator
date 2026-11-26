@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using VideoFactory.VideoProduction.Application.Media;
+using VideoFactory.VideoProduction.Application.Critique;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Pipeline;
 using VideoFactory.VideoProduction.Application.Planning;
+using VideoFactory.VideoProduction.Application.Packaging;
 using VideoFactory.VideoProduction.Application.Rendering;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
@@ -27,6 +29,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
     private readonly int maxDeliveryEncodeAttempts;
     private readonly long deliveryEncodeVideoBitrate;
     private readonly long deliveryEncodeAudioBitrate;
+    private readonly ICritiqueAttemptStore? critiqueAttemptStore;
 
     /// <summary>Создаёт исполнитель Packaging.</summary>
     public PackagingStageExecutor(IArtifactStore artifactStore, string workspaceRoot, long maxTelegramBytes, IStorageBudget? storageBudget = null)
@@ -46,7 +49,8 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         OutputQualityOptionsProfile? qualityProfile,
         int maxDeliveryEncodeAttempts,
         long deliveryEncodeVideoBitrate = 3_500_000,
-        long deliveryEncodeAudioBitrate = 96_000)
+        long deliveryEncodeAudioBitrate = 96_000,
+        ICritiqueAttemptStore? critiqueAttemptStore = null)
     {
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
@@ -63,6 +67,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         if (deliveryEncodeAudioBitrate <= 0) throw new ArgumentOutOfRangeException(nameof(deliveryEncodeAudioBitrate));
         this.deliveryEncodeVideoBitrate = deliveryEncodeVideoBitrate;
         this.deliveryEncodeAudioBitrate = deliveryEncodeAudioBitrate;
+        this.critiqueAttemptStore = critiqueAttemptStore;
     }
 
     /// <inheritdoc />
@@ -81,8 +86,16 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         {
             return StageExecutionResult.Retryable("packaging.input_missing", "A verified render output is not available yet.");
         }
+        if (qa.ParentArtifactId != render.ArtifactId && qa.ParentArtifactId is ArtifactId qaParentId)
+        {
+            ArtifactRecord? encodedParent = await artifactStore.GetAsync(qaParentId, cancellationToken);
+            if (encodedParent?.ArtifactType == "delivery-encode-output"
+                && encodedParent.ParentArtifactId == render.ArtifactId)
+                render = encodedParent;
+        }
 
         EditPlanRevision? approvedRevision = null;
+        List<object>? criticChain = null;
         try
         {
             if (planStore is not null)
@@ -97,42 +110,24 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     return StageExecutionResult.Permanent("packaging.plan_missing", "The approved edit plan was not found for this Job.");
                 }
             }
-            byte[] reportBytes = await File.ReadAllBytesAsync(ResolvePath(qa.RelativePath), cancellationToken);
-            using JsonDocument report = JsonDocument.Parse(reportBytes);
-            if (report.RootElement.ValueKind != JsonValueKind.Object
-                || !report.RootElement.TryGetProperty("status", out JsonElement status)
-                || status.ValueKind != JsonValueKind.String || status.GetString() != "passed")
+            StageExecutionResult? qaError = await ValidateQaAsync(
+                job, approvedRevision, render, qa, cancellationToken);
+            if (qaError is not null) return qaError;
+
+            if (approvedRevision?.Audit is not null)
             {
-                return StageExecutionResult.Permanent("packaging.qa_not_passed", "Output QA has not passed.");
+                if (critiqueAttemptStore is null || planStore is null)
+                    return StageExecutionResult.Permanent("packaging.critic_store_missing", "Manifest V2 requires the critic attempt store.");
+                (string? error, List<object> chain) = await BuildCriticChainAsync(
+                    job,
+                    approvedRevision,
+                    cancellationToken);
+                if (error is not null)
+                    return StageExecutionResult.Permanent("packaging.critic_chain_invalid", error);
+                criticChain = chain;
             }
-            JsonElement root = report.RootElement;
-            if (!MatchesId(root, "jobId", job.JobId.Value)
-                || !MatchesId(root, "variantId", job.VariantId.Value)
-                || job.CurrentApprovedEditPlanRevisionId is null
-                 || !MatchesId(root, "planRevisionId", job.CurrentApprovedEditPlanRevisionId.Value.Value)
-                 || (approvedRevision is not null
-                     && (!root.TryGetProperty("planHash", out JsonElement planHash)
-                         || planHash.ValueKind != JsonValueKind.String
-                         || planHash.GetString() != approvedRevision.PlanHash))
-                || !root.TryGetProperty("output", out JsonElement output)
-                || !MatchesId(output, "artifactId", render.ArtifactId.Value)
-                || output.ValueKind != JsonValueKind.Object
-                || !output.TryGetProperty("sha256", out JsonElement hash)
-                || hash.ValueKind != JsonValueKind.String || hash.GetString() != render.Sha256
-                || !output.TryGetProperty("sizeBytes", out JsonElement size)
-                || size.ValueKind != JsonValueKind.Number || !size.TryGetInt64(out long bytes) || bytes != render.SizeBytes
-                || qa.ParentArtifactId != render.ArtifactId)
-            {
-                return StageExecutionResult.Permanent("packaging.qa_mismatch", "QA report does not match the approved render.");
-            }
-            if (qa.SizeBytes != reportBytes.LongLength
-                || qa.Sha256 != Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant())
-                return StageExecutionResult.Permanent("packaging.qa_changed", "QA report changed after registration.");
         }
-        catch (JsonException)
-        {
-            return StageExecutionResult.Permanent("packaging.qa_invalid", "Output QA report is invalid.");
-        }
+        catch (JsonException) { return StageExecutionResult.Permanent("packaging.qa_invalid", "Output QA report is invalid."); }
 
         string sourcePath = ResolvePath(render.RelativePath);
         if (!File.Exists(sourcePath) || new FileInfo(sourcePath).Length <= 0)
@@ -144,34 +139,37 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             if (controlledEncoder is null || planStore is null || qualityAssurance is null || qualityProfile is null || maxDeliveryEncodeAttempts == 0)
                 return StageExecutionResult.Permanent("packaging.telegram_size_exceeded", "The verified MP4 exceeds the configured Telegram delivery limit.");
 
+            EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null
+                ? null : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
+            if (revision is null)
+                return StageExecutionResult.Permanent("packaging.encode_plan_missing", "Controlled encode requires the approved edit plan.");
+            ArtifactRecord sourceRender = render;
+            string encodeDirectory = SafeFileTree.Resolve(workspaceRoot,
+                $"data/jobs/{job.JobId}/renders/{job.VariantId}/delivery-encode");
+            Directory.CreateDirectory(encodeDirectory);
+            string encodedPath = Path.Combine(encodeDirectory, "output.mp4");
             ArtifactRecord? encoded = await artifactStore.FindLatestAsync(job.JobId, job.VariantId, "delivery-encode-output", cancellationToken);
+            OutputQualityResult? recoveredQa = null;
             if (encoded is null)
             {
-                EditPlanRevision? revision = job.CurrentApprovedEditPlanRevisionId is null
-                    ? null : await planStore.GetAsync(job.CurrentApprovedEditPlanRevisionId.Value, cancellationToken);
-                if (revision is null)
-                    return StageExecutionResult.Permanent("packaging.encode_plan_missing", "Controlled encode requires the approved edit plan.");
-
-                string encodeDirectory = SafeFileTree.Resolve(workspaceRoot,
-                    $"data/jobs/{job.JobId}/renders/{job.VariantId}/delivery-encode");
-                Directory.CreateDirectory(encodeDirectory);
-                string encodedPath = Path.Combine(encodeDirectory, "output.mp4");
-                ControlledEncodeResult encode = await controlledEncoder.EncodeAsync(
-                    new ControlledEncodeRequest(sourcePath, encodedPath, deliveryEncodeVideoBitrate, deliveryEncodeAudioBitrate), cancellationToken);
-                if (!encode.IsSuccess)
-                    return StageExecutionResult.Permanent(encode.ErrorCode ?? "packaging.encode_failed", encode.ErrorMessage ?? "Controlled encode failed.");
-
-                OutputQualityResult encodedQa = await qualityAssurance.VerifyAsync(
-                    new OutputQualityRequest(encodedPath, qualityProfile.ExpectedWidth, qualityProfile.ExpectedHeight,
-                        revision.Plan.Output.FrameRate, revision.Plan.Output.DurationFrames, qualityProfile.DurationToleranceFrames,
-                        qualityProfile.RequireAudio, qualityProfile.ExpectedPixelFormat,
-                        ExpectedVideoCodec: "h264", ExpectedAudioCodec: "aac",
-                        ExpectedLoudnessLufs: revision.Presentation?.Audio?.TargetLoudnessLufs,
-                        LoudnessToleranceLufs: 1m,
-                        MaximumTruePeakDbtp: revision.Presentation?.Audio?.TruePeakDbtp), cancellationToken);
+                if (File.Exists(encodedPath))
+                {
+                    recoveredQa = await qualityAssurance.VerifyAsync(
+                        CreateEncodedQualityRequest(encodedPath, qualityProfile, revision), cancellationToken);
+                    if (!recoveredQa.IsSuccess)
+                    {
+                        File.Delete(encodedPath);
+                        recoveredQa = null;
+                    }
+                }
+                if (recoveredQa is null)
+                {
+                    ControlledEncodeResult encode = await controlledEncoder.EncodeAsync(
+                        new ControlledEncodeRequest(sourcePath, encodedPath, deliveryEncodeVideoBitrate, deliveryEncodeAudioBitrate), cancellationToken);
+                    if (!encode.IsSuccess)
+                        return StageExecutionResult.Permanent(encode.ErrorCode ?? "packaging.encode_failed", encode.ErrorMessage ?? "Controlled encode failed.");
+                }
                 long encodedSize = new FileInfo(encodedPath).Length;
-                if (!encodedQa.IsSuccess)
-                    return StageExecutionResult.Permanent("packaging.encode_qa_failed", encodedQa.ErrorMessage ?? "Controlled encode did not pass QA.");
                 if (encodedSize > maxTelegramBytes)
                     return StageExecutionResult.Permanent("packaging.telegram_size_exceeded_after_encode", "The controlled encode still exceeds the configured Telegram delivery limit.");
 
@@ -184,7 +182,22 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(encoded, cancellationToken);
                 if (registration is ArtifactRegistrationResult.Rejected rejected)
                     return StageExecutionResult.Permanent("packaging.encode_artifact_rejected", rejected.Message);
+            }
+            else if (encoded.ParentArtifactId != sourceRender.ArtifactId
+                || !await ArtifactFileMatchesAsync(encoded, cancellationToken))
+            {
+                return StageExecutionResult.Permanent("packaging.encode_mismatch", "The existing controlled encode does not match its verified source render.");
+            }
 
+            ArtifactRecord? encodedQaArtifact = (await artifactStore.ListAsync(
+                job.JobId, job.VariantId, "qa-report", cancellationToken))
+                .LastOrDefault(candidate => candidate.ParentArtifactId == encoded.ArtifactId);
+            if (encodedQaArtifact is null)
+            {
+                OutputQualityResult encodedQa = recoveredQa ?? await qualityAssurance.VerifyAsync(
+                    CreateEncodedQualityRequest(encodedPath, qualityProfile, revision), cancellationToken);
+                if (!encodedQa.IsSuccess)
+                    return StageExecutionResult.Permanent("packaging.encode_qa_failed", encodedQa.ErrorMessage ?? "Controlled encode did not pass QA.");
                 ArtifactId qaId = ArtifactId.New();
                 string qaPath = Path.Combine(encodeDirectory, $"qa-report-{qaId}.json");
                 string qaJson = JsonSerializer.Serialize(new
@@ -210,9 +223,16 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 if (qaRegistration is ArtifactRegistrationResult.Rejected qaRejected)
                     return StageExecutionResult.Permanent("packaging.encode_qa_report_rejected", qaRejected.Message);
             }
+            else
+            {
+                qa = encodedQaArtifact;
+            }
 
             render = encoded;
             sourcePath = ResolvePath(render.RelativePath);
+            StageExecutionResult? encodedQaError = await ValidateQaAsync(
+                job, revision, render, qa, cancellationToken);
+            if (encodedQaError is not null) return encodedQaError;
         }
         await using (FileStream source = new(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
@@ -279,7 +299,26 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             }
 
             string manifestPath = Path.Combine(directory, $"{job.VariantId}.manifest.json");
-            string manifestJson = JsonSerializer.Serialize(new
+            string manifestJson = approvedRevision?.Audit is EditPlanAudit audit
+                ? JsonSerializer.Serialize(new
+                {
+                    schemaVersion = 2,
+                    jobId = job.JobId.ToString(),
+                    variantId = job.VariantId.ToString(),
+                    planRevisionId = approvedRevision.RevisionId.ToString(),
+                    planHash = approvedRevision.PlanHash,
+                    audit = new
+                    {
+                        schemaVersion = audit.SchemaVersion,
+                        skillCount = audit.Skills.Length,
+                        sha256 = EditPlanRevisionIdentity.CalculateAuditHash(audit)
+                    },
+                    criticChain,
+                    render = ArtifactReference(render),
+                    qa = ArtifactReference(qa),
+                    final = new { artifactId = finalArtifact.ArtifactId.ToString(), sha256 = hash, sizeBytes = finalFile.Length }
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+                : JsonSerializer.Serialize(new
                 {
                     schemaVersion = 1,
                     jobId = job.JobId,
@@ -294,6 +333,14 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     sha256 = hash,
                     sizeBytes = finalFile.Length
                 }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (approvedRevision?.Audit is not null)
+            {
+                using JsonDocument manifestDocument = JsonDocument.Parse(manifestJson);
+                FinalManifestContractDispatch dispatch =
+                    FinalManifestContractDispatcher.Dispatch(manifestDocument.RootElement);
+                if (dispatch.Status != FinalManifestContractStatus.Accepted)
+                    return StageExecutionResult.Permanent("packaging.manifest_invalid", "Generated Manifest V2 failed contract validation.");
+            }
             string manifestTemporary = temporaryPath + ".json";
             try
             {
@@ -342,10 +389,172 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         }
     }
 
+    private async Task<StageExecutionResult?> ValidateQaAsync(
+        JobCreationRecord job,
+        EditPlanRevision? approvedRevision,
+        ArtifactRecord render,
+        ArtifactRecord qa,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            byte[] reportBytes = await File.ReadAllBytesAsync(ResolvePath(qa.RelativePath), cancellationToken);
+            using JsonDocument report = JsonDocument.Parse(reportBytes);
+            JsonElement root = report.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("status", out JsonElement status)
+                || status.ValueKind != JsonValueKind.String
+                || status.GetString() != "passed")
+                return StageExecutionResult.Permanent("packaging.qa_not_passed", "Output QA has not passed.");
+            if (!MatchesId(root, "jobId", job.JobId.Value)
+                || !MatchesId(root, "variantId", job.VariantId.Value)
+                || job.CurrentApprovedEditPlanRevisionId is null
+                || !MatchesId(root, "planRevisionId", job.CurrentApprovedEditPlanRevisionId.Value.Value)
+                || (approvedRevision is not null
+                    && (!root.TryGetProperty("planHash", out JsonElement planHash)
+                        || planHash.ValueKind != JsonValueKind.String
+                        || planHash.GetString() != approvedRevision.PlanHash))
+                || !root.TryGetProperty("output", out JsonElement output)
+                || output.ValueKind != JsonValueKind.Object
+                || !MatchesId(output, "artifactId", render.ArtifactId.Value)
+                || !output.TryGetProperty("sha256", out JsonElement hash)
+                || hash.ValueKind != JsonValueKind.String || hash.GetString() != render.Sha256
+                || !output.TryGetProperty("sizeBytes", out JsonElement size)
+                || size.ValueKind != JsonValueKind.Number || !size.TryGetInt64(out long bytes) || bytes != render.SizeBytes
+                || qa.ParentArtifactId != render.ArtifactId)
+                return StageExecutionResult.Permanent("packaging.qa_mismatch", "QA report does not match the approved render.");
+            if (qa.SizeBytes != reportBytes.LongLength
+                || qa.Sha256 != Convert.ToHexString(SHA256.HashData(reportBytes)).ToLowerInvariant())
+                return StageExecutionResult.Permanent("packaging.qa_changed", "QA report changed after registration.");
+            return null;
+        }
+        catch (JsonException)
+        {
+            return StageExecutionResult.Permanent("packaging.qa_invalid", "Output QA report is invalid.");
+        }
+    }
+
+    private async Task<(string? Error, List<object> Chain)> BuildCriticChainAsync(
+        JobCreationRecord job,
+        EditPlanRevision approvedRevision,
+        CancellationToken cancellationToken)
+    {
+        if (critiqueAttemptStore is null || planStore is null)
+            return ("Critic history storage is unavailable for Manifest V2.", []);
+
+        IReadOnlyList<CritiqueAttemptRecord> attempts = await critiqueAttemptStore.ListAsync(
+            job.JobId,
+            job.VariantId,
+            cancellationToken);
+        IReadOnlyList<ArtifactRecord> reports = await artifactStore.ListAsync(
+            job.JobId,
+            job.VariantId,
+            "objective-critique-report",
+            cancellationToken);
+        if (attempts.Count == 0)
+            return ("The approved revision has no objective critic history.", []);
+
+        List<object> chain = [];
+        RevisionId? expectedSourceRevisionId = null;
+        for (int index = 0; index < attempts.Count; index++)
+        {
+            CritiqueAttemptRecord attempt = attempts[index];
+            if (attempt.CompletedAt is null || attempt.RemountNumber != index
+                || attempt.Status is not ("accepted" or "remount"))
+                return ("Critic history contains an incomplete or out-of-order attempt.", []);
+            if (index > 0 && attempt.SourceRevisionId != expectedSourceRevisionId)
+                return ("Critic remount history contains a disconnected correction revision.", []);
+            if (attempt.Status == "remount" && attempt.CorrectionRevisionId is null)
+                return ("Critic remount attempt does not identify its correction revision.", []);
+            if (attempt.Status == "accepted" && (attempt.CorrectionRevisionId is not null || index != attempts.Count - 1))
+                return ("Only the final critic attempt may be accepted.", []);
+
+            EditPlanRevision? sourceRevision = await planStore.GetAsync(attempt.SourceRevisionId, cancellationToken);
+            ArtifactRecord? attemptRender = await artifactStore.GetAsync(attempt.RenderArtifactId, cancellationToken);
+            ArtifactRecord? report = reports.SingleOrDefault(candidate => candidate.ParentArtifactId == attempt.RenderArtifactId);
+            if (sourceRevision is null || attemptRender is null || report is null)
+                return ("Critic history refers to a missing plan, render, or report artifact.", []);
+            if (!await ArtifactFileMatchesAsync(report, cancellationToken)
+                || !ReportMatchesAttempt(report, sourceRevision, attempt))
+                return ("Objective critic report does not match its persisted attempt.", []);
+
+            chain.Add(new
+            {
+                remountNumber = attempt.RemountNumber,
+                sourceRevisionId = sourceRevision.RevisionId.ToString(),
+                sourcePlanHash = sourceRevision.PlanHash,
+                render = ArtifactReference(attemptRender),
+                criticReport = ArtifactReference(report),
+                status = attempt.Status,
+                correctionRevisionId = attempt.CorrectionRevisionId?.ToString()
+            });
+            expectedSourceRevisionId = attempt.CorrectionRevisionId;
+        }
+
+        CritiqueAttemptRecord finalAttempt = attempts[^1];
+        if (finalAttempt.Status != "accepted" || finalAttempt.SourceRevisionId != approvedRevision.RevisionId)
+            return ("The final critic attempt did not accept the approved revision.", []);
+        return (null, chain);
+    }
+
+    private async Task<bool> ArtifactFileMatchesAsync(ArtifactRecord artifact, CancellationToken cancellationToken)
+    {
+        string path = ResolvePath(artifact.RelativePath);
+        return File.Exists(path)
+            && new FileInfo(path).Length == artifact.SizeBytes
+            && await HashAsync(path, cancellationToken) == artifact.Sha256;
+    }
+
+    private static bool ReportMatchesAttempt(
+        ArtifactRecord report,
+        EditPlanRevision sourceRevision,
+        CritiqueAttemptRecord attempt)
+    {
+        if (string.IsNullOrWhiteSpace(report.MetadataJson)) return false;
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(report.MetadataJson);
+            JsonElement root = document.RootElement;
+            return root.TryGetProperty("schemaVersion", out JsonElement version)
+                && version.TryGetInt32(out int schemaVersion) && schemaVersion == 2
+                && root.GetProperty("sourceRevisionId").GetString() == sourceRevision.RevisionId.ToString()
+                && root.GetProperty("sourcePlanHash").GetString() == sourceRevision.PlanHash
+                && root.GetProperty("renderArtifactId").GetString() == attempt.RenderArtifactId.ToString()
+                && root.GetProperty("remountNumber").GetInt32() == attempt.RemountNumber
+                && root.GetProperty("decision").GetString() == attempt.Status
+                && root.GetProperty("correctionRevisionId").GetString() == attempt.CorrectionRevisionId?.ToString();
+        }
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static ManifestArtifactReference ArtifactReference(ArtifactRecord artifact) =>
+        new(artifact.ArtifactId.ToString(), artifact.Sha256 ?? string.Empty, artifact.SizeBytes ?? 0);
+
     private string ResolvePath(string relativePath)
     {
         return SafeFileTree.Resolve(workspaceRoot, relativePath);
     }
+
+    private static OutputQualityRequest CreateEncodedQualityRequest(
+        string encodedPath,
+        OutputQualityOptionsProfile qualityProfile,
+        EditPlanRevision revision) => new(
+            encodedPath,
+            qualityProfile.ExpectedWidth,
+            qualityProfile.ExpectedHeight,
+            revision.Plan.Output.FrameRate,
+            revision.Plan.Output.DurationFrames,
+            qualityProfile.DurationToleranceFrames,
+            qualityProfile.RequireAudio,
+            qualityProfile.ExpectedPixelFormat,
+            ExpectedVideoCodec: "h264",
+            ExpectedAudioCodec: "aac",
+            ExpectedLoudnessLufs: revision.Presentation?.Audio?.TargetLoudnessLufs,
+            LoudnessToleranceLufs: 1m,
+            MaximumTruePeakDbtp: revision.Presentation?.Audio?.TruePeakDbtp);
 
     private static async Task<string> HashAsync(string path, CancellationToken token)
     {
@@ -360,4 +569,6 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         && id.TryGetProperty("value", out JsonElement value)
         && value.ValueKind == JsonValueKind.String
         && value.TryGetGuid(out Guid actual) && actual == expected;
+
+    private sealed record ManifestArtifactReference(string ArtifactId, string Sha256, long SizeBytes);
 }

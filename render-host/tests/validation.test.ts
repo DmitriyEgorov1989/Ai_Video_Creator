@@ -104,6 +104,27 @@ test("accepts a V2 render request with source-specific video and audio", () => {
   assert.deepEqual(validateRenderRequest(validRenderV2Request()), []);
 });
 
+test("accepts Edit Plan V4 only with the complete skill audit", () => {
+  const request = validRenderV2Request();
+  const plan = request.plan as Record<string, unknown>;
+  plan.schemaVersion = 4;
+  const skillIds = [
+    "multi-clip-director", "semantic-story", "hook-builder", "smart-cut",
+    "best-shot", "pacing-director", "speech-tightening", "caption-director",
+    "visual-director", "smart-reframe", "audio-director",
+  ];
+  plan.skills = skillIds.map((id) => ({
+    id,
+    version: "1.0.0",
+    status: id === "speech-tightening" ? "unavailable" : "applied",
+    reasons: [{ code: "decision.recorded", message: "Decision recorded." }],
+  }));
+
+  assert.deepEqual(validateRenderRequest(request), []);
+  (plan.skills as unknown[]).pop();
+  assert.ok(validateRenderRequest(request).some((item) => item.code === "skill_missing"));
+});
+
 test("rejects V2 assets without videoPath and request-plan version mismatches", () => {
   const request = validRenderV2Request();
   const assets = request.assets as Array<Record<string, unknown>>;

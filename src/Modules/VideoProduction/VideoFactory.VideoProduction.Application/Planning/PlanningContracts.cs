@@ -361,6 +361,40 @@ public sealed record ReelsPresentationPlan(
     }
 }
 
+/// <summary>Сохранённое решение одного editing skill без исполняемого typed payload.</summary>
+/// <param name="SkillId">Стабильный идентификатор skill.</param>
+/// <param name="SkillVersion">Версия алгоритма skill.</param>
+/// <param name="Status">Результат применения skill.</param>
+/// <param name="Reasons">Причины решения; пустой массив означает отсутствие дополнительных причин.</param>
+public sealed record EditingSkillAuditEntry(
+    string SkillId,
+    string SkillVersion,
+    EditingDecisionStatus Status,
+    ImmutableArray<EditingDecisionReason> Reasons);
+
+/// <summary>Версионированный полный аудит настроенных editing skills.</summary>
+/// <param name="SchemaVersion">Версия контракта аудита.</param>
+/// <param name="Skills">Решения всех настроенных skills в порядке выполнения.</param>
+public sealed record EditPlanAudit(
+    int SchemaVersion,
+    ImmutableArray<EditingSkillAuditEntry> Skills)
+{
+    /// <summary>Создаёт аудит из результата единого editing skill engine.</summary>
+    /// <param name="evaluation">Результат выполнения skills; не может быть <see langword="null"/>.</param>
+    /// <returns>Аудит версии 1 без typed payload решений.</returns>
+    public static EditPlanAudit FromEvaluation(EditingEvaluation evaluation)
+    {
+        ArgumentNullException.ThrowIfNull(evaluation);
+        return new EditPlanAudit(
+            1,
+            [.. evaluation.Decisions.Select(decision => new EditingSkillAuditEntry(
+                decision.SkillId,
+                decision.SkillVersion,
+                decision.Status,
+                decision.Reasons))]);
+    }
+}
+
 /// <summary>Неизменяемая сохранённая ревизия монтажного плана.</summary>
 public sealed record EditPlanRevision(
     RevisionId RevisionId,
@@ -369,7 +403,8 @@ public sealed record EditPlanRevision(
     string PlanHash,
     EditPlan Plan,
     decimal ActualCostUsd,
-    ReelsPresentationPlan? Presentation = null);
+    ReelsPresentationPlan? Presentation = null,
+    EditPlanAudit? Audit = null);
 
 /// <summary>Результат поиска или сохранения ревизии плана.</summary>
 public interface IEditPlanRevisionStore
@@ -422,6 +457,23 @@ public interface IEditPlanRevisionStore
         ReelsPresentationPlan? presentation,
         CancellationToken cancellationToken) =>
         SaveAsync(plan, planHash, actualCostUsd, cancellationToken);
+
+    /// <summary>Сохраняет timeline, presentation и полный audit одной неизменяемой ревизией.</summary>
+    /// <param name="plan">Проверенный монтажный план.</param>
+    /// <param name="planHash">Hash полной идентичности ревизии.</param>
+    /// <param name="actualCostUsd">Фактическая стоимость планирования в долларах США.</param>
+    /// <param name="presentation">Presentation decisions либо <see langword="null"/> для legacy-плана.</param>
+    /// <param name="audit">Полный аудит skills либо <see langword="null"/> для legacy-плана.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Сохранённая или ранее существовавшая ревизия.</returns>
+    Task<EditPlanRevision> SaveAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        EditPlanAudit? audit,
+        CancellationToken cancellationToken) =>
+        SaveAsync(plan, planHash, actualCostUsd, presentation, cancellationToken);
 }
 
 /// <summary>Результат построения монтажного плана.</summary>

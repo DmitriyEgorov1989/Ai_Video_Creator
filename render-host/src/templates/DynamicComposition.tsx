@@ -1,15 +1,15 @@
 import React from "react";
 import { AbsoluteFill, Audio, interpolate, OffthreadVideo, Sequence, useCurrentFrame, useVideoConfig } from "remotion";
-import type { Caption, EditPlan, EditPlanV2, EditPlanV3, OutputRange, RenderRequest, SourceMapping, SourceTimeRange } from "../contracts.js";
+import type { Caption, EditPlan, EditPlanV2, EditPlanV3, EditPlanV4, OutputRange, RenderRequest, SourceMapping, SourceTimeRange } from "../contracts.js";
 
 type V1Clip = EditPlan["video"]["clips"][number];
 type V2Clip = EditPlanV2["video"]["clips"][number];
-type ModernPlan = EditPlanV2 | EditPlanV3;
+type ModernPlan = EditPlanV2 | EditPlanV3 | EditPlanV4;
 type V2CaptionWord = EditPlanV2["captions"]["words"][number];
 type V2CaptionGroup = NonNullable<EditPlanV2["captions"]["groups"]>[number];
 
 function isModern(plan: EditPlan | ModernPlan): plan is ModernPlan {
-  return plan.schemaVersion === 2 || plan.schemaVersion === 3;
+  return plan.schemaVersion === 2 || plan.schemaVersion === 3 || plan.schemaVersion === 4;
 }
 
 function isCaptionGroup(caption: Caption | V2CaptionWord | V2CaptionGroup): caption is V2CaptionGroup {
@@ -85,7 +85,7 @@ export const DynamicComposition: React.FC<RenderRequest> = ({ plan, assets }) =>
   const frame = useCurrentFrame();
   const { width, height, fps } = useVideoConfig();
   const clip = plan.video.clips.find((item) => frame >= item.output.startFrame && frame < item.output.endFrame) as V1Clip | V2Clip | undefined;
-  const request = { plan, assets, schemaVersion: plan.schemaVersion === 3 ? 2 : 1 } as RenderRequest;
+  const request = { plan, assets, schemaVersion: plan.schemaVersion === 3 || plan.schemaVersion === 4 ? 2 : 1 } as RenderRequest;
   const source = clip ? clipAsset(clip, request) : undefined;
   const audio = request.schemaVersion === 1 ? request.assets.find((asset) => asset.id === "__audio_master")?.path : undefined;
   const music = isModern(plan) && plan.audio.musicAssetId && request.schemaVersion === 1
