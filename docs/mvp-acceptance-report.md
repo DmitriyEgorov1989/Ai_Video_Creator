@@ -131,3 +131,16 @@ video path, optional audio stem и frame rate; отсутствие audio озн
 пропущен из-за отсутствующих `ACCEPTANCE_MEDIA_ROOT` и `WHISPER_TEST_PYTHON`.
 Реальный Telegram Bot API, albums/`media_group_id` и облачный LLM этим запуском
 не проверялись. Поэтому сквозная реальная Telegram-публикация не заявляется.
+
+## Read-only acceptance evidence
+
+Команда `acceptance-evidence --job=<guid> --output=<path>` формирует JSON по
+контракту `contracts/acceptance-evidence.v1.schema.json` и возвращает `0` для
+`Passed`, `3` для `InProgress`, `1` для `Failed` или отсутствующего Job и `2`
+для неверных аргументов/конфигурации. Она открывает только существующую SQLite
+в read-only режиме, не запускает hosted services и не применяет миграции.
+
+Локальный integration-тест подтверждает успешную сверку Manifest V2, 11 skill
+IDs, critic chain, QA, delivery и файлов, а затем обнаруживает изменение final
+MP4 по размеру и SHA-256. Это не является заявлением о выполненном реальном
+Telegram или платном API вызове.

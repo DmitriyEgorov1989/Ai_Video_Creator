@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-video-factory.local/contracts/acceptance-evidence.v1.schema.json",
+  "title": "AcceptanceEvidenceV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "outcome", "variantId", "approvedRevisionId", "planHash", "recomputedPlanHash", "auditHash", "recomputedAuditHash", "skillIds", "sourceCount", "sourceMode", "artifacts", "checks"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "jobId": { "type": "string", "pattern": "^[0-9a-fA-F]{32}$" },
+    "outcome": { "enum": ["Passed", "InProgress", "Failed"] },
+    "variantId": { "type": ["string", "null"] },
+    "approvedRevisionId": { "type": ["string", "null"] },
+    "planHash": { "$ref": "#/$defs/nullableHash" },
+    "recomputedPlanHash": { "$ref": "#/$defs/nullableHash" },
+    "auditHash": { "$ref": "#/$defs/nullableHash" },
+    "recomputedAuditHash": { "$ref": "#/$defs/nullableHash" },
+    "skillIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "sourceCount": { "type": "integer", "minimum": 0 },
+    "sourceMode": { "enum": ["single-source", "multi-source"] },
+    "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } }
+  },
+  "$defs": {
+    "nullableHash": {
+      "anyOf": [
+        { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        { "type": "null" }
+      ]
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactType", "artifactId", "storedSha256", "storedSizeBytes", "exists", "actualSha256", "actualSizeBytes"],
+      "properties": {
+        "artifactType": { "type": "string", "minLength": 1 },
+        "artifactId": { "type": "string", "minLength": 1 },
+        "storedSha256": { "$ref": "#/$defs/nullableHash" },
+        "storedSizeBytes": { "type": ["integer", "null"], "minimum": 1 },
+        "exists": { "type": "boolean" },
+        "actualSha256": { "$ref": "#/$defs/nullableHash" },
+        "actualSizeBytes": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "passed"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "passed": { "type": "boolean" }
+      }
+    }
+  }
+}

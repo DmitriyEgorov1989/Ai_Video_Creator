@@ -183,14 +183,17 @@ $env:AiApi__Provider = 'deepseek'
 $env:AiApi__Model = 'deepseek-chat'
 $env:Whisper__PythonPath = (Resolve-Path .\.venv\Scripts\python.exe).Path
 $env:WHISPER_MODEL_PATH = (Resolve-Path .\data\models\whisper-small).Path
-.\scripts\Run-RealTelegramAcceptance.ps1
+.\scripts\Run-RealTelegramAcceptance.ps1 -SourceMode single-source
 ```
 
-После сообщения о запуске отправьте боту одно поддерживаемое видео и непустой
-комментарий с разрешённого пользователя. Скрипт отслеживает дерево `dotnet`,
-`node`, `python`, `ffmpeg` и `ffprobe`, а в
-`data/real-telegram-acceptance-report.json` сохраняет время, пиковую RAM,
-CPU-время и максимальный размер каталога `data`. Файл не содержит токенов,
-комментария, содержимого медиа или Telegram file ID. Стоимость LLM и хэши
-скачанного MP4 сверяются по SQLite, manifest и полученному файлу после
-завершения сценария и фиксируются в отчёте без секретов.
+После отправки инструкции и всех исходников завершите набор командой `/done`.
+Для нескольких исходников используйте `-SourceMode multi-source`. До реального
+запуска синтаксис и безопасный отчёт можно проверить через `-DryRun`; сеть,
+host и платные API при этом не запускаются.
+
+Скрипт отслеживает единственный Job, созданный после старта, и опрашивает
+`acceptance-evidence` до успешной delivery receipt. Timeout, несогласованные
+evidence и отсутствие Job завершаются ненулевым кодом. В отчёт записываются
+`elapsedSeconds`, `cpuTimeSeconds`, `peakRamBytes` и `diskDeltaBytes`; отдельный
+evidence JSON содержит только технические ID, hashes, размеры и коды проверок,
+без token, recipient ID, комментария, media contents, Telegram message/file ID.

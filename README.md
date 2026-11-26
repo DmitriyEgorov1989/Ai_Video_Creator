@@ -37,6 +37,9 @@ Reels Critic остаётся отдельным компонентом, а Mani
 critic/remount chain, утверждённую ревизию, render, QA и final MP4. Legacy
 Analysis V1/V2, Edit Plan V1/V2/V3, Manifest V1 и RenderRequest V1 остаются
 читаемыми.
+Read-only команда `acceptance-evidence --job=<guid> --output=<path>` проверяет
+эту цепочку, зарегистрированные размеры и SHA-256 файлов и успешную delivery
+receipt без запуска Telegram, hosted services или миграций.
 
 ## Режимы работы
 

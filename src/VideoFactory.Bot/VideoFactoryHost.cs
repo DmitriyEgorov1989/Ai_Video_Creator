@@ -32,6 +32,10 @@ using VideoFactory.VideoProduction.Application.Events;
 using VideoFactory.VideoProduction.Application.Critique;
 using VideoFactory.VideoProduction.Application.Variants;
 using VideoFactory.VideoProduction.Application.TelegramIntake;
+using VideoFactory.VideoProduction.Application.Acceptance;
+using VideoFactory.VideoProduction.Infrastructure.Acceptance;
+using VideoFactory.VideoProduction.Domain.Identifiers;
+using System.Text.Json;
 using Telegram.Bot;
 
 namespace VideoFactory.Bot;
@@ -46,19 +50,40 @@ public static class VideoFactoryHost
 
         bool diagnosticMode = args is ["diagnose"];
         bool cleanupMode = args.Length > 0 && args[0] == "cleanup";
+        bool acceptanceMode = args.Length > 0 && args[0] == "acceptance-evidence";
+        string[] acceptanceJobs = acceptanceMode ? args.Skip(1)
+            .Where(argument => argument.StartsWith("--job=", StringComparison.Ordinal)).ToArray() : [];
+        string[] acceptanceOutputs = acceptanceMode ? args.Skip(1)
+            .Where(argument => argument.StartsWith("--output=", StringComparison.Ordinal)).ToArray() : [];
+        string? acceptanceJob = acceptanceJobs.Length == 1 ? acceptanceJobs[0][6..] : null;
+        string? acceptanceOutput = acceptanceOutputs.Length == 1 ? acceptanceOutputs[0][9..] : null;
+        if (acceptanceMode && (args.Skip(1).Any(argument =>
+                !(argument.StartsWith("--job=", StringComparison.Ordinal)
+                  || argument.StartsWith("--output=", StringComparison.Ordinal)
+                  || argument.StartsWith("--", StringComparison.Ordinal) && argument.Contains(':') && argument.Contains('=')))
+            || acceptanceJobs.Length != 1 || acceptanceOutputs.Length != 1
+            || !Guid.TryParse(acceptanceJob, out _) || string.IsNullOrWhiteSpace(acceptanceOutput)))
+        {
+            Console.Error.WriteLine("Use 'acceptance-evidence --job=<guid> --output=<path>' followed by configuration switches.");
+            return 2;
+        }
         if (cleanupMode && args.Skip(1).Any(argument => argument != "--apply"
             && !(argument.StartsWith("--", StringComparison.Ordinal) && argument.Contains('='))))
         {
             Console.Error.WriteLine("Use 'cleanup [--apply]' followed by --Section:Key=value configuration switches.");
             return 2;
         }
-        if (!diagnosticMode && (cleanupMode ? args.Skip(1) : args).Any(argument => !argument.StartsWith("-", StringComparison.Ordinal)))
+        if (!diagnosticMode && !acceptanceMode && (cleanupMode ? args.Skip(1) : args).Any(argument => !argument.StartsWith("-", StringComparison.Ordinal)))
         {
-            Console.Error.WriteLine("Unknown command. Use 'diagnose', 'cleanup [--apply]' or host configuration switches.");
+            Console.Error.WriteLine("Unknown command. Use 'diagnose', 'cleanup [--apply]', 'acceptance-evidence' or host configuration switches.");
             return 2;
         }
 
-        string[] hostArgs = diagnosticMode ? [] : cleanupMode ? args.Skip(1).Where(arg => arg != "--apply").ToArray() : args;
+        string[] hostArgs = diagnosticMode ? []
+            : cleanupMode ? args.Skip(1).Where(arg => arg != "--apply").ToArray()
+            : acceptanceMode ? args.Skip(1).Where(argument => !argument.StartsWith("--job=", StringComparison.Ordinal)
+                && !argument.StartsWith("--output=", StringComparison.Ordinal)).ToArray()
+            : args;
         HostApplicationBuilder builder = Host.CreateApplicationBuilder(hostArgs);
         string? dotEnvPath = DotEnvLoader.Find(builder.Environment.ContentRootPath);
         if (dotEnvPath is not null)
@@ -68,7 +93,7 @@ public static class VideoFactoryHost
         ConfigureLogging(builder);
         builder.Services.AddVideoFactoryConfiguration(
             builder.Configuration,
-            validateOnStart: !diagnosticMode && !cleanupMode);
+            validateOnStart: !diagnosticMode && !cleanupMode && !acceptanceMode);
         builder.Services.AddSingleton<IJobSignal, InMemoryJobSignal>();
         builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
         builder.Services.AddSingleton<IStorageBudget>(services =>
@@ -487,6 +512,15 @@ public static class VideoFactoryHost
              return await RunDiagnosticsAsync(host.Services, logger, cancellationToken);
         }
 
+        if (acceptanceMode)
+        {
+            return await RunAcceptanceEvidenceAsync(
+                host.Services,
+                new JobId(Guid.Parse(acceptanceJob!)),
+                acceptanceOutput!,
+                cancellationToken);
+        }
+
         if (cleanupMode)
         {
             try
@@ -603,6 +637,68 @@ public static class VideoFactoryHost
             report.Checks.Count(check => check.Status == DiagnosticStatus.Warning));
 
         return report.IsSuccessful ? 0 : 1;
+    }
+
+    private static async Task<int> RunAcceptanceEvidenceAsync(
+        IServiceProvider services,
+        JobId jobId,
+        string outputPath,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            StorageOptions storage = services.GetRequiredService<IOptions<StorageOptions>>().Value;
+            string root = BuildWorkspaceRoot(services);
+            string database = Path.Combine(root, storage.DataRoot, storage.DatabaseFileName);
+            AcceptanceEvidenceCollector collector = new(
+                new SqliteAcceptanceEvidenceSource(database, root));
+            AcceptanceEvidenceReport report = await collector.CollectAsync(jobId, cancellationToken);
+            string fullOutputPath = Path.GetFullPath(outputPath);
+            string? parent = Path.GetDirectoryName(fullOutputPath);
+            if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
+            string json = JsonSerializer.Serialize(new
+            {
+                schemaVersion = report.SchemaVersion,
+                jobId = report.JobId.ToString(),
+                outcome = report.Outcome.ToString(),
+                variantId = report.VariantId,
+                approvedRevisionId = report.ApprovedRevisionId,
+                planHash = report.PlanHash,
+                recomputedPlanHash = report.RecomputedPlanHash,
+                auditHash = report.AuditHash,
+                recomputedAuditHash = report.RecomputedAuditHash,
+                skillIds = report.SkillIds,
+                sourceCount = report.SourceCount,
+                sourceMode = report.SourceMode == AcceptanceSourceMode.SingleSource ? "single-source" : "multi-source",
+                artifacts = report.Artifacts.Select(artifact => new
+                {
+                    artifact.ArtifactType,
+                    artifact.ArtifactId,
+                    artifact.StoredSha256,
+                    artifact.StoredSizeBytes,
+                    artifact.Exists,
+                    artifact.ActualSha256,
+                    artifact.ActualSizeBytes
+                }),
+                checks = report.Checks
+            }, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true });
+            await File.WriteAllTextAsync(fullOutputPath, json, cancellationToken);
+            return report.Outcome switch
+            {
+                AcceptanceEvidenceOutcome.Passed => 0,
+                AcceptanceEvidenceOutcome.InProgress => 3,
+                _ => 1
+            };
+        }
+        catch (OptionsValidationException)
+        {
+            return 2;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Console.Error.WriteLine($"Acceptance evidence failed: {exception.GetType().Name}");
+            return 1;
+        }
     }
 
     private static void LogDiagnosticCheck(ILogger logger, DiagnosticCheck check)

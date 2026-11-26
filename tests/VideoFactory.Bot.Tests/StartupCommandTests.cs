@@ -63,6 +63,80 @@ public sealed class StartupCommandTests
     }
 
     [Fact]
+    public async Task AcceptanceEvidenceWithoutDatabaseWritesFailedReportWithoutCreatingStorage()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"acceptance-command-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        string report = Path.Combine(root, "evidence.json");
+        try
+        {
+            int code = await VideoFactoryHost.RunAsync([
+                "acceptance-evidence",
+                $"--job={Guid.NewGuid()}",
+                $"--output={report}",
+                $"--Paths:WorkspaceRoot={root}",
+                "--Storage:DataRoot=data"
+            ]);
+
+            Assert.Equal(1, code);
+            Assert.True(File.Exists(report));
+            Assert.False(Directory.Exists(Path.Combine(root, "data")));
+            Assert.DoesNotContain("recipient", await File.ReadAllTextAsync(report), StringComparison.OrdinalIgnoreCase);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task AcceptanceEvidenceWithInvalidJobReturnsUsageError()
+    {
+        Assert.Equal(2, await VideoFactoryHost.RunAsync([
+            "acceptance-evidence", "--job=not-a-guid", "--output=evidence.json"
+        ]));
+    }
+
+    [Fact]
+    public async Task AcceptanceEvidenceForRunningJobReturnsInProgress()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"acceptance-running-{Guid.NewGuid():N}");
+        string data = Path.Combine(root, "data");
+        Directory.CreateDirectory(data);
+        string database = Path.Combine(data, "jobs.sqlite");
+        string jobId = Guid.NewGuid().ToString("N");
+        try
+        {
+            await new SqliteMigrationRunner($"Data Source={database};Pooling=False").InitializeAsync(CancellationToken.None);
+            await using (SqliteConnection connection = new($"Data Source={database};Pooling=False"))
+            {
+                await connection.OpenAsync();
+                await using SqliteCommand command = connection.CreateCommand();
+                command.CommandText = """
+                    INSERT INTO jobs (job_id, source_artifact_id, comment, requested_mode, captions_enabled,
+                        music_enabled, status, stage, created_at, updated_at, edit_tempo, requested_style)
+                    VALUES ($job, 'source', '', 0, 0, 0, 1, 5, $now, $now, 1, 0);
+                    """;
+                command.Parameters.AddWithValue("$job", jobId);
+                command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+                await command.ExecuteNonQueryAsync();
+            }
+            string report = Path.Combine(root, "evidence.json");
+
+            int code = await VideoFactoryHost.RunAsync([
+                "acceptance-evidence", $"--job={jobId}", $"--output={report}",
+                $"--Paths:WorkspaceRoot={root}", "--Storage:DataRoot=data"
+            ]);
+
+            string json = await File.ReadAllTextAsync(report);
+            Assert.True(code == 3, json);
+            Assert.Contains("\"outcome\": \"InProgress\"", json, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task ValidConfigurationAcceptsCancellationBeforePolling()
     {
         using CancellationTokenSource cancellation = new();

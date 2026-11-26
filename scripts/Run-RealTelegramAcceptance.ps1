@@ -1,6 +1,9 @@
 param(
     [int] $TimeoutSeconds = 3600,
-    [string] $ReportPath = '.\data\real-telegram-acceptance-report.json'
+    [string] $ReportPath = '.\data\real-telegram-acceptance-report.json',
+    [ValidateSet('single-source', 'multi-source')]
+    [string] $SourceMode = 'single-source',
+    [switch] $DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -54,20 +57,22 @@ function Get-ProcessTreeIds([int] $RootId) {
     return @($ids)
 }
 
-function Get-TreeMetrics([int] $RootId) {
+function Get-TreeMetrics([int] $RootId, [hashtable] $CpuByProcessId) {
     [long] $workingSet = 0
     [double] $cpuSeconds = 0
     foreach ($id in (Get-ProcessTreeIds $RootId)) {
         try {
             $process = Get-Process -Id $id -ErrorAction Stop
             $workingSet += [long]$process.WorkingSet64
-            $cpuSeconds += [double]$process.CPU
+            $currentCpu = [double]$process.CPU
+            $CpuByProcessId[$id] = [Math]::Max([double]($CpuByProcessId[$id]), $currentCpu)
         }
         catch {
             # Процесс может завершиться между снимком дерева и Get-Process.
             # Потеря одного дочернего процесса не должна прерывать приёмку.
         }
     }
+    foreach ($value in $CpuByProcessId.Values) { $cpuSeconds += [double]$value }
     return [pscustomobject]@{ WorkingSetBytes = $workingSet; CpuSeconds = $cpuSeconds }
 }
 
@@ -78,8 +83,37 @@ function Get-DirectoryBytes([string] $Path) {
     return [long]($sum.Sum | ForEach-Object { if ($null -eq $_) { 0 } else { $_ } })
 }
 
+if ($TimeoutSeconds -le 0) { throw 'TimeoutSeconds must be positive.' }
+
+$report = if ([IO.Path]::IsPathRooted($ReportPath)) { [IO.Path]::GetFullPath($ReportPath) } else { [IO.Path]::GetFullPath((Join-Path $root $ReportPath)) }
+$reportParent = Split-Path -Parent $report
+$null = New-Item -ItemType Directory -Force -Path $reportParent
+$evidencePath = [IO.Path]::ChangeExtension($report, '.evidence.json')
+
+if ($DryRun) {
+    $dryRunResult = [ordered]@{
+        schemaVersion = 2
+        dryRun = $true
+        sourceMode = $SourceMode
+        timeoutSeconds = $TimeoutSeconds
+        reportPathConfigured = $true
+        note = 'No host, network, paid API or Telegram operation was started.'
+    }
+    [IO.File]::WriteAllText($report, ($dryRunResult | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    Write-Host "Dry-run report written to $report"
+    exit 0
+}
+
+function Stop-ProcessTree([int] $RootId) {
+    $ids = @(Get-ProcessTreeIds $RootId)
+    [array]::Reverse($ids)
+    foreach ($id in $ids) {
+        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $null = Require-ConfiguredValue 'Telegram__BotToken'
-$allowedUserId = Require-ConfiguredValue 'Telegram__AllowedUserId'
+$null = Require-ConfiguredValue 'Telegram__AllowedUserId'
 $null = Require-ConfiguredValue 'AiApi__Provider'
 $null = Require-ConfiguredValue 'AiApi__ApiKey'
 $null = Require-ConfiguredValue 'AiApi__Model'
@@ -88,11 +122,7 @@ $modelPath = Require-EnvironmentVariable 'WHISPER_MODEL_PATH'
 
 if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) { throw "Whisper Python executable was not found." }
 if (-not (Test-Path -LiteralPath $modelPath -PathType Container)) { throw "Whisper model directory was not found." }
-if ($TimeoutSeconds -le 0) { throw 'TimeoutSeconds must be positive.' }
 
-$report = [IO.Path]::GetFullPath((Join-Path $root $ReportPath))
-$reportParent = Split-Path -Parent $report
-$null = New-Item -ItemType Directory -Force -Path $reportParent
 $stdoutPath = [IO.Path]::ChangeExtension($report, '.host.out.log')
 $stderrPath = [IO.Path]::ChangeExtension($report, '.host.err.log')
 Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
@@ -100,50 +130,102 @@ $dataRoot = Join-Path $root 'data'
 $startedAt = [DateTimeOffset]::UtcNow
 $start = [Diagnostics.Stopwatch]::StartNew()
 $peakWorkingSet = [long]0
-$peakCpuSeconds = [double]0
-$peakDiskBytes = [long](Get-DirectoryBytes $dataRoot)
-$exitCode = $null
+$cpuTimeSeconds = [double]0
+$cpuByProcessId = @{}
+$initialDiskBytes = [long](Get-DirectoryBytes $dataRoot)
+$exitCode = 1
+$resultReason = 'host-failed'
+$jobId = $null
 $process = $null
 
 try {
     $process = Start-Process -FilePath 'dotnet' -ArgumentList @('run', '--project', 'src/VideoFactory.Bot', '--no-launch-profile') -WorkingDirectory $root -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
-    Write-Host "Host started. Send one video and a non-empty comment from Telegram user $allowedUserId."
+    $sourceInstruction = if ($SourceMode -eq 'single-source') { 'one video' } else { 'at least two videos' }
+    Write-Host "Host started. Send $sourceInstruction and a non-empty instruction from the configured Telegram account, then use /done."
     Write-Host "The runner stops after $TimeoutSeconds seconds or when you press Ctrl+C."
 
     while (-not $process.HasExited -and $start.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         Start-Sleep -Seconds 1
-        $metrics = Get-TreeMetrics $process.Id
+        $metrics = Get-TreeMetrics $process.Id $cpuByProcessId
         $peakWorkingSet = [Math]::Max($peakWorkingSet, $metrics.WorkingSetBytes)
-        $peakCpuSeconds = [Math]::Max($peakCpuSeconds, $metrics.CpuSeconds)
-        $peakDiskBytes = [Math]::Max($peakDiskBytes, [long](Get-DirectoryBytes $dataRoot))
+        $cpuTimeSeconds = [Math]::Max($cpuTimeSeconds, $metrics.CpuSeconds)
+
+        if ($null -eq $jobId) {
+            $jobsRoot = Join-Path $dataRoot 'jobs'
+            if (Test-Path -LiteralPath $jobsRoot -PathType Container) {
+                $candidates = @(Get-ChildItem -LiteralPath $jobsRoot -Directory | Where-Object {
+                    $parsed = [Guid]::Empty
+                    [Guid]::TryParse($_.Name, [ref]$parsed) -and $_.CreationTimeUtc -ge $startedAt.UtcDateTime
+                })
+                if ($candidates.Count -gt 1) {
+                    $resultReason = 'multiple-jobs-created-since-start'
+                    break
+                }
+                if ($candidates.Count -eq 1) {
+                    $jobId = $candidates[0].Name
+                    Write-Host "Tracking Job $jobId."
+                }
+            }
+        }
+
+        if ($null -ne $jobId) {
+            & dotnet run --project (Join-Path $root 'src/VideoFactory.Bot') --no-launch-profile --no-build -- `
+                acceptance-evidence "--job=$jobId" "--output=$evidencePath" 1>$null 2>$null
+            $evidenceExitCode = $LASTEXITCODE
+            if ($evidenceExitCode -eq 0) {
+                $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
+                if ($evidence.sourceMode -ne $SourceMode) {
+                    $exitCode = 1
+                    $resultReason = 'source-mode-mismatch'
+                }
+                else {
+                    $exitCode = 0
+                    $resultReason = 'passed'
+                }
+                break
+            }
+            if ($evidenceExitCode -eq 1) {
+                $exitCode = 1
+                $resultReason = 'evidence-failed'
+                break
+            }
+            if ($evidenceExitCode -ne 3) {
+                $exitCode = 2
+                $resultReason = 'evidence-command-error'
+                break
+            }
+        }
     }
 
-    if (-not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force
-        $exitCode = 'timeout'
+    if ($start.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
+        $exitCode = 1
+        $resultReason = 'timeout'
     }
-    else {
+    elseif ($process.HasExited -and $resultReason -eq 'host-failed') {
         $process.WaitForExit()
         $process.Refresh()
-        $exitCode = $process.ExitCode
+        $exitCode = if ($process.ExitCode -eq 0) { 1 } else { $process.ExitCode }
     }
 }
 finally {
     $start.Stop()
     if ($null -ne $process -and -not $process.HasExited) {
-        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        Stop-ProcessTree $process.Id
     }
     $finishedAt = [DateTimeOffset]::UtcNow
     $result = [ordered]@{
-        schemaVersion = 1
+        schemaVersion = 2
         startedAtUtc = $startedAt
         finishedAtUtc = $finishedAt
         elapsedSeconds = [Math]::Round($start.Elapsed.TotalSeconds, 3)
         exitCode = $exitCode
-        telegramUserId = $allowedUserId
-        peakWorkingSetBytes = $peakWorkingSet
-        peakCpuSeconds = [Math]::Round($peakCpuSeconds, 3)
-        peakDataDirectoryBytes = $peakDiskBytes
+        result = $resultReason
+        jobId = $jobId
+        sourceMode = $SourceMode
+        cpuTimeSeconds = [Math]::Round($cpuTimeSeconds, 3)
+        peakRamBytes = $peakWorkingSet
+        diskDeltaBytes = [long](Get-DirectoryBytes $dataRoot) - $initialDiskBytes
+        evidenceReport = if (Test-Path -LiteralPath $evidencePath -PathType Leaf) { [IO.Path]::GetFileName($evidencePath) } else { $null }
         environment = [ordered]@{
             dotnet = (& dotnet --version)
             node = (& node --version)
@@ -158,3 +240,5 @@ finally {
     Write-Host "Acceptance metrics written to $report"
     Write-Host "Host logs written to $stdoutPath and $stderrPath"
 }
+
+exit $exitCode
