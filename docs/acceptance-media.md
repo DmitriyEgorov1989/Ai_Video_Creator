@@ -40,7 +40,9 @@ FFmpeg с `libx264`, `aac`, `mpeg4` и FFprobe в `PATH`.
 | `phrase-0.wav`, `phrase-1.wav` | Исходные синтезированные фразы | Источники звука для воспроизведения и диагностики |
 | `manifest.json` | Происхождение, версии инструментов, SHA-256, размеры в байтах, metadata и ожидаемые результаты | Hash и размер соответствуют фактическим файлам |
 | `landscape.mp4` | Синтетический landscape-вариант с тем же содержимым | Проверка безопасного reframe и metadata |
+| `landscape-short.mp4` | Первые 18 секунд landscape-варианта | Второй отличимый источник положительного multi-source flow |
 | `portrait-24fps.mp4`, `portrait-60fps.mp4` | Portrait-варианты с постоянными 24 и 60 кадрами/с | Проверка frame-rate преобразований и допусков |
+| `portrait-rotated.mp4` | Portrait-вариант с rotation metadata 90 градусов | Проверка нормализации rotation до рендера |
 | `similar-take-a.mp4`, `similar-take-b.mp4` | Два похожих дубля с различимым marker-ом | Проверка выбора и порядка похожих фрагментов |
 | `tones.mp4` | 10 секунд: 440 Гц на интервале 0–5 секунд и 880 Гц на интервале 5–10 секунд | Проверка порядка и непрерывности audio splice |
 | `montage-source.mp4` | Три маркированных интервала: red/440 Гц, удаляемый yellow/660 Гц, blue/880 Гц | Oracle-driven проверка trim, порядка, audio leakage, captions, black frames и crop |
@@ -129,28 +131,36 @@ FFmpeg/FFprobe: `speech.mp4` без перекодирования и его в�
 
 ## Сквозная приёмка через подменённый Telegram
 
-После сборки render-host и установки локальной Whisper-модели можно запустить
-сценарий `Telegram videos + instruction + /done -> verified MP4 -> Telegram delivery` без
+После сборки render-host можно запустить воспроизводимую локальную media-матрицу
+`Telegram videos + instruction + /done -> verified MP4 -> Telegram delivery` без
 реального Bot API и облачного LLM:
 
 ```powershell
 npm ci --prefix .\render-host
 npm run build --prefix .\render-host
 $env:ACCEPTANCE_MEDIA_ROOT = (Resolve-Path .\data\acceptance-media-v2).Path
-$env:WHISPER_TEST_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
 dotnet test .\tests\VideoFactory.Bot.Tests\VideoFactory.Bot.Tests.csproj `
   --filter FullyQualifiedName~TelegramToDeliveryAcceptanceTests
 ```
 
-Тест создаёт временную SQLite и каталог Job, подаёт два отдельных видео,
-инструкцию и style через `TelegramUpdateHandler`, проверяет отсутствие Job до
-`/done`, создаёт новый Telegram adapter/store поверх той же SQLite и только затем
-финализирует intake. Последовательный processor должен сохранить ordered source
-lineage, Analysis V3, Edit Plan V3, один verified MP4 и одну fake delivery receipt.
-Основной сценарий требует локальную модель Whisper; без
-`ACCEPTANCE_MEDIA_ROOT` и `WHISPER_TEST_PYTHON` он явно пропускается. Быстрые
-сценарии cancel и duplicate `/done` не требуют внешних media. Отрицательный
-сценарий повреждённого входа не отправляет MP4.
+Матрица проверяет speech/no-speech, single/multi-source, portrait, landscape,
+24/30/60 кадров/с, rotation metadata и исключение повторного дубля. Тест создаёт
+временную SQLite и каталог Job, подаёт видео, инструкцию и style через
+`TelegramUpdateHandler`, перезапускает Telegram adapter перед `/done` и проверяет
+один verified MP4, одну fake delivery receipt и read-only evidence report.
+
+Speech-строки используют фиксированные интервалы test transcriber, чтобы монтажная
+матрица не зависела от наличия модели. Настоящий Whisper worker проверяется отдельно:
+
+```powershell
+$env:WHISPER_TEST_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+dotnet test .\tests\Modules\VideoProduction\VideoFactory.VideoProduction.IntegrationTests\VideoFactory.VideoProduction.IntegrationTests.csproj `
+  --filter FullyQualifiedName~WhisperAcceptanceTests
+```
+
+Без `ACCEPTANCE_MEDIA_ROOT` media-строки явно пропускаются. Быстрые сценарии cancel
+и duplicate `/done` не требуют внешних media. Отрицательный сценарий повреждённого
+входа не отправляет MP4.
 
 Render-host smoke отдельно создаёт два синтетических source с красным/синим
 marker и тонами 440/880 Гц. Проверяются порядок кадров и звука, отсутствие

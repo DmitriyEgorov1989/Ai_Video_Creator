@@ -442,7 +442,7 @@ public sealed class CritiqueStageExecutor : IJobStageExecutor
         && id.ValueKind == JsonValueKind.Object
         && id.TryGetProperty("value", out JsonElement value)
         && value.ValueKind == JsonValueKind.String
-        && value.TryGetGuid(out Guid actual)
+        && Guid.TryParse(value.GetString(), out Guid actual)
         && actual == expected;
 
     private async Task<string?> PublishObjectiveReportAsync(

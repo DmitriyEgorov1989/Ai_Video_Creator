@@ -9,7 +9,7 @@ namespace VideoFactory.VideoProduction.Infrastructure.Analysis;
 /// <summary>Сохраняет AnalysisResult через атомарное локальное хранилище.</summary>
 public sealed class AnalysisArtifactPublisher : IAnalysisArtifactPublisher
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = false
     };

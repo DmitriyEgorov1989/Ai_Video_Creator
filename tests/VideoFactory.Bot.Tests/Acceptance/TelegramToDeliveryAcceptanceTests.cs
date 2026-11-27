@@ -1,10 +1,13 @@
 using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using VideoFactory.Bot.Configuration;
 using VideoFactory.Bot.Telegram;
+using VideoFactory.VideoProduction.Application.Acceptance;
 using VideoFactory.VideoProduction.Application.Analysis;
 using VideoFactory.VideoProduction.Application.Delivery;
+using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Jobs.Queue;
 using VideoFactory.VideoProduction.Application.Jobs.State;
@@ -15,12 +18,14 @@ using VideoFactory.VideoProduction.Application.Processes;
 using VideoFactory.VideoProduction.Application.Rendering;
 using VideoFactory.VideoProduction.Application.Stages;
 using VideoFactory.VideoProduction.Application.Storage;
+using VideoFactory.VideoProduction.Domain.Analysis;
 using VideoFactory.VideoProduction.Domain.Editing;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.Domain.Templates;
 using VideoFactory.VideoProduction.Domain.Timeline;
 using VideoFactory.VideoProduction.Infrastructure.Analysis;
+using VideoFactory.VideoProduction.Infrastructure.Acceptance;
 using VideoFactory.VideoProduction.Infrastructure.Delivery;
 using VideoFactory.VideoProduction.Infrastructure.Media;
 using VideoFactory.VideoProduction.Infrastructure.Packaging;
@@ -37,19 +42,55 @@ namespace VideoFactory.Bot.Tests.Acceptance;
 
 public sealed class TelegramToDeliveryAcceptanceTests
 {
-    [AcceptanceFact]
-    public async Task TelegramVideoAndCommentReachVerifiedDeliveryThroughWorker()
+    [MediaAcceptanceTheory]
+    [InlineData("speech.mp4", null, 1)]
+    [InlineData("speech.mp4", "landscape-short.mp4", 2)]
+    [InlineData("landscape.mp4", null, 1)]
+    [InlineData("portrait-24fps.mp4", null, 1)]
+    [InlineData("portrait-60fps.mp4", null, 1)]
+    [InlineData("portrait-rotated.mp4", null, 1)]
+    public Task PositiveSpeechMatrixReachesVerifiedDelivery(
+        string firstSource,
+        string? secondSource,
+        int expectedUsedSourceCount)
     {
         string? mediaRoot = Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT");
-        string? whisperPython = Environment.GetEnvironmentVariable("WHISPER_TEST_PYTHON");
-        string source = Path.Combine(mediaRoot!, "speech.mp4");
-        string secondSource = Path.Combine(mediaRoot!, "similar-take-a.mp4");
-        Assert.True(File.Exists(source), $"Acceptance media is missing: {source}");
-        Assert.True(File.Exists(secondSource), $"Acceptance media is missing: {secondSource}");
+        string[] sources = secondSource is null
+            ? [Path.Combine(mediaRoot!, firstSource)]
+            : [Path.Combine(mediaRoot!, firstSource), Path.Combine(mediaRoot!, secondSource)];
+        return RunPositiveFlowAsync(sources, null, expectedUsedSourceCount, expectAudibleOutput: true);
+    }
+
+    [MediaAcceptanceFact]
+    public Task RepeatedTakeIsExcludedFromDeliveredMp4() =>
+        RunPositiveFlowAsync(
+            [
+                Path.Combine(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!, "similar-take-a.mp4"),
+                Path.Combine(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!, "similar-take-b.mp4")
+            ],
+            null,
+            1,
+            expectAudibleOutput: true);
+
+    [MediaAcceptanceFact]
+    public Task NoSpeechSingleSourceReachesVerifiedDelivery() =>
+        RunPositiveFlowAsync(
+            [Path.Combine(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!, "no-speech.mp4")],
+            "python",
+            1,
+            expectAudibleOutput: false);
+
+    private static async Task RunPositiveFlowAsync(
+        IReadOnlyList<string> sources,
+        string? whisperPython,
+        int expectedUsedSourceCount,
+        bool expectAudibleOutput)
+    {
+        Assert.All(sources, source => Assert.True(File.Exists(source), $"Acceptance media is missing: {source}"));
         string repositoryRoot = Fixture.RepositoryRoot();
         Assert.True(File.Exists(Path.Combine(repositoryRoot, "render-host", "dist", "cli.js")), "Build render-host before running this acceptance test.");
 
-        await using Fixture fixture = await Fixture.CreateAsync([source, secondSource], whisperPython!);
+        await using Fixture fixture = await Fixture.CreateAsync(sources, whisperPython);
         await fixture.SendTelegramInputAsync(restartBeforeDone: true);
 
         for (int i = 0; i < 32; i++)
@@ -68,7 +109,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
         Assert.True(completed.Progress.Status == JobStatus.Completed,
             $"root={fixture.Root}; stage={completed.Progress.Stage}; error={failedAttempt?.ErrorCode}; message={failedAttempt?.ErrorMessage}; process={fixture.Runner.LastRequest?.FileName} {string.Join(' ', fixture.Runner.LastRequest?.Arguments ?? [])}; stderr={fixture.Runner.LastResult?.StandardError}");
         Assert.Equal(ProductionStage.Delivery, completed.Progress.Stage);
-        Assert.Equal(2, completed.Request.SourceAssetIds.Length);
+        Assert.Equal(sources.Count, completed.Request.SourceAssetIds.Length);
         ArtifactRecord final = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "final-mp4", CancellationToken.None));
         ArtifactRecord render = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "render-output", CancellationToken.None));
         ArtifactRecord qa = Assert.IsType<ArtifactRecord>(await fixture.Artifacts.FindLatestAsync(fixture.JobId, "qa-report", CancellationToken.None));
@@ -76,10 +117,13 @@ public sealed class TelegramToDeliveryAcceptanceTests
         EditPlanRevision approvedPlan = Assert.IsType<EditPlanRevision>(await fixture.PlanRevisions.FindApprovedAsync(
             fixture.JobId, completed.VariantId, CancellationToken.None));
         Assert.Single(fixture.Delivery.Files);
-        Assert.Equal(2, approvedPlan.Plan.Sources.Length);
+        Assert.Equal(expectedUsedSourceCount, approvedPlan.Plan.Video.Clips
+            .Select(clip => clip.Mapping.MasterAssetId)
+            .Distinct()
+            .Count());
         using (JsonDocument renderMetadata = JsonDocument.Parse(render.MetadataJson!))
         {
-            Assert.Equal(2, renderMetadata.RootElement.GetProperty("sources").GetArrayLength());
+            Assert.Equal(sources.Count, renderMetadata.RootElement.GetProperty("sources").GetArrayLength());
         }
 
         string finalPath = Path.Combine(fixture.Root, final.RelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -89,6 +133,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
         StageExecutionResult repeatedDelivery = await fixture.DeliveryExecutor.ExecuteAsync(completed, CancellationToken.None);
         Assert.Equal(StageExecutionKind.Completed, repeatedDelivery.Kind);
         Assert.Single(fixture.Delivery.Files);
+        Assert.Equal(1, await fixture.CountDeliveryReceiptsAsync());
 
         string manifestPath = Path.Combine(fixture.Root, manifest.RelativePath.Replace('/', Path.DirectorySeparatorChar));
         using JsonDocument manifestDocument = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath));
@@ -114,8 +159,19 @@ public sealed class TelegramToDeliveryAcceptanceTests
         MediaProbeResult probe = await fixture.Probe.ProbeAsync(new ProbeRequest(finalPath, TimeSpan.FromMinutes(1), 65_536), CancellationToken.None);
         Assert.True(probe.IsSuccess, probe.ErrorMessage);
         Assert.NotNull(probe.Metadata);
-        Assert.Single(probe.Metadata!.VideoStreams);
-        Assert.Single(probe.Metadata.AudioStreams);
+        var video = Assert.Single(probe.Metadata!.VideoStreams);
+        var audio = Assert.Single(probe.Metadata.AudioStreams);
+        Assert.Equal("h264", video.Codec);
+        Assert.Equal(1080, video.Width);
+        Assert.Equal(1920, video.Height);
+        Assert.Equal(new FrameRate(30, 1), video.AverageFrameRate);
+        Assert.Equal("aac", audio.Codec);
+        if (expectAudibleOutput)
+        {
+            Assert.True(probe.Metadata.DurationMicroseconds < 20_000_000,
+                $"Speech pauses were not tightened; output duration is {probe.Metadata.DurationMicroseconds} microseconds.");
+            Assert.NotEmpty(Assert.IsType<CaptionDirectorDecision>(approvedPlan.Presentation?.Captions).Groups);
+        }
         RgbSample middleFrame = await MediaMeasurements.SampleRegionAsync(
             new SystemProcessRunner(),
             finalPath,
@@ -125,6 +181,28 @@ public sealed class TelegramToDeliveryAcceptanceTests
         MontageQualityAssertions.RequireNonBlack("delivered MP4 middle frame", middleFrame, 10);
         MediaDecodeResult decode = await fixture.Decode.VerifyAsync(new MediaDecodeRequest(finalPath, TimeSpan.FromMinutes(2), 65_536), CancellationToken.None);
         Assert.True(decode.IsSuccess, decode.ErrorMessage);
+        ToneMeasurement audioSample = await MediaMeasurements.MeasureToneAsync(
+            new SystemProcessRunner(),
+            finalPath,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+        if (expectAudibleOutput)
+            Assert.True(audioSample.RmsDecibels > -60, $"Expected audible output, got {audioSample.RmsDecibels:0.##} dBFS.");
+        else
+            Assert.Equal(double.NegativeInfinity, audioSample.RmsDecibels);
+
+        AcceptanceEvidenceReport evidence = await new AcceptanceEvidenceCollector(
+            new SqliteAcceptanceEvidenceSource(Path.Combine(fixture.Root, "jobs.sqlite"), fixture.Root))
+            .CollectAsync(fixture.JobId, CancellationToken.None);
+        Assert.True(
+            evidence.Outcome == AcceptanceEvidenceOutcome.Passed,
+            string.Join(", ", evidence.Checks.Where(check => !check.Passed).Select(check => check.Code)));
+        AcceptanceArtifactEvidence finalEvidence = Assert.Single(
+            evidence.Artifacts,
+            artifact => artifact.ArtifactType == "final-mp4");
+        Assert.Equal(final.Sha256, finalEvidence.ActualSha256);
+        Assert.Equal(finalBytes.LongLength, finalEvidence.ActualSizeBytes);
     }
 
     [MediaAcceptanceFact]
@@ -205,7 +283,7 @@ public sealed class TelegramToDeliveryAcceptanceTests
 
     private sealed class Fixture : IAsyncDisposable
     {
-        private Fixture(string root, IReadOnlyList<string> sources, string whisperPython, string connectionString)
+        private Fixture(string root, IReadOnlyList<string> sources, string? whisperPython, string connectionString)
         {
             Root = root;
             Sources = sources;
@@ -226,7 +304,9 @@ public sealed class TelegramToDeliveryAcceptanceTests
 
             FfmpegAudioActivityDetector activity = new(Runner, "ffmpeg", TimeSpan.FromMinutes(5), 65_536);
             FfmpegSceneBoundaryDetector scenes = new(Runner, "ffmpeg", TimeSpan.FromMinutes(5), 65_536);
-            WhisperProcessTranscriber whisper = new(Runner, whisperPython, FindWorkerPath(), TimeSpan.FromMinutes(10), 65_536);
+            IWhisperTranscriber whisper = whisperPython is null
+                ? new DeterministicTranscriber()
+                : new WhisperProcessTranscriber(Runner, whisperPython, FindWorkerPath(), TimeSpan.FromMinutes(10), 65_536);
             AnalysisService analysisService = new(activity, whisper, scenes);
             AnalysisStageExecutor analysis = new(analysisService, new AnalysisArtifactPublisher(LocalStorage, Artifacts), Artifacts, root);
 
@@ -252,17 +332,35 @@ public sealed class TelegramToDeliveryAcceptanceTests
                 new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), new PermissiveBudget());
 
             OutputQualityOptionsProfile qualityProfile = new(1080, 1920, 3, true, "yuv420p", 50_000_000);
+            SqliteCritiqueAttemptStore critiqueAttempts = new(connectionString);
             VerificationStageExecutor verification = new(
                 PlanRevisions, Artifacts,
-                new OutputQualityAssurance(Probe, Decode, TimeSpan.FromMinutes(1), 65_536), root, qualityProfile);
+                new OutputQualityAssurance(
+                    Probe,
+                    Decode,
+                    TimeSpan.FromMinutes(1),
+                    65_536,
+                    new FfmpegOutputAudioQualityAnalyzer(Runner, "ffmpeg")),
+                root,
+                qualityProfile);
             CritiqueStageExecutor critique = new(
                 PlanRevisions,
                 Artifacts,
                 new FfmpegRenderedMediaObserver(Runner, "ffmpeg", TimeSpan.FromMinutes(1), 65_536, 200),
                 root,
-                2);
+                2,
+                attemptStore: critiqueAttempts);
             PackagingStageExecutor packaging = new(
-                Artifacts, root, 50_000_000, new PermissiveBudget(), null, PlanRevisions, null, null, 0);
+                Artifacts,
+                root,
+                50_000_000,
+                new PermissiveBudget(),
+                null,
+                PlanRevisions,
+                null,
+                null,
+                0,
+                critiqueAttemptStore: critiqueAttempts);
             DeliveryExecutor = new DeliveryStageExecutor(Artifacts, Delivery, Receipts, root, 123456789, PlanRevisions);
             ProductionStageExecutor stages = new(preparation, analysis, planning, rendering, critique, verification, packaging, DeliveryExecutor);
             Processor = new SequentialJobProcessor(Queue, State, Attempts, stages);
@@ -294,7 +392,17 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public SqliteTelegramIntakeStore IntakeStore { get; private set; }
         public CapturingJobSignal JobSignal { get; }
 
-        public static async Task<Fixture> CreateAsync(IReadOnlyList<string> sources, string whisperPython)
+        public async Task<long> CountDeliveryReceiptsAsync()
+        {
+            await using SqliteConnection connection = new(ConnectionString);
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM delivery_receipts WHERE job_id = $jobId AND status = 'succeeded';";
+            command.Parameters.AddWithValue("$jobId", JobId.ToString());
+            return Convert.ToInt64(await command.ExecuteScalarAsync());
+        }
+
+        public static async Task<Fixture> CreateAsync(IReadOnlyList<string> sources, string? whisperPython)
         {
             string root = Path.Combine(Path.GetTempPath(), $"video-factory-acceptance-{Guid.NewGuid():N}");
             Directory.CreateDirectory(root);
@@ -454,16 +562,38 @@ public sealed class TelegramToDeliveryAcceptanceTests
                 clips, [], 0.001m));
         }
     }
+
+    private sealed class DeterministicTranscriber : IWhisperTranscriber
+    {
+        public Task<TranscriptionResult> TranscribeAsync(
+            TranscriptionRequest request,
+            CancellationToken cancellationToken) => Task.FromResult(TranscriptionResult.Succeeded(
+                request.DurationMicroseconds >= 20_000_000
+                    ?
+                    [
+                        Segment("Первый проверочный фрагмент", 2_000_000, 5_000_000),
+                        Segment("Второй проверочный фрагмент", 13_000_000, 16_000_000)
+                    ]
+                    :
+                    [
+                        Segment("Отдельный первый фрагмент", 2_000_000, 5_000_000),
+                        Segment("Отдельный второй фрагмент", 13_000_000, Math.Min(16_000_000, request.DurationMicroseconds))
+                    ]));
+
+        private static SpeechSegment Segment(string text, long start, long end) => new(
+            text,
+            new MasterRange(start, end),
+            [new WordTiming(text, new MasterRange(start, end))]);
+    }
 }
 
-public sealed class AcceptanceFactAttribute : FactAttribute
+public sealed class MediaAcceptanceTheoryAttribute : TheoryAttribute
 {
-    public AcceptanceFactAttribute()
+    public MediaAcceptanceTheoryAttribute()
     {
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT"))
-            || string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WHISPER_TEST_PYTHON")))
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")))
         {
-            Skip = "Set ACCEPTANCE_MEDIA_ROOT and WHISPER_TEST_PYTHON for the real local acceptance flow.";
+            Skip = "Set ACCEPTANCE_MEDIA_ROOT after running scripts/Prepare-AcceptanceMedia.ps1.";
         }
     }
 }

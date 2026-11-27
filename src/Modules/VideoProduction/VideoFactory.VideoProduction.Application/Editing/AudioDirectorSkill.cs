@@ -47,6 +47,23 @@ public sealed class AudioDirectorSkill : IEditingSkill
         bool musicKnown = context.Settings.MusicEnabled
             && !string.IsNullOrWhiteSpace(context.MusicAssetId)
             && context.KnownAssetIds?.Contains(context.MusicAssetId) == true;
+        bool hasSpeech = context.Analysis?.Speech.IsEmpty == false
+            || context.MultiSourceAnalysis?.Sources.Any(source => !source.Speech.IsEmpty) == true;
+        if (!hasSpeech && !musicKnown)
+        {
+            return new AudioDirectorDecision(
+                Id,
+                Version,
+                EditingDecisionStatus.Unavailable,
+                [new("audio.speech_missing", "Speech normalization is not applied when no speech or music is available.")],
+                TargetLoudnessLufs: -16m,
+                TruePeakDbtp: -1m,
+                FadeInFrames: 0,
+                FadeOutFrames: 0,
+                Denoise: false,
+                MusicAssetId: null,
+                Ducking: null);
+        }
         ImmutableArray<EditingDecisionReason> reasons = musicKnown
             ? [new("audio.known_music_ducking", "Ducking references a known music asset.")]
             : [new("audio.speech_only", "Speech normalization is used without unverified music.")];

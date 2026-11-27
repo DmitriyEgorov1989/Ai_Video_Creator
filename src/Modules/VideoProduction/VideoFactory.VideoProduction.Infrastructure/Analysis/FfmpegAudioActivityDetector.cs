@@ -35,7 +35,7 @@ public sealed class FfmpegAudioActivityDetector : IAudioActivityDetector
         ProcessExecutionResult result = await processRunner.RunAsync(
             new ProcessStartRequest(
                 executablePath,
-                ["-v", "error", "-i", request.FilePath, "-af", "silencedetect=noise=-35dB:d=0.35", "-f", "null", "-"],
+                ["-v", "info", "-i", request.FilePath, "-af", "silencedetect=noise=-35dB:d=0.35", "-f", "null", "-"],
                 timeout,
                 maxOutputBytes),
             cancellationToken);

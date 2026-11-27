@@ -11,6 +11,8 @@ namespace VideoFactory.VideoProduction.UnitTests.Analysis;
 
 public sealed class AnalysisArtifactPublisherTests
 {
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
     [Fact]
     public async Task PublishesV2FeaturesAndReadsV1WithoutFeatures()
     {
@@ -51,7 +53,7 @@ public sealed class AnalysisArtifactPublisherTests
             Assert.NotNull(store.Record);
             ArtifactRecord record = store.Record!;
             string path = Path.Combine(workspace, record.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-            AnalysisResult restored = JsonSerializer.Deserialize<AnalysisResult>(await File.ReadAllTextAsync(path))!;
+            AnalysisResult restored = JsonSerializer.Deserialize<AnalysisResult>(await File.ReadAllTextAsync(path), JsonOptions)!;
             Assert.Equal(0.8m, Assert.Single(restored.Features.Segments).SemanticRelevance);
             Assert.Equal(0.4m, Assert.Single(restored.Features.FocalObservations).X);
             Assert.Equal("analysis-v2", record.ToolVersion);
@@ -60,7 +62,7 @@ public sealed class AnalysisArtifactPublisherTests
             Dictionary<string, JsonElement> v1 = document.RootElement.EnumerateObject()
                 .Where(property => !string.Equals(property.Name, "features", StringComparison.OrdinalIgnoreCase))
                 .ToDictionary(property => property.Name, property => property.Value);
-            AnalysisResult restoredV1 = JsonSerializer.Deserialize<AnalysisResult>(JsonSerializer.Serialize(v1))!;
+            AnalysisResult restoredV1 = JsonSerializer.Deserialize<AnalysisResult>(JsonSerializer.Serialize(v1), JsonOptions)!;
             Assert.Empty(restoredV1.Features.Segments);
         }
         finally

@@ -185,3 +185,44 @@ environment-dependent тестов пропущены без acceptance media и
 render-host typecheck, build, `18` тестов и smoke render прошли. Harness health
 не прошёл из-за существующего `Pinned source license drift detected: agent-harness`;
 vendored harness в рамках задачи не изменялся.
+
+## Локальная Reels media-матрица
+
+27 ноября 2026 года положительная локальная матрица выполнена на проектных
+synthetic fixtures без реального Telegram Bot API и платного LLM.
+
+| Строка | Вход | Результат |
+|---|---|---|
+| speech single-source | `speech.mp4`, portrait, 30 кадров/с | passed |
+| speech multi-source | `speech.mp4` + `landscape-short.mp4` | passed |
+| landscape | `landscape.mp4`, 30 кадров/с | passed |
+| frame rate | `portrait-24fps.mp4`, `portrait-60fps.mp4` | passed |
+| rotation | `portrait-rotated.mp4`, rotation 90 градусов | passed |
+| no-speech | `no-speech.mp4` | passed |
+| повторный дубль | `similar-take-a.mp4` + `similar-take-b.mp4` | passed, использован один source |
+
+Каждая положительная строка создала один verified MP4 и одну успешную delivery
+receipt. Итог проверен через FFprobe, полный decode, непустой кадр, audio RMS,
+captions, профиль 1080x1920, 30 кадров/с, H.264/AAC и сокращённую speech timeline.
+SHA-256 и размер `final-mp4` в read-only evidence report совпали с фактически
+переданными fake Telegram байтами. Повторная Delivery не создала вторую receipt.
+
+В измеряемом запуске `TelegramToDeliveryAcceptanceTests` прошли 11 из 11 тестов:
+
+| Метрика | Значение |
+|---|---:|
+| elapsed time | 209,293 секунды |
+| суммарное CPU time дочерних процессов | 519,734 секунды |
+| пиковая рабочая память | 1 983 860 736 байт |
+| пик временных job-каталогов | 35 343 992 байта |
+| acceptance fixtures | 17 файлов, 12 116 273 байта |
+
+Media/oracle набор прошёл 12 из 12 тестов. Render-host прошёл typecheck, build,
+18 из 18 тестов и smoke render длительностью 60 кадров. Выход smoke render создан
+и проверен самим сценарием через FFprobe, полный decode, frame и audio assertions.
+
+Ограничения fixture: речь синтезирована системным голосом Windows; speech-строки
+сквозной media-матрицы используют фиксированные интервалы test transcriber. Локальная
+модель `faster-whisper` отсутствовала, поэтому настоящий `WhisperAcceptanceTests` в
+этом запуске не выполнялся. Пик RAM отражает параллельный запуск строк xUnit. Реальный
+Telegram Bot API, пользовательские медиа и платный LLM не использовались.

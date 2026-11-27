@@ -148,7 +148,8 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
                         return StageExecutionResult.Permanent("delivery.critic_chain_mismatch", "The delivery manifest critic chain does not match registered artifacts.");
                     JsonElement finalCriticRender = root.GetProperty("criticChain")
                         .EnumerateArray().Last().GetProperty("render").GetProperty("artifactId");
-                    if (!finalCriticRender.TryGetGuid(out Guid criticRenderGuid)
+                    if (finalCriticRender.ValueKind != JsonValueKind.String
+                        || !Guid.TryParse(finalCriticRender.GetString(), out Guid criticRenderGuid)
                         || (render.ArtifactType == "render-output" && render.ArtifactId.Value != criticRenderGuid)
                         || (render.ArtifactType == "delivery-encode-output"
                             && render.ParentArtifactId != new ArtifactId(criticRenderGuid)))
@@ -197,11 +198,11 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
     private static bool MatchesId(JsonElement parent, string name, Guid expected) =>
         parent.ValueKind == JsonValueKind.Object
         && parent.TryGetProperty(name, out JsonElement id)
-        && ((id.ValueKind == JsonValueKind.String && id.TryGetGuid(out Guid direct) && direct == expected)
+        && ((id.ValueKind == JsonValueKind.String && Guid.TryParse(id.GetString(), out Guid direct) && direct == expected)
             || (id.ValueKind == JsonValueKind.Object
                 && id.TryGetProperty("value", out JsonElement value)
                 && value.ValueKind == JsonValueKind.String
-                && value.TryGetGuid(out Guid actual) && actual == expected));
+                && Guid.TryParse(value.GetString(), out Guid actual) && actual == expected));
 
     private static bool MatchesString(JsonElement parent, string name, string? expected) =>
         expected is not null && parent.TryGetProperty(name, out JsonElement value)
@@ -254,7 +255,8 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
         CancellationToken cancellationToken)
     {
         if (!reference.TryGetProperty("artifactId", out JsonElement id)
-            || !id.TryGetGuid(out Guid artifactGuid))
+            || id.ValueKind != JsonValueKind.String
+            || !Guid.TryParse(id.GetString(), out Guid artifactGuid))
             return (false, null);
         ArtifactRecord? artifact = await artifactStore.GetAsync(new ArtifactId(artifactGuid), cancellationToken);
         bool valid = artifact is not null

@@ -1,4 +1,5 @@
 using VideoFactory.VideoProduction.Application.Editing;
+using VideoFactory.VideoProduction.Application.Planning;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using VideoFactory.VideoProduction.UnitTests.Fixtures;
 
@@ -26,5 +27,24 @@ public sealed class AudioDirectorSkillTests
         Assert.False(decision.Denoise);
         Assert.Equal("music-1", decision.MusicAssetId);
         Assert.Equal(0.5m, decision.Ducking);
+    }
+
+    [Fact]
+    public void NoSpeechAndNoMusicProduceNoAudioPresentationPolicy()
+    {
+        ValidPlanFixture fixture = ValidPlanFixture.Create();
+        EditingContext context = new(
+            fixture.Analysis with { Speech = [] },
+            new ProductionSettings(null, captionsEnabled: true, musicEnabled: false));
+        AudioDirectorDecision decision = Assert.IsType<AudioDirectorDecision>(
+            new AudioDirectorSkill().Evaluate(context));
+        EditingEvaluation evaluation = new([decision]);
+
+        ReelsPresentationPlan presentation = ReelsPresentationPlan.FromEvaluation(
+            new ReelsProfileCatalog().Resolve(ReelsStyle.Auto, context.Analysis!),
+            evaluation);
+
+        Assert.Equal(EditingDecisionStatus.Unavailable, decision.Status);
+        Assert.Null(presentation.Audio);
     }
 }

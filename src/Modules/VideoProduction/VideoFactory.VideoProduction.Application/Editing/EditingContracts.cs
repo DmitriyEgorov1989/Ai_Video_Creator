@@ -203,6 +203,27 @@ public sealed class EditingSkillEngine
                 : skill.Evaluate(context with { PreviousDecisions = decisions });
             result.Add(decisionResult);
             decisions[skill.Id] = decisionResult;
+            if (decisionResult is MultiClipDecision { Status: EditingDecisionStatus.Applied } multiClip)
+            {
+                HashSet<SegmentId> selected = multiClip.Selections
+                    .Select(selection => selection.SegmentId)
+                    .ToHashSet();
+                context = context with
+                {
+                    Analysis = context.Analysis is null
+                        ? null
+                        : context.Analysis with
+                        {
+                            AllowedSegments = [.. context.Analysis.AllowedSegments.Where(segment => selected.Contains(segment.Id))]
+                        },
+                    MultiSourceAnalysis = context.MultiSourceAnalysis is null
+                        ? null
+                        : context.MultiSourceAnalysis with
+                        {
+                            AllowedSegments = [.. context.MultiSourceAnalysis.AllowedSegments.Where(segment => selected.Contains(segment.Id))]
+                        }
+                };
+            }
         }
 
         return new EditingEvaluation(result.ToImmutable());
