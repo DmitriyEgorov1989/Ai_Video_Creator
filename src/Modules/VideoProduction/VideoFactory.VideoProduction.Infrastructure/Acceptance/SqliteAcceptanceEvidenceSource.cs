@@ -378,9 +378,16 @@ public sealed class SqliteAcceptanceEvidenceSource : IAcceptanceEvidenceSource
             && size.TryGetInt64(out long bytes) ? new(id, hash, bytes) : null;
     }
 
-    private static bool MatchesWrappedId(JsonElement parent, string name, string? expected) =>
-        expected is not null && parent.TryGetProperty(name, out JsonElement element)
-        && (element.ValueKind == JsonValueKind.String ? element.GetString() : GetString(element, "value")) == expected;
+    private static bool MatchesWrappedId(JsonElement parent, string name, string? expected)
+    {
+        if (expected is null || !Guid.TryParse(expected, out Guid expectedId)
+            || !parent.TryGetProperty(name, out JsonElement element))
+            return false;
+        string? actual = element.ValueKind == JsonValueKind.String
+            ? element.GetString()
+            : GetString(element, "value");
+        return Guid.TryParse(actual, out Guid actualId) && actualId == expectedId;
+    }
 
     private static string? GetString(JsonElement parent, string name) =>
         parent.ValueKind == JsonValueKind.Object && parent.TryGetProperty(name, out JsonElement value)

@@ -80,6 +80,23 @@ public sealed class MediaOracleTests
         }
     }
 
+    [AcceptanceMediaFact]
+    public async Task OracleIncludesPortraitFixtureWithRotationMetadata()
+    {
+        string rootPath = Environment.GetEnvironmentVariable("ACCEPTANCE_MEDIA_ROOT")!;
+        MediaOracleDocument oracle = await MediaOracleContract.LoadAsync(rootPath, CancellationToken.None);
+        MediaOracleFixture fixture = Assert.Single(
+            oracle.Fixtures,
+            item => item.File == "portrait-rotated.mp4");
+
+        MediaProbeResult result = await new FfprobeMediaProbe(new SystemProcessRunner(), "ffprobe").ProbeAsync(
+            new ProbeRequest(Path.Combine(rootPath, fixture.File), TimeSpan.FromSeconds(30), 1_048_576),
+            CancellationToken.None);
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal(90, Assert.Single(result.Metadata!.VideoStreams).RotationDegrees);
+    }
+
     [Fact]
     public void RejectsEscapingPathsAndInvalidIntervals()
     {

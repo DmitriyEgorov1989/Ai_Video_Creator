@@ -568,7 +568,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         && id.ValueKind == JsonValueKind.Object
         && id.TryGetProperty("value", out JsonElement value)
         && value.ValueKind == JsonValueKind.String
-        && value.TryGetGuid(out Guid actual) && actual == expected;
+        && Guid.TryParse(value.GetString(), out Guid actual) && actual == expected;
 
     private sealed record ManifestArtifactReference(string ArtifactId, string Sha256, long SizeBytes);
 }

@@ -276,6 +276,19 @@ public sealed class AnalysisStageExecutor : IJobStageExecutor
     {
         byte[] hash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
             string.Join(':', results.Select(result => result.RevisionId.ToString()))));
+        Dictionary<SegmentId, string> normalizedText = results
+            .SelectMany(result => result.AllowedSegments.Select(segment => new
+            {
+                segment.Id,
+                Text = NormalizeSpeech(result.Speech
+                    .Where(speech => speech.SegmentId is { } id && segment.SpeechSegmentIds.Contains(id))
+                    .Select(speech => speech.Text))
+            }))
+            .ToDictionary(item => item.Id, item => item.Text);
+        Dictionary<string, int> duplicateCounts = normalizedText.Values
+            .Where(text => text.Length > 0)
+            .GroupBy(text => text, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.Count(), StringComparer.Ordinal);
         return new MultiSourceAnalysisResult(
             3,
             new RevisionId(new Guid(hash[..16])),
@@ -285,9 +298,25 @@ public sealed class AnalysisStageExecutor : IJobStageExecutor
                 result.Speech,
                 result.Pauses,
                 result.Scenes,
-                result.Features))],
+                result.Features with
+                {
+                    Segments = [.. result.Features.Segments.Select(feature =>
+                    {
+                        string text = normalizedText.GetValueOrDefault(feature.SegmentId, string.Empty);
+                        return duplicateCounts.GetValueOrDefault(text) > 1
+                            ? feature with { DuplicateGroup = DuplicateGroup(text) }
+                            : feature;
+                    })]
+                }))],
             [.. results.SelectMany(result => result.AllowedSegments)]);
     }
+
+    private static string NormalizeSpeech(IEnumerable<string> texts) => string.Join(' ', texts
+        .SelectMany(text => text.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        .Select(word => word.Trim('.', ',', '!', '?', ':', ';').ToLowerInvariant()));
+
+    private static string DuplicateGroup(string text) =>
+        Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)))[..16];
 
     private async Task<bool> IsIntactAsync(ArtifactRecord artifact, CancellationToken cancellationToken)
     {

@@ -357,7 +357,8 @@ public sealed record ReelsPresentationPlan(
             evaluation.Decisions.OfType<CaptionDirectorDecision>().SingleOrDefault(),
             evaluation.Decisions.OfType<VisualDirectorDecision>().SingleOrDefault(),
             evaluation.Decisions.OfType<SmartReframeDecision>().SingleOrDefault(),
-            evaluation.Decisions.OfType<AudioDirectorDecision>().SingleOrDefault());
+            evaluation.Decisions.OfType<AudioDirectorDecision>()
+                .SingleOrDefault(decision => decision.Status == EditingDecisionStatus.Applied));
     }
 }
 

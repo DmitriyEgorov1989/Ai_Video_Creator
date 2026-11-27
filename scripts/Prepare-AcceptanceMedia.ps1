@@ -49,8 +49,10 @@ $silent = Join-Path $output 'no-speech.mp4'
 $unsupported = Join-Path $output 'unsupported.mp4'
 $corrupt = Join-Path $output 'corrupt.mp4'
 $landscape = Join-Path $output 'landscape.mp4'
+$landscapeShort = Join-Path $output 'landscape-short.mp4'
 $fps24 = Join-Path $output 'portrait-24fps.mp4'
 $fps60 = Join-Path $output 'portrait-60fps.mp4'
+$rotated = Join-Path $output 'portrait-rotated.mp4'
 $similarA = Join-Path $output 'similar-take-a.mp4'
 $similarB = Join-Path $output 'similar-take-b.mp4'
 $tones = Join-Path $output 'tones.mp4'
@@ -77,10 +79,14 @@ $bytes = [IO.File]::ReadAllBytes($speech)
 # Additional deterministic project-authored variants for media-quality assertions.
 & ffmpeg -hide_banner -loglevel error -nostdin -n -i $speech -vf 'scale=640:360:flags=neighbor' -c:v libx264 -preset fast -crf 23 -threads 2 -pix_fmt yuv420p -r 30 -fps_mode cfr -c:a copy -movflags +faststart $landscape
 if ($LASTEXITCODE -ne 0) { throw 'Landscape fixture encoding failed.' }
+& ffmpeg -hide_banner -loglevel error -nostdin -n -i $landscape -t 18 -map 0 -c copy -movflags +faststart $landscapeShort
+if ($LASTEXITCODE -ne 0) { throw 'Short landscape fixture creation failed.' }
 & ffmpeg -hide_banner -loglevel error -nostdin -n -i $speech -vf 'fps=24' -c:v libx264 -preset fast -crf 23 -threads 2 -pix_fmt yuv420p -r 24 -fps_mode cfr -c:a copy -movflags +faststart $fps24
 if ($LASTEXITCODE -ne 0) { throw '24 FPS fixture encoding failed.' }
 & ffmpeg -hide_banner -loglevel error -nostdin -n -i $speech -vf 'fps=60' -c:v libx264 -preset fast -crf 23 -threads 2 -pix_fmt yuv420p -r 60 -fps_mode cfr -c:a copy -movflags +faststart $fps60
 if ($LASTEXITCODE -ne 0) { throw '60 FPS fixture encoding failed.' }
+& ffmpeg -hide_banner -loglevel error -nostdin -display_rotation:v:0 90 -i $speech -map 0 -c copy -movflags +faststart $rotated
+if ($LASTEXITCODE -ne 0) { throw 'Rotation metadata fixture creation failed.' }
 & ffmpeg -hide_banner -loglevel error -nostdin -n -i $speech -vf 'drawbox=x=130:y=260:w=100:h=100:c=yellow:t=fill' -c:v libx264 -preset fast -crf 23 -threads 2 -pix_fmt yuv420p -r 30 -fps_mode cfr -c:a copy -movflags +faststart $similarA
 if ($LASTEXITCODE -ne 0) { throw 'Similar take A encoding failed.' }
 & ffmpeg -hide_banner -loglevel error -nostdin -n -i $speech -vf 'drawbox=x=135:y=260:w=100:h=100:c=yellow:t=fill' -c:v libx264 -preset fast -crf 23 -threads 2 -pix_fmt yuv420p -r 30 -fps_mode cfr -c:a copy -movflags +faststart $similarB
@@ -90,7 +96,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Tone fixture encoding failed.' }
 & ffmpeg -hide_banner -loglevel error -nostdin -n -f lavfi -i 'color=c=red:s=320x568:r=24:d=1,drawbox=x=140:y=254:w=40:h=60:c=lime:t=fill' -f lavfi -i 'color=c=yellow:s=320x568:r=24:d=1' -f lavfi -i 'color=c=blue:s=320x568:r=24:d=1,drawbox=x=140:y=254:w=40:h=60:c=lime:t=fill' -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=1' -f lavfi -i 'sine=frequency=660:sample_rate=48000:duration=1' -f lavfi -i 'sine=frequency=880:sample_rate=48000:duration=1' -filter_complex '[0:v][1:v][2:v]concat=n=3:v=1:a=0[v];[3:a][4:a][5:a]concat=n=3:v=0:a=1[a]' -map '[v]' -map '[a]' -c:v libx264 -pix_fmt yuv420p -r 24 -c:a aac -movflags +faststart $montage
 if ($LASTEXITCODE -ne 0) { throw 'Montage source fixture encoding failed.' }
 
-foreach ($path in @($landscape, $fps24, $fps60, $similarA, $similarB, $tones, $montage)) {
+foreach ($path in @($landscape, $landscapeShort, $fps24, $fps60, $rotated, $similarA, $similarB, $tones, $montage)) {
     & ffmpeg -hide_banner -loglevel error -xerror -nostdin -i $path -map 0:v:0 -map 0:a:0 -f null -
     if ($LASTEXITCODE -ne 0) { throw "Full decode failed: $path" }
 }
@@ -143,7 +149,7 @@ $manifest = [ordered]@{
 }
 [IO.File]::WriteAllText((Join-Path $output 'manifest.json'), ($manifest | ConvertTo-Json -Depth 30), $utf8)
 
-$oracleFiles = @($speech, $silent, $landscape, $fps24, $fps60, $similarA, $similarB, $tones, $montage) | ForEach-Object {
+$oracleFiles = @($speech, $silent, $landscape, $landscapeShort, $fps24, $fps60, $rotated, $similarA, $similarB, $tones, $montage) | ForEach-Object {
     $name = [IO.Path]::GetFileName($_)
     $probeJson = & ffprobe -v error -show_streams -show_format -of json $_
     if ($LASTEXITCODE -ne 0) { throw "FFprobe failed for oracle fixture: $_" }
