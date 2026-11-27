@@ -85,6 +85,12 @@ public sealed class AnalysisStageExecutor : IJobStageExecutor
         {
             return StageExecutionResult.Permanent("analysis.master_file_missing", "The prepared Master file does not exist.");
         }
+        if (!await IsIntactAsync(master, cancellationToken))
+        {
+            return StageExecutionResult.Permanent(
+                "analysis.master_file_changed",
+                "The prepared Master file no longer matches its registered size and SHA-256.");
+        }
 
         if (!TryReadDurations(master.MetadataJson, out long originalDuration, out long masterDuration))
         {
@@ -191,6 +197,10 @@ public sealed class AnalysisStageExecutor : IJobStageExecutor
         }
         if (!File.Exists(masterPath))
             return StageExecutionResult.Permanent("analysis.master_file_missing", "The prepared Master file does not exist.");
+        if (!await IsIntactAsync(master, cancellationToken))
+            return StageExecutionResult.Permanent(
+                "analysis.master_file_changed",
+                "The prepared Master file no longer matches its registered size and SHA-256.");
         if (!TryReadDurations(master.MetadataJson, out long originalDuration, out long masterDuration))
             return StageExecutionResult.Permanent("analysis.timeline_metadata_missing", "Master metadata does not contain valid durations.");
 

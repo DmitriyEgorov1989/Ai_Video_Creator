@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Media;
 using VideoFactory.VideoProduction.Application.Pipeline;
@@ -24,7 +25,10 @@ public sealed class VerificationPrivacyTests
             JobCreationRecord job = new(fixture.Plan.JobId, fixture.Plan.VariantId,
                 new JobRequest(ArtifactId.New(), "private-comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
                 JobProgress.Restore(JobStatus.Running, ProductionStage.Verification, ProductionMode.Fast, ProductionMode.Fast, null), fixture.Plan.RevisionId);
-            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "output.mp4", "hash", 3, null, null, "test", job.JobId, job.VariantId));
+            byte[] output = [1, 2, 3];
+            await File.WriteAllBytesAsync(Path.Combine(root, "output.mp4"), output);
+            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "output.mp4",
+                Convert.ToHexStringLower(SHA256.HashData(output)), output.Length, null, null, "test", job.JobId, job.VariantId));
             const string diagnostic = "synthetic-token private-comment private-transcript";
             VerificationStageExecutor executor = new(new Plans(fixture.Plan), store, new Qa(diagnostic), root,
                 new OutputQualityOptionsProfile(1080, 1920, 1, true, "yuv420p", 1_000));
@@ -39,10 +43,69 @@ public sealed class VerificationPrivacyTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task ChangedRenderIsRejectedBeforeQualityAssurance()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"qa-integrity-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ValidPlanFixture fixture = ValidPlanFixture.Create();
+            JobCreationRecord job = new(fixture.Plan.JobId, fixture.Plan.VariantId,
+                new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
+                JobProgress.Restore(JobStatus.Running, ProductionStage.Verification, ProductionMode.Fast, ProductionMode.Fast, null), fixture.Plan.RevisionId);
+            await File.WriteAllBytesAsync(Path.Combine(root, "output.mp4"), [9, 9, 9]);
+            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "output.mp4",
+                Convert.ToHexStringLower(SHA256.HashData([1, 2, 3])), 3, null, null, "test", job.JobId, job.VariantId));
+            Qa qa = new("unused");
+            VerificationStageExecutor executor = new(new Plans(fixture.Plan), store, qa, root,
+                new OutputQualityOptionsProfile(1080, 1920, 1, true, "yuv420p", 1_000));
+
+            StageExecutionResult result = await executor.ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal("verification.render_output_changed", result.ErrorCode);
+            Assert.Equal(0, qa.Calls);
+            Assert.Empty(Directory.GetFiles(root, "qa-report-*.json"));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task MissingRenderFileIsRejectedBeforeQualityAssurance()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"qa-missing-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ValidPlanFixture fixture = ValidPlanFixture.Create();
+            JobCreationRecord job = new(fixture.Plan.JobId, fixture.Plan.VariantId,
+                new JobRequest(ArtifactId.New(), "comment", ProductionMode.Fast, new ProductionSettings(null, true, false)),
+                JobProgress.Restore(JobStatus.Running, ProductionStage.Verification, ProductionMode.Fast, ProductionMode.Fast, null), fixture.Plan.RevisionId);
+            Store store = new(new ArtifactRecord(ArtifactId.New(), "render-output", "missing.mp4",
+                Convert.ToHexStringLower(SHA256.HashData([1, 2, 3])), 3, null, null, "test", job.JobId, job.VariantId));
+            Qa qa = new("unused");
+            VerificationStageExecutor executor = new(new Plans(fixture.Plan), store, qa, root,
+                new OutputQualityOptionsProfile(1080, 1920, 1, true, "yuv420p", 1_000));
+
+            StageExecutionResult result = await executor.ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal("verification.render_output_changed", result.ErrorCode);
+            Assert.Equal(0, qa.Calls);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private sealed class Qa(string message) : IOutputQualityAssurance
     {
-        public Task<OutputQualityResult> VerifyAsync(OutputQualityRequest request, CancellationToken token) =>
-            Task.FromResult(OutputQualityResult.Failed("decode.failed", message));
+        public int Calls { get; private set; }
+
+        public Task<OutputQualityResult> VerifyAsync(OutputQualityRequest request, CancellationToken token)
+        {
+            Calls++;
+            return Task.FromResult(OutputQualityResult.Failed("decode.failed", message));
+        }
     }
 
     private sealed class Plans(EditPlan plan) : IEditPlanRevisionStore

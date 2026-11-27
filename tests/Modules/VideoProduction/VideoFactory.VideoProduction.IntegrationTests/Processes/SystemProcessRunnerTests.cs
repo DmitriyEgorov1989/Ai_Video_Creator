@@ -159,6 +159,37 @@ public sealed class SystemProcessRunnerTests
     }
 
     [Fact]
+    public async Task TerminatesChildProcessTreeWhenCallerCancels()
+    {
+        string pidFile = Path.Combine(
+            Path.GetTempPath(),
+            $"process-runner-child-{Guid.NewGuid():N}.pid");
+
+        try
+        {
+            using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(500));
+            ProcessExecutionResult result = await new SystemProcessRunner().RunAsync(
+                CreateRequest("spawn-child", [pidFile], TimeSpan.FromSeconds(30)),
+                cancellation.Token);
+
+            Assert.Equal(ProcessExecutionStatus.Cancelled, result.Status);
+            int childPid = await WaitForPidAsync(pidFile);
+            await WaitUntilAsync(
+                () => !IsProcessRunning(childPid),
+                TimeSpan.FromSeconds(3));
+
+            Assert.False(IsProcessRunning(childPid));
+        }
+        finally
+        {
+            if (File.Exists(pidFile))
+            {
+                File.Delete(pidFile);
+            }
+        }
+    }
+
+    [Fact]
     public async Task ReturnsStartFailedForMissingExecutable()
     {
         ProcessExecutionResult result = await new SystemProcessRunner().RunAsync(

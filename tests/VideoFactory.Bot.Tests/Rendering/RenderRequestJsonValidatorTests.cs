@@ -1,3 +1,4 @@
+using System.Text.Json;
 using VideoFactory.VideoProduction.Infrastructure.Rendering;
 
 namespace VideoFactory.Bot.Tests.Rendering;
@@ -44,6 +45,26 @@ public sealed class RenderRequestJsonValidatorTests
         IReadOnlyList<RenderRequestJsonValidationIssue> issues = RenderRequestJsonValidator.Validate(json);
 
         Assert.Contains(issues, issue => issue.Code == "asset_unknown");
+    }
+
+    [Fact]
+    public async Task V2SchemaAllowsV3AndV4PlansButRejectsLegacyV2Plan()
+    {
+        string path = Path.Combine(FindRepositoryRoot(), "contracts", "render-request.schema.json");
+        using JsonDocument schema = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+
+        string[] references = schema.RootElement
+            .GetProperty("$defs")
+            .GetProperty("v2")
+            .GetProperty("properties")
+            .GetProperty("plan")
+            .GetProperty("oneOf")
+            .EnumerateArray()
+            .Select(item => item.GetProperty("$ref").GetString()!)
+            .ToArray();
+
+        Assert.Equal(["edit-plan.v3.schema.json", "edit-plan.v4.schema.json"], references);
+        Assert.DoesNotContain("edit-plan.v2.schema.json", references);
     }
 
     private static async Task<string> ReadFixtureAsync(string fileName)

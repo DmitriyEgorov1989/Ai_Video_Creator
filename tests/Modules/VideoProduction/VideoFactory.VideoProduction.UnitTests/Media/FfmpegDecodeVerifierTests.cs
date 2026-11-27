@@ -23,6 +23,8 @@ public sealed class FfmpegDecodeVerifierTests
             Assert.Contains("-f", runner.Request.Arguments);
             Assert.Contains("null", runner.Request.Arguments);
             Assert.Contains("-", runner.Request.Arguments);
+            Assert.Contains("-nostdin", runner.Request.Arguments);
+            Assert.Contains("-xerror", runner.Request.Arguments);
         }
         finally
         {

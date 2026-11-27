@@ -172,6 +172,15 @@ public sealed class SequentialJobProcessor
         }
 
         if (result.Kind == StageExecutionKind.Cancelled
+            && cancellationToken.IsCancellationRequested
+            && !string.Equals(result.ErrorCode, "HOST_STOPPING", StringComparison.Ordinal))
+        {
+            result = StageExecutionResult.Cancelled(
+                "HOST_STOPPING",
+                $"Stage execution was cancelled because the host is stopping. "
+                + $"Original diagnostic [{result.ErrorCode ?? "unknown"}]: {result.ErrorMessage ?? "No message."}");
+        }
+        else if (result.Kind == StageExecutionKind.Cancelled
             && !cancellationToken.IsCancellationRequested
             && cancellationStore is not null
             && await cancellationStore.IsRequestedAsync(job.JobId, cancellationToken))

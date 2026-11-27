@@ -386,6 +386,10 @@ Job в очереди, выполняющиеся, ожидающие подтв
 и `tests/VideoFactory.Bot.Tests/Telegram/TelegramDownloaderReliabilityTests.cs`.
 Они используют временную SQLite, синтетические данные и подменённые внешние адаптеры/HTTP.
 Ошибки AI проверяются через `IEditPlanProvider`; реальный облачный адаптер этим не подтверждается.
+Дополнительно настоящий локальный render-host проверяется на Remotion failure, timeout и
+безопасный retry в `RenderHostProcessAdapterIntegrationTests`. Recovery всех стадий от
+`Preparation` до `Delivery`, различие `USER_CANCELLED`/`HOST_STOPPING` и проверки
+целостности Master/render описаны в `docs/mvp-acceptance-report.md`.
 Сбой сети после принятия файла Telegram, но до сохранения receipt, оставляет неопределённость
 доставки: гарантия отсутствия повторного сообщения в этом окне не заявляется.
 

@@ -144,3 +144,44 @@ video path, optional audio stem и frame rate; отсутствие audio озн
 IDs, critic chain, QA, delivery и файлов, а затем обнаруживает изменение final
 MP4 по размеру и SHA-256. Это не является заявлением о выполненном реальном
 Telegram или платном API вызове.
+
+## Матрица отказов, отмены и восстановления
+
+27 ноября 2026 года локально проверена recovery-матрица issue `#56`. Общий
+`SequentialJobProcessor` восстанавливает оставшуюся `Running` attempt как
+`stage.interrupted`, создаёт следующую попытку для того же `JobId` и `VariantId`
+и продолжает с последней атомарно завершённой стадии.
+
+| Стадия | Инъекция или checkpoint | Ожидаемый результат | Доказательство |
+|---|---|---|---|
+| Preparation | изменённый Original; отмена FFmpeg; restart после регистрации Master | изменённый вход отклонён, process tree остановлен, готовый Master переиспользован | `PreparationStageExecutorTests`, `SystemProcessRunnerTests` |
+| Analysis | отсутствующий или изменённый Master; отмена Whisper с дочерним процессом | Analysis не запускается для изменённого Master; restart остаётся на Analysis | `AnalysisStageExecutorTests`, `WhisperProcessLifetimeTests` |
+| Planning | provider timeout, HTTP 429/500/503, malformed response, невалидный repair | временные ошибки повторяются; malformed/invalid repair не создают approved revision | `EditPlanPlannerTests`, `DeepSeekEditPlanProviderTests` |
+| Rendering | настоящий Remotion failure и timeout | output не публикуется; повтор с тем же request успешно создаёт один MP4 | `RenderHostProcessAdapterIntegrationTests.RealRemotionFailureAndTimeoutLeaveNoOutputAndRetrySucceeds` |
+| Critique | незавершённая attempt и restart | тот же Variant продолжает Critique, завершённая попытка переиспользуется | `RestartRecoversInterruptedAttemptAtEveryStage`, `CritiqueStageExecutorTests` |
+| Verification | изменённый render после регистрации | QA не запускается, QA report и final MP4 не создаются | `VerificationPrivacyTests.ChangedRenderIsRejectedBeforeQualityAssurance` |
+| Packaging | failed/tampered QA; остановка между публикацией файла и регистрацией artifact | непроверенный MP4 не публикуется; повтор регистрирует один final artifact | `PackagingSafetyTests` |
+| Delivery | временная ошибка отправки; restart до или после сохранённой receipt | существующий final используется без render; сохранённая успешная receipt исключает повтор | `StageFaultTests`, `TelegramToDeliveryAcceptanceTests` |
+
+Для всех восьми стадий переход после незавершённой attempt проверяет
+`SequentialJobProcessorTests.RestartRecoversInterruptedAttemptAtEveryStage`.
+`HOST_STOPPING` оставляет Job восстанавливаемым и включает исходную
+`process.cancelled` диагностику; `USER_CANCELLED` переводит Job в `Cancelled`.
+Caller cancellation и timeout завершают parent и child process tree.
+
+Перед Analysis и Verification зарегистрированные Master/render сверяются по
+размеру в байтах и SHA-256. Полный FFmpeg decode использует `-nostdin` и
+`-xerror`. `RenderRequest V2` по опубликованной JSON Schema принимает Edit Plan
+V3 или V4; V4 дополнительно проходит полный audit 11 editing skills.
+
+Ограничение Telegram остаётся прежним: если Telegram принял файл, но Host
+остановился до сохранения receipt, протокол Bot API не позволяет доказать
+exactly-once delivery. Эта неопределённость не создаёт второй Variant, approved
+plan или final MP4, но может потребовать операторской сверки доставки.
+
+Итоговая локальная проверка: solution build прошёл без warnings и errors;
+`215` unit, `134` integration и `89` Bot тестов прошли, `18`
+environment-dependent тестов пропущены без acceptance media и Whisper;
+render-host typecheck, build, `18` тестов и smoke render прошли. Harness health
+не прошёл из-за существующего `Pinned source license drift detected: agent-harness`;
+vendored harness в рамках задачи не изменялся.

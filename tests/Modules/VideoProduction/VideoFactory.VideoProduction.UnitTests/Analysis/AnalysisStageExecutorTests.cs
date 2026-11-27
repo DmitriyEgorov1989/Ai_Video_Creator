@@ -82,7 +82,10 @@ public sealed class AnalysisStageExecutorTests
                     "analysis-a.json",
                     Convert.ToHexStringLower(SHA256.HashData(cachedBytes)),
                     cachedBytes.Length,
-                    JsonSerializer.Serialize(new { masterSha256 = "master" }),
+                    JsonSerializer.Serialize(new
+                    {
+                        masterSha256 = Convert.ToHexStringLower(SHA256.HashData([1]))
+                    }),
                     masterA,
                     "analysis-source-v2",
                     jobId));
@@ -171,7 +174,8 @@ public sealed class AnalysisStageExecutorTests
             FakeArtifactStore artifacts = new(
                 new ArtifactRecord(originalId, "original-video", "original.mp4", "original", 3,
                     Metadata(25_000_000), null, "test", jobId),
-                new ArtifactRecord(masterId, "master-video", "master.mp4", "master", 3,
+                new ArtifactRecord(masterId, "master-video", "master.mp4",
+                    Convert.ToHexStringLower(SHA256.HashData([1, 2, 3])), 3,
                     MasterMetadata(originalId, masterId), originalId, "test", jobId));
             AnalysisResult analysis = new(
                 1,
@@ -231,6 +235,65 @@ public sealed class AnalysisStageExecutorTests
     }
 
     [Fact]
+    public async Task MissingOriginalReturnsPermanentFailureBeforeAnalysis()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "analysis-stage-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        try
+        {
+            JobId jobId = JobId.New();
+            ArtifactId originalId = ArtifactId.New();
+            FakeAnalysisService service = new(null);
+            AnalysisStageExecutor executor = new(
+                service, new FakePublisher(), new FakeArtifactStore(), root);
+
+            StageExecutionResult result = await executor.ExecuteAsync(
+                CreateJob(jobId, originalId), CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal("analysis.original_missing", result.ErrorCode);
+            Assert.Null(service.Request);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ChangedMasterReturnsPermanentFailureBeforeAnalysis()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "analysis-stage-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        try
+        {
+            JobId jobId = JobId.New();
+            ArtifactId originalId = ArtifactId.New();
+            ArtifactId masterId = ArtifactId.New();
+            await File.WriteAllBytesAsync(Path.Combine(root, "master.mp4"), [9, 9, 9]);
+            FakeArtifactStore artifacts = new(
+                new ArtifactRecord(originalId, "original-video", "original.mp4", "original", 3,
+                    Metadata(25_000_000), null, "test", jobId),
+                new ArtifactRecord(masterId, "master-video", "master.mp4",
+                    Convert.ToHexStringLower(SHA256.HashData([1, 2, 3])), 3,
+                    MasterMetadata(originalId, masterId), originalId, "test", jobId));
+            FakeAnalysisService service = new(null);
+            AnalysisStageExecutor executor = new(service, new FakePublisher(), artifacts, root);
+
+            StageExecutionResult result = await executor.ExecuteAsync(
+                CreateJob(jobId, originalId), CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal("analysis.master_file_changed", result.ErrorCode);
+            Assert.Null(service.Request);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExistingIntactAnalysisArtifactIsReused()
     {
         string root = Path.Combine(Path.GetTempPath(), "analysis-stage-" + Guid.NewGuid());
@@ -248,7 +311,8 @@ public sealed class AnalysisStageExecutorTests
             FakeArtifactStore artifacts = new(
                 new ArtifactRecord(originalId, "original-video", "original.mp4", "original", 3,
                     Metadata(25_000_000), null, "test", jobId),
-                new ArtifactRecord(masterId, "master-video", "master.mp4", "master", 3,
+                new ArtifactRecord(masterId, "master-video", "master.mp4",
+                    Convert.ToHexStringLower(SHA256.HashData([1, 2, 3])), 3,
                     MasterMetadata(originalId, masterId), originalId, "test", jobId),
                 new ArtifactRecord(ArtifactId.New(), "analysis-result", "analysis.json",
                     Convert.ToHexStringLower(SHA256.HashData(analysisBytes)), analysisBytes.Length,
@@ -303,7 +367,8 @@ public sealed class AnalysisStageExecutorTests
         new(id, "original-video", path, "original", 1, Metadata(25_000_000), null, "test", jobId);
 
     private static ArtifactRecord Master(JobId jobId, ArtifactId originalId, ArtifactId masterId, string path) =>
-        new(masterId, "master-video", path, "master", 1,
+        new(masterId, "master-video", path,
+            Convert.ToHexStringLower(SHA256.HashData([path.Contains("-b", StringComparison.Ordinal) ? (byte)2 : (byte)1])), 1,
             MasterMetadata(originalId, masterId), originalId, "test", jobId);
 
     private static AnalysisResult CreateAnalysis(ArtifactId originalId, ArtifactId masterId) =>

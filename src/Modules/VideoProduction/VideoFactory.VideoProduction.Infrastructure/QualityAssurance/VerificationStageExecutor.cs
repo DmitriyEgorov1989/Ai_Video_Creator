@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using VideoFactory.VideoProduction.Application.Jobs.CreateJob;
 using VideoFactory.VideoProduction.Application.Media;
@@ -61,6 +62,24 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
         }
 
         string outputPath = ResolvePath(render.RelativePath);
+        if (!File.Exists(outputPath) || render.SizeBytes is not > 0
+            || new FileInfo(outputPath).Length != render.SizeBytes
+            || string.IsNullOrWhiteSpace(render.Sha256))
+        {
+            return StageExecutionResult.Permanent(
+                "verification.render_output_changed",
+                "The render output no longer matches its registered size and SHA-256.");
+        }
+        await using (FileStream stream = new(outputPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            string hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, cancellationToken));
+            if (!string.Equals(hash, render.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                return StageExecutionResult.Permanent(
+                    "verification.render_output_changed",
+                    "The render output no longer matches its registered size and SHA-256.");
+            }
+        }
         OutputQualityResult result = await qualityAssurance.VerifyAsync(
             new OutputQualityRequest(
                 outputPath,

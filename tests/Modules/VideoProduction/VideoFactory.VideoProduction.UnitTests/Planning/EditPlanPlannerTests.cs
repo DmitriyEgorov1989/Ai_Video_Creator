@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Net;
 using VideoFactory.VideoProduction.Application.Analysis;
 using VideoFactory.VideoProduction.Application.Editing;
 using VideoFactory.VideoProduction.Application.Planning;
@@ -89,6 +90,37 @@ public sealed class EditPlanPlannerTests
         Assert.Equal("original integration diagnostic", rejected.ErrorMessage);
         Assert.Equal(0, fixture.Store.SaveCount);
         Assert.Equal(duringEstimate ? 0 : 1, fixture.Provider.CreatePlanCount);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task TransientProviderHttpFailureEscapesForStageRetry(HttpStatusCode statusCode)
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Provider.NetworkStatusCode = statusCode;
+
+        HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+
+        Assert.Equal(statusCode, exception.StatusCode);
+        Assert.Equal(0, fixture.Store.SaveCount);
+        Assert.Equal(1, fixture.Provider.CreatePlanCount);
+    }
+
+    [Fact]
+    public async Task ProviderTimeoutEscapesForStageRetry()
+    {
+        PlanningFixture fixture = PlanningFixture.Create();
+        fixture.Provider.Timeout = true;
+
+        TimeoutException exception = await Assert.ThrowsAsync<TimeoutException>(
+            () => fixture.Planner.PlanAsync(fixture.Request, CancellationToken.None));
+
+        Assert.Contains("timed out", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, fixture.Store.SaveCount);
+        Assert.Equal(1, fixture.Provider.CreatePlanCount);
     }
 
     [Fact]
@@ -383,6 +415,8 @@ public sealed class EditPlanPlannerTests
         public bool OmitLastSegment { get; set; }
         public bool InvalidFirstResponse { get; set; }
         public string? NetworkFailure { get; set; }
+        public HttpStatusCode? NetworkStatusCode { get; set; }
+        public bool Timeout { get; set; }
         public int CreatePlanCount { get; private set; }
         public int EstimateCostCount { get; private set; }
         public int LastRepairAttempt { get; private set; }
@@ -424,6 +458,9 @@ public sealed class EditPlanPlannerTests
             CancellationToken cancellationToken)
         {
             CreatePlanCount++;
+            if (Timeout) throw new TaskCanceledException("The provider request timed out.");
+            if (NetworkStatusCode is HttpStatusCode statusCode)
+                throw new HttpRequestException("transient provider diagnostic", null, statusCode);
             if (NetworkFailure == "create") throw new HttpRequestException("original integration diagnostic");
             LastRepairAttempt = request.RepairAttempt;
             if (ReturnUnknownSegment || (InvalidFirstResponse && request.RepairAttempt == 0))

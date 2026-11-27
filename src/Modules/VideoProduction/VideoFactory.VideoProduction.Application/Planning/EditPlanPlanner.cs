@@ -59,11 +59,28 @@ public sealed class EditPlanPlanner
         CancellationToken cancellationToken)
     {
         try { return await PlanCoreAsync(request, cancellationToken); }
-        catch (Exception exception) when (exception is HttpRequestException or TimeoutException)
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("The planning provider request timed out.", exception);
+        }
+        catch (HttpRequestException exception) when (IsTransient(exception.StatusCode))
+        {
+            throw;
+        }
+        catch (TimeoutException)
+        {
+            throw;
+        }
+        catch (HttpRequestException exception)
         {
             return new PlanningResult.Rejected(exception.GetType().Name, exception.Message);
         }
     }
+
+    private static bool IsTransient(System.Net.HttpStatusCode? statusCode) =>
+        statusCode is System.Net.HttpStatusCode.RequestTimeout
+            or System.Net.HttpStatusCode.TooManyRequests
+        || (int?)statusCode >= 500;
 
     private async Task<PlanningResult> PlanCoreAsync(PlanningRequest request, CancellationToken cancellationToken)
     {

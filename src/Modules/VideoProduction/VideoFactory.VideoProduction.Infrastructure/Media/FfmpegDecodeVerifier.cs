@@ -35,7 +35,9 @@ public sealed class FfmpegDecodeVerifier : IMediaDecodeVerifier
             new ProcessStartRequest(
                 executablePath,
                 [
+                    "-nostdin",
                     "-v", "error",
+                    "-xerror",
                     "-i", request.FilePath,
                     "-map", "0:v:0",
                     "-map", "0:a:0?",

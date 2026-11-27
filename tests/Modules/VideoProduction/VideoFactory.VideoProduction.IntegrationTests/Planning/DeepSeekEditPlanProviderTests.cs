@@ -78,10 +78,13 @@ public sealed class DeepSeekEditPlanProviderTests
             .GetString());
     }
 
-    [Fact]
-    public async Task ConvertsHttpFailureToExpectedProviderDiagnosticWithoutLeakingKey()
+    [Theory]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    public async Task ConvertsHttpFailureToExpectedProviderDiagnosticWithoutLeakingKey(HttpStatusCode statusCode)
     {
-        CapturingHandler handler = new("upstream diagnostic", HttpStatusCode.TooManyRequests, raw: true);
+        CapturingHandler handler = new("upstream diagnostic", statusCode, raw: true);
         using HttpClient client = new(handler) { BaseAddress = new Uri("https://api.deepseek.test/") };
         DeepSeekEditPlanProvider provider = new(client, new DeepSeekProviderOptions { ApiKey = "secret-key" });
 
@@ -89,7 +92,8 @@ public sealed class DeepSeekEditPlanProviderTests
             new ProviderPlanningRequest(null, EditTempo.Dynamic, null, false, []),
             CancellationToken.None));
 
-        Assert.Contains("429", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(statusCode, exception.StatusCode);
+        Assert.Contains(((int)statusCode).ToString(), exception.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("secret-key", exception.Message, StringComparison.Ordinal);
     }
 

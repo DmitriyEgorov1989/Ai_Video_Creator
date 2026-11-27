@@ -173,6 +173,95 @@ public sealed class SequentialJobProcessorTests
     }
 
     [Fact]
+    public async Task HostShutdownPreservesProcessCancellationDiagnostic()
+    {
+        JobCreationRecord job = CreateJob();
+        FakeAttemptStore attempts = new();
+        using CancellationTokenSource stopping = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            new FakeStateStore(),
+            attempts,
+            new CancellingExecutor(stopping));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "test-worker",
+            TimeSpan.FromMinutes(1),
+            TimeSpan.FromHours(1),
+            3,
+            stopping.Token));
+
+        Assert.Equal(StageAttemptStatus.Cancelled, attempts.Last?.Status);
+        Assert.Equal("HOST_STOPPING", attempts.Last?.ErrorCode);
+        Assert.Contains("process.cancelled", attempts.Last?.ErrorMessage, StringComparison.Ordinal);
+        Assert.Contains("external process", attempts.Last?.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(ProductionStage.Preparation, ProductionStage.Analysis, JobStatus.Running)]
+    [InlineData(ProductionStage.Analysis, ProductionStage.Planning, JobStatus.Running)]
+    [InlineData(ProductionStage.Planning, ProductionStage.Rendering, JobStatus.Running)]
+    [InlineData(ProductionStage.Rendering, ProductionStage.Critique, JobStatus.Running)]
+    [InlineData(ProductionStage.Critique, ProductionStage.Verification, JobStatus.Running)]
+    [InlineData(ProductionStage.Verification, ProductionStage.Packaging, JobStatus.Running)]
+    [InlineData(ProductionStage.Packaging, ProductionStage.Delivery, JobStatus.Running)]
+    [InlineData(ProductionStage.Delivery, ProductionStage.Delivery, JobStatus.Completed)]
+    public async Task RestartRecoversInterruptedAttemptAtEveryStage(
+        ProductionStage interruptedStage,
+        ProductionStage expectedStage,
+        JobStatus expectedStatus)
+    {
+        JobCreationRecord job = CreateJob() with
+        {
+            Progress = JobProgress.Restore(
+                JobStatus.Running,
+                interruptedStage,
+                ProductionMode.Fast,
+                ProductionMode.Fast,
+                null)
+        };
+        StageAttemptRecord interrupted = new(
+            Guid.NewGuid(),
+            job.JobId,
+            job.VariantId,
+            interruptedStage,
+            1,
+            StageAttemptStatus.Running,
+            null,
+            null,
+            DateTimeOffset.UtcNow.AddMinutes(-1),
+            null);
+        FakeAttemptStore attempts = new() { Previous = interrupted };
+        FakeStateStore stateStore = new();
+        SequentialJobProcessor processor = new(
+            new FakeQueue(job),
+            stateStore,
+            attempts,
+            new FakeExecutor(StageExecutionResult.Success()));
+
+        Assert.True(await processor.ProcessNextAsync(
+            "recovery-worker",
+            TimeSpan.FromSeconds(1),
+            TimeSpan.FromHours(1),
+            3,
+            CancellationToken.None));
+
+        StageAttemptRecord recovered = Assert.Single(
+            attempts.Records,
+            attempt => attempt.AttemptId == interrupted.AttemptId
+                && attempt.Status == StageAttemptStatus.Cancelled);
+        Assert.Equal("stage.interrupted", recovered.ErrorCode);
+        StageAttemptRecord completed = Assert.Single(
+            attempts.Records,
+            attempt => attempt.AttemptId != interrupted.AttemptId
+                && attempt.Status == StageAttemptStatus.Completed);
+        Assert.Equal(job.JobId, completed.JobId);
+        Assert.Equal(job.VariantId, completed.VariantId);
+        Assert.Equal(expectedStage, stateStore.NextProgress?.Stage);
+        Assert.Equal(expectedStatus, stateStore.NextProgress?.Status);
+    }
+
+    [Fact]
     public async Task CritiqueRemountActionReturnsJobToRendering()
     {
         JobCreationRecord job = CreateJob() with
@@ -289,6 +378,19 @@ public sealed class SequentialJobProcessorTests
             Task.FromResult(result);
     }
 
+    private sealed class CancellingExecutor(CancellationTokenSource stopping) : IJobStageExecutor
+    {
+        public Task<StageExecutionResult> ExecuteAsync(
+            JobCreationRecord job,
+            CancellationToken cancellationToken)
+        {
+            stopping.Cancel();
+            return Task.FromResult(StageExecutionResult.Cancelled(
+                "process.cancelled",
+                "The external process was cancelled."));
+        }
+    }
+
     private sealed class FakeStateStore : IJobStateStore
     {
         public JobProgress? NextProgress { get; private set; }
@@ -343,12 +445,14 @@ public sealed class SequentialJobProcessorTests
     {
         public StageAttemptRecord? Last { get; private set; }
         public StageAttemptRecord? Previous { get; init; }
+        public List<StageAttemptRecord> Records { get; } = [];
 
         public Task AppendAsync(
             StageAttemptRecord attempt,
             CancellationToken cancellationToken)
         {
             Last = attempt;
+            Records.Add(attempt);
             return Task.CompletedTask;
         }
 

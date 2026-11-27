@@ -10,6 +10,77 @@ namespace VideoFactory.Bot.Tests.Rendering;
 public sealed class RenderHostProcessAdapterIntegrationTests
 {
     [Fact]
+    public async Task RealRemotionFailureAndTimeoutLeaveNoOutputAndRetrySucceeds()
+    {
+        string repositoryRoot = FindRepositoryRoot();
+        string renderHostPath = Path.Combine(repositoryRoot, "render-host", "dist", "cli.js");
+        Assert.True(File.Exists(renderHostPath), $"Build render-host before running this test: {renderHostPath}");
+        string jobDirectory = Path.Combine(Path.GetTempPath(), $"video-factory-render-fault-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(jobDirectory);
+        string sourcePath = Path.Combine(jobDirectory, "source.mp4");
+        string outputPath = Path.Combine(jobDirectory, "output.mp4");
+        string requestPath = Path.Combine(jobDirectory, "request.json");
+
+        try
+        {
+            JsonObject request = JsonNode.Parse(
+                await File.ReadAllTextAsync(Path.Combine(repositoryRoot, "contracts", "fixtures", "valid-render-request.json")))!.AsObject();
+            request["outputPath"] = outputPath;
+            request["assets"]!.AsArray()[0]!["path"] = sourcePath;
+            JsonObject plan = request["plan"]!.AsObject();
+            plan["output"]!.AsObject()["durationFrames"] = 30;
+            plan["video"]!.AsObject()["clips"]!.AsArray()[0]!.AsObject()["output"]!.AsObject()["endFrame"] = 30;
+            await File.WriteAllTextAsync(requestPath, request.ToJsonString());
+            await File.WriteAllBytesAsync(sourcePath, [1, 2, 3]);
+            SystemProcessRunner processRunner = new();
+            RenderHostProcessAdapter adapter = new(processRunner, "node", renderHostPath);
+
+            RenderHostResult failed = await adapter.RenderAsync(
+                new RenderHostRequest(requestPath, outputPath, TimeSpan.FromMinutes(2), 65_536),
+                CancellationToken.None);
+
+            Assert.Equal(RenderHostResultKind.Failed, failed.Kind);
+            Assert.False(File.Exists(outputPath));
+
+            ProcessExecutionResult sourceResult = await processRunner.RunAsync(
+                new ProcessStartRequest(
+                    "ffmpeg",
+                    [
+                        "-y", "-f", "lavfi", "-i", "color=c=0x304050:s=320x568:d=1",
+                        "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-shortest",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath
+                    ],
+                    TimeSpan.FromSeconds(30),
+                    32_768),
+                CancellationToken.None);
+            Assert.True(sourceResult.IsSuccess, sourceResult.ErrorMessage ?? sourceResult.StandardError);
+
+            RenderHostResult timedOut = await adapter.RenderAsync(
+                new RenderHostRequest(requestPath, outputPath, TimeSpan.FromMilliseconds(1), 65_536),
+                CancellationToken.None);
+
+            Assert.Equal(RenderHostResultKind.Failed, timedOut.Kind);
+            Assert.Equal("process.timeout", timedOut.ErrorCode);
+            Assert.False(File.Exists(outputPath));
+
+            RenderHostResult retried = await adapter.RenderAsync(
+                new RenderHostRequest(requestPath, outputPath, TimeSpan.FromMinutes(5), 65_536),
+                CancellationToken.None);
+
+            Assert.Equal(RenderHostResultKind.Succeeded, retried.Kind);
+            Assert.True(new FileInfo(outputPath).Length > 0);
+            Assert.Single(Directory.GetFiles(jobDirectory, "output.mp4", SearchOption.TopDirectoryOnly));
+        }
+        finally
+        {
+            if (Directory.Exists(jobDirectory))
+            {
+                Directory.Delete(jobDirectory, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task RenderHostProcessAdapter_V2FocalCropRetainsSelectedSubject()
     {
         string repositoryRoot = FindRepositoryRoot();
