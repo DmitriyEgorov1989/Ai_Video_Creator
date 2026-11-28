@@ -173,12 +173,15 @@ public sealed class TelegramVideoDelivery : IVideoDelivery
         try
         {
             await using FileStream stream = new(request.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using SHA256 sha256 = SHA256.Create();
+            await using CryptoStream upload = new(stream, sha256, CryptoStreamMode.Read, leaveOpen: true);
             Message message = await bot.SendVideo(
                 request.RecipientId,
-                InputFile.FromStream(stream, Path.GetFileName(request.FilePath)),
+                InputFile.FromStream(upload, Path.GetFileName(request.FilePath)),
                 caption: request.Caption,
                 cancellationToken: cancellationToken);
-            return VideoDeliveryResult.Succeeded(message.Id.ToString());
+            string uploadedSha256 = Convert.ToHexString(sha256.Hash!).ToLowerInvariant();
+            return VideoDeliveryResult.Succeeded(message.Id.ToString(), uploadedSha256, stream.Position);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

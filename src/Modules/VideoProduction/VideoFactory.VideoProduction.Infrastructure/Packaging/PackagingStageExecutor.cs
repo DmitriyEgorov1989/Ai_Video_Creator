@@ -110,6 +110,9 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     return StageExecutionResult.Permanent("packaging.plan_missing", "The approved edit plan was not found for this Job.");
                 }
             }
+            (qa, StageExecutionResult? recoveryError) = await RecoverLegacyQaAsync(
+                job, approvedRevision, render, qa, cancellationToken);
+            if (recoveryError is not null) return recoveryError;
             StageExecutionResult? qaError = await ValidateQaAsync(
                 job, approvedRevision, render, qa, cancellationToken);
             if (qaError is not null) return qaError;
@@ -202,7 +205,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 string qaPath = Path.Combine(encodeDirectory, $"qa-report-{qaId}.json");
                 string qaJson = JsonSerializer.Serialize(new
                 {
-                    schemaVersion = 1,
+                    schemaVersion = 2,
                     jobId = job.JobId,
                     variantId = job.VariantId,
                     planRevisionId = revision.RevisionId,
@@ -210,6 +213,12 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                     status = "passed",
                     errorCode = (string?)null,
                     errorMessage = (string?)null,
+                    checks = new
+                    {
+                        ffprobePassed = true,
+                        fullDecodePassed = true,
+                        audioAssertionsPassed = true
+                    },
                     output = new { artifactId = encoded.ArtifactId, path = encoded.RelativePath,
                         sha256 = encoded.Sha256, sizeBytes = encoded.SizeBytes,
                         width = encodedQa.Width, height = encodedQa.Height, durationFrames = encodedQa.DurationFrames }
@@ -218,7 +227,7 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
                 string qaHash = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(qaJson))).ToLowerInvariant();
                 qa = new ArtifactRecord(qaId, "qa-report",
                     Path.GetRelativePath(workspaceRoot, qaPath).Replace(Path.DirectorySeparatorChar, '/'), qaHash,
-                    new FileInfo(qaPath).Length, qaJson, encoded.ArtifactId, "video-qa/1", job.JobId, job.VariantId);
+                    new FileInfo(qaPath).Length, qaJson, encoded.ArtifactId, "video-qa/2", job.JobId, job.VariantId);
                 ArtifactRegistrationResult qaRegistration = await artifactStore.RegisterAsync(qa, cancellationToken);
                 if (qaRegistration is ArtifactRegistrationResult.Rejected qaRejected)
                     return StageExecutionResult.Permanent("packaging.encode_qa_report_rejected", qaRejected.Message);
@@ -389,6 +398,112 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
         }
     }
 
+    private async Task<(ArtifactRecord Qa, StageExecutionResult? Error)> RecoverLegacyQaAsync(
+        JobCreationRecord job,
+        EditPlanRevision? approvedRevision,
+        ArtifactRecord render,
+        ArtifactRecord qa,
+        CancellationToken cancellationToken)
+    {
+        byte[] reportBytes = await File.ReadAllBytesAsync(ResolvePath(qa.RelativePath), cancellationToken);
+        using JsonDocument report = JsonDocument.Parse(reportBytes);
+        JsonElement root = report.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("schemaVersion", out JsonElement schemaVersion)
+            || !schemaVersion.TryGetInt32(out int version)
+            || version != 1)
+            return (qa, null);
+
+        if (!root.TryGetProperty("status", out JsonElement status)
+            || status.ValueKind != JsonValueKind.String
+            || status.GetString() != "passed")
+            return (qa, StageExecutionResult.Permanent("packaging.qa_not_passed", "Output QA has not passed."));
+        if (approvedRevision is null
+            || !MatchesId(root, "jobId", job.JobId.Value)
+            || !MatchesId(root, "variantId", job.VariantId.Value)
+            || !MatchesId(root, "planRevisionId", approvedRevision.RevisionId.Value)
+            || !root.TryGetProperty("planHash", out JsonElement planHash)
+            || planHash.ValueKind != JsonValueKind.String
+            || planHash.GetString() != approvedRevision.PlanHash
+            || !root.TryGetProperty("output", out JsonElement output)
+            || output.ValueKind != JsonValueKind.Object
+            || !MatchesId(output, "artifactId", render.ArtifactId.Value)
+            || !output.TryGetProperty("sha256", out JsonElement hash)
+            || hash.ValueKind != JsonValueKind.String || hash.GetString() != render.Sha256
+            || !output.TryGetProperty("sizeBytes", out JsonElement size)
+            || size.ValueKind != JsonValueKind.Number || !size.TryGetInt64(out long bytes) || bytes != render.SizeBytes
+            || qa.ParentArtifactId != render.ArtifactId)
+            return (qa, StageExecutionResult.Permanent("packaging.qa_mismatch", "QA report does not match the approved render."));
+        if (qa.SizeBytes != reportBytes.LongLength
+            || qa.Sha256 != Convert.ToHexStringLower(SHA256.HashData(reportBytes)))
+            return (qa, StageExecutionResult.Permanent("packaging.qa_changed", "QA report changed after registration."));
+        if (qualityAssurance is null || qualityProfile is null)
+            return (qa, StageExecutionResult.Permanent("packaging.qa_upgrade_unavailable", "Output QA V1 cannot be upgraded without current QA configuration."));
+        if (!await ArtifactFileMatchesAsync(render, cancellationToken))
+            return (qa, StageExecutionResult.Permanent("packaging.render_changed", "Render changed after verification."));
+
+        string renderPath = ResolvePath(render.RelativePath);
+        OutputQualityResult result = await qualityAssurance.VerifyAsync(
+            CreateEncodedQualityRequest(renderPath, qualityProfile, approvedRevision), cancellationToken);
+        ArtifactId reportId = ArtifactId.New();
+        string reportPath = Path.Combine(Path.GetDirectoryName(renderPath)!, $"qa-report-{reportId}.json");
+        string reportJson = JsonSerializer.Serialize(new
+        {
+            schemaVersion = 2,
+            jobId = job.JobId,
+            variantId = job.VariantId,
+            planRevisionId = approvedRevision.RevisionId,
+            planHash = approvedRevision.PlanHash,
+            status = result.IsSuccess ? "passed" : "failed",
+            errorCode = result.IsSuccess ? null : "verification.failed",
+            errorMessage = result.IsSuccess ? null : "Output verification failed. See the stored stage attempt for diagnostics.",
+            checks = new
+            {
+                ffprobePassed = result.IsSuccess,
+                fullDecodePassed = result.IsSuccess,
+                audioAssertionsPassed = result.IsSuccess
+            },
+            output = new
+            {
+                artifactId = render.ArtifactId,
+                path = render.RelativePath,
+                sha256 = render.Sha256,
+                sizeBytes = render.SizeBytes,
+                width = result.Width,
+                height = result.Height,
+                durationFrames = result.DurationFrames
+            }
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        string temporaryPath = reportPath + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, reportJson, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporaryPath, reportPath);
+        }
+        finally
+        {
+            if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+        }
+
+        byte[] v2Bytes = System.Text.Encoding.UTF8.GetBytes(reportJson);
+        ArtifactRecord v2 = new(
+            reportId,
+            "qa-report",
+            Path.GetRelativePath(workspaceRoot, reportPath).Replace(Path.DirectorySeparatorChar, '/'),
+            Convert.ToHexStringLower(SHA256.HashData(v2Bytes)),
+            v2Bytes.LongLength,
+            reportJson,
+            render.ArtifactId,
+            "video-qa/2",
+            job.JobId,
+            job.VariantId);
+        ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(v2, cancellationToken);
+        if (registration is ArtifactRegistrationResult.Rejected rejected)
+            return (qa, StageExecutionResult.Permanent("packaging.qa_upgrade_rejected", rejected.Message));
+        return (v2, null);
+    }
+
     private async Task<StageExecutionResult?> ValidateQaAsync(
         JobCreationRecord job,
         EditPlanRevision? approvedRevision,
@@ -402,9 +517,15 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             using JsonDocument report = JsonDocument.Parse(reportBytes);
             JsonElement root = report.RootElement;
             if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("schemaVersion", out JsonElement schemaVersion)
+                || !schemaVersion.TryGetInt32(out int version) || version != 2
                 || !root.TryGetProperty("status", out JsonElement status)
                 || status.ValueKind != JsonValueKind.String
-                || status.GetString() != "passed")
+                || status.GetString() != "passed"
+                || !root.TryGetProperty("checks", out JsonElement checks)
+                || !IsTrue(checks, "ffprobePassed")
+                || !IsTrue(checks, "fullDecodePassed")
+                || !IsTrue(checks, "audioAssertionsPassed"))
                 return StageExecutionResult.Permanent("packaging.qa_not_passed", "Output QA has not passed.");
             if (!MatchesId(root, "jobId", job.JobId.Value)
                 || !MatchesId(root, "variantId", job.VariantId.Value)
@@ -433,6 +554,11 @@ public sealed class PackagingStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent("packaging.qa_invalid", "Output QA report is invalid.");
         }
     }
+
+    private static bool IsTrue(JsonElement parent, string name) =>
+        parent.ValueKind == JsonValueKind.Object
+        && parent.TryGetProperty(name, out JsonElement value)
+        && value.ValueKind == JsonValueKind.True;
 
     private async Task<(string? Error, List<object> Chain)> BuildCriticChainAsync(
         JobCreationRecord job,

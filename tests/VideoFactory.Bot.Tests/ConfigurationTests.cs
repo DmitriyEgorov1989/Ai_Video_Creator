@@ -70,6 +70,21 @@ public sealed class ConfigurationTests
     }
 
     [Fact]
+    public void PlanningBudgetAboveApprovedCapIsRejected()
+    {
+        IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>
+        {
+            ["Planning:JobLimitUsd"] = "0.11"
+        });
+        using ServiceProvider services = BuildServices(configuration);
+
+        OptionsValidationException exception = Assert.Throws<OptionsValidationException>(
+            () => services.GetRequiredService<IOptions<PlanningOptions>>().Value);
+
+        Assert.Contains("Planning:JobLimitUsd must not exceed 0.10 USD.", exception.Failures);
+    }
+
+    [Fact]
     public void NonPositiveTelegramProgressIntervalIsRejected()
     {
         IConfiguration configuration = BuildConfiguration(new Dictionary<string, string?>

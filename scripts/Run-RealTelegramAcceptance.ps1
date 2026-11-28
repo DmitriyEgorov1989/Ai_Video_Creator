@@ -3,6 +3,7 @@ param(
     [string] $ReportPath = '.\data\real-telegram-acceptance-report.json',
     [ValidateSet('single-source', 'multi-source')]
     [string] $SourceMode = 'single-source',
+    [decimal] $MaxBudgetUsd = 0.10,
     [switch] $DryRun
 )
 
@@ -84,6 +85,9 @@ function Get-DirectoryBytes([string] $Path) {
 }
 
 if ($TimeoutSeconds -le 0) { throw 'TimeoutSeconds must be positive.' }
+if ($MaxBudgetUsd -le 0) { throw 'MaxBudgetUsd must be positive.' }
+if ($MaxBudgetUsd -gt 0.10) { throw 'MaxBudgetUsd cannot exceed the approved 0.10 USD per Job.' }
+$budgetText = $MaxBudgetUsd.ToString([Globalization.CultureInfo]::InvariantCulture)
 
 $report = if ([IO.Path]::IsPathRooted($ReportPath)) { [IO.Path]::GetFullPath($ReportPath) } else { [IO.Path]::GetFullPath((Join-Path $root $ReportPath)) }
 $reportParent = Split-Path -Parent $report
@@ -95,6 +99,7 @@ if ($DryRun) {
         schemaVersion = 2
         dryRun = $true
         sourceMode = $SourceMode
+        maxBudgetUsd = $MaxBudgetUsd
         timeoutSeconds = $TimeoutSeconds
         reportPathConfigured = $true
         note = 'No host, network, paid API or Telegram operation was started.'
@@ -125,7 +130,7 @@ if (-not (Test-Path -LiteralPath $modelPath -PathType Container)) { throw "Whisp
 
 $stdoutPath = [IO.Path]::ChangeExtension($report, '.host.out.log')
 $stderrPath = [IO.Path]::ChangeExtension($report, '.host.err.log')
-Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $stdoutPath, $stderrPath, $evidencePath -Force -ErrorAction SilentlyContinue
 $dataRoot = Join-Path $root 'data'
 $startedAt = [DateTimeOffset]::UtcNow
 $start = [Diagnostics.Stopwatch]::StartNew()
@@ -137,8 +142,10 @@ $exitCode = 1
 $resultReason = 'host-failed'
 $jobId = $null
 $process = $null
+$previousJobLimit = [Environment]::GetEnvironmentVariable('Planning__JobLimitUsd')
 
 try {
+    [Environment]::SetEnvironmentVariable('Planning__JobLimitUsd', $budgetText)
     $process = Start-Process -FilePath 'dotnet' -ArgumentList @('run', '--project', 'src/VideoFactory.Bot', '--no-launch-profile') -WorkingDirectory $root -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
     $sourceInstruction = if ($SourceMode -eq 'single-source') { 'one video' } else { 'at least two videos' }
     Write-Host "Host started. Send $sourceInstruction and a non-empty instruction from the configured Telegram account, then use /done."
@@ -174,9 +181,17 @@ try {
             $evidenceExitCode = $LASTEXITCODE
             if ($evidenceExitCode -eq 0) {
                 $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
-                if ($evidence.sourceMode -ne $SourceMode) {
+                if ($evidence.schemaVersion -ne 2) {
+                    $exitCode = 1
+                    $resultReason = 'evidence-version-mismatch'
+                }
+                elseif ($evidence.sourceMode -ne $SourceMode) {
                     $exitCode = 1
                     $resultReason = 'source-mode-mismatch'
+                }
+                elseif ($null -eq $evidence.actualCostUsd -or [decimal]$evidence.actualCostUsd -gt $MaxBudgetUsd) {
+                    $exitCode = 1
+                    $resultReason = 'budget-evidence-failed'
                 }
                 else {
                     $exitCode = 0
@@ -212,7 +227,15 @@ finally {
     if ($null -ne $process -and -not $process.HasExited) {
         Stop-ProcessTree $process.Id
     }
+    [Environment]::SetEnvironmentVariable('Planning__JobLimitUsd', $previousJobLimit)
     $finishedAt = [DateTimeOffset]::UtcNow
+    $reportedActualCostUsd = $null
+    if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+        $savedEvidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
+        if ($savedEvidence.PSObject.Properties.Name -contains 'actualCostUsd') {
+            $reportedActualCostUsd = $savedEvidence.actualCostUsd
+        }
+    }
     $result = [ordered]@{
         schemaVersion = 2
         startedAtUtc = $startedAt
@@ -222,6 +245,8 @@ finally {
         result = $resultReason
         jobId = $jobId
         sourceMode = $SourceMode
+        maxBudgetUsd = $MaxBudgetUsd
+        actualCostUsd = $reportedActualCostUsd
         cpuTimeSeconds = [Math]::Round($cpuTimeSeconds, 3)
         peakRamBytes = $peakWorkingSet
         diskDeltaBytes = [long](Get-DirectoryBytes $dataRoot) - $initialDiskBytes

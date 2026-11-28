@@ -327,7 +327,9 @@ public sealed class TelegramToDeliveryAcceptanceTests
             RenderHostProcessAdapter renderHost = new(Runner, "node", Path.Combine(RepositoryRoot(), "render-host", "dist", "cli.js"));
             RenderingStageExecutor rendering = new(
                 PlanRevisions, Artifacts, renderHost,
-                new FfmpegAudioStemBuilder(Runner, "ffmpeg"), Probe, root,
+                new FfmpegAudioStemBuilder(Runner, "ffmpeg"),
+                new FfmpegRenderOutputNormalizer(Runner, "ffmpeg", TimeSpan.FromMinutes(10), 65_536),
+                Probe, root,
                 TimeSpan.FromMinutes(30), 65_536, 50_000_000, 48_000, "stereo", -16, -1,
                 new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), new PermissiveBudget());
 
@@ -510,8 +512,12 @@ public sealed class TelegramToDeliveryAcceptanceTests
         public List<byte[]> Files { get; } = [];
         public async Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken cancellationToken)
         {
-            Files.Add(await File.ReadAllBytesAsync(request.FilePath, cancellationToken));
-            return VideoDeliveryResult.Succeeded($"message-{Files.Count}");
+            byte[] bytes = await File.ReadAllBytesAsync(request.FilePath, cancellationToken);
+            Files.Add(bytes);
+            return VideoDeliveryResult.Succeeded(
+                $"message-{Files.Count}",
+                Convert.ToHexStringLower(SHA256.HashData(bytes)),
+                bytes.LongLength);
         }
     }
 

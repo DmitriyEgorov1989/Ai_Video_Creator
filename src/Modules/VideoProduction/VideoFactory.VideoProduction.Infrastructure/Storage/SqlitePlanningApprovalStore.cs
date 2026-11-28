@@ -30,7 +30,7 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
         await connection.OpenAsync(cancellationToken);
         await using SqliteCommand command = connection.CreateCommand();
         command.CommandText = """
-            SELECT approval_id, telegram_user_id, version, estimated_cost_usd,
+            SELECT approval_id, telegram_user_id, version, repair_attempt, estimated_cost_usd,
                    accumulated_actual_cost_usd, limit_usd, status, created_at, decided_at
             FROM planning_approvals
             WHERE job_id = $jobId AND variant_id = $variantId
@@ -47,6 +47,7 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
         JobId jobId,
         VariantId variantId,
         long telegramUserId,
+        int repairAttempt,
         decimal estimatedCostUsd,
         decimal accumulatedActualCostUsd,
         decimal limitUsd,
@@ -66,7 +67,7 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
 
         int version = (current?.Version ?? 0) + 1;
         PlanningApproval approval = new(
-            Guid.NewGuid(), jobId, variantId, telegramUserId, version,
+            Guid.NewGuid(), jobId, variantId, telegramUserId, version, repairAttempt,
             estimatedCostUsd, accumulatedActualCostUsd, limitUsd,
             PlanningApprovalStatus.Pending, DateTimeOffset.UtcNow, null);
 
@@ -74,10 +75,10 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
         command.Transaction = transaction;
         command.CommandText = """
             INSERT INTO planning_approvals
-              (approval_id, job_id, variant_id, telegram_user_id, version,
+              (approval_id, job_id, variant_id, telegram_user_id, version, repair_attempt,
                estimated_cost_usd, accumulated_actual_cost_usd, limit_usd,
                status, created_at, decided_at)
-            VALUES ($approvalId, $jobId, $variantId, $userId, $version,
+            VALUES ($approvalId, $jobId, $variantId, $userId, $version, $repairAttempt,
                     $estimated, $accumulated, $limit, 'Pending', $createdAt, NULL);
             """;
         AddParameters(command, approval);
@@ -153,6 +154,7 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
         command.Parameters.AddWithValue("$variantId", approval.VariantId.ToString());
         command.Parameters.AddWithValue("$userId", approval.TelegramUserId);
         command.Parameters.AddWithValue("$version", approval.Version);
+        command.Parameters.AddWithValue("$repairAttempt", approval.RepairAttempt);
         command.Parameters.AddWithValue("$estimated", approval.EstimatedCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$accumulated", approval.AccumulatedActualCostUsd.ToString(System.Globalization.CultureInfo.InvariantCulture));
         command.Parameters.AddWithValue("$limit", approval.LimitUsd.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -169,7 +171,7 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
         await using SqliteCommand command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT approval_id, telegram_user_id, version, estimated_cost_usd,
+            SELECT approval_id, telegram_user_id, version, repair_attempt, estimated_cost_usd,
                    accumulated_actual_cost_usd, limit_usd, status, created_at, decided_at
             FROM planning_approvals
             WHERE job_id = $jobId AND variant_id = $variantId
@@ -188,10 +190,11 @@ public sealed class SqlitePlanningApprovalStore : IPlanningApprovalStore
             variantId,
             reader.GetInt64(1),
             reader.GetInt32(2),
-            decimal.Parse(reader.GetString(3), System.Globalization.CultureInfo.InvariantCulture),
+            reader.GetInt32(3),
             decimal.Parse(reader.GetString(4), System.Globalization.CultureInfo.InvariantCulture),
             decimal.Parse(reader.GetString(5), System.Globalization.CultureInfo.InvariantCulture),
-            Enum.Parse<PlanningApprovalStatus>(reader.GetString(6)),
-            DateTimeOffset.Parse(reader.GetString(7), System.Globalization.CultureInfo.InvariantCulture),
-            reader.IsDBNull(8) ? null : DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture));
+            decimal.Parse(reader.GetString(6), System.Globalization.CultureInfo.InvariantCulture),
+            Enum.Parse<PlanningApprovalStatus>(reader.GetString(7)),
+            DateTimeOffset.Parse(reader.GetString(8), System.Globalization.CultureInfo.InvariantCulture),
+            reader.IsDBNull(9) ? null : DateTimeOffset.Parse(reader.GetString(9), System.Globalization.CultureInfo.InvariantCulture));
 }

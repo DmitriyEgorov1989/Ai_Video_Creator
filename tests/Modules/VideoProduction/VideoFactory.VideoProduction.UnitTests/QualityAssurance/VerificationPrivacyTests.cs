@@ -116,6 +116,10 @@ public sealed class VerificationPrivacyTests
             Task.FromResult<EditPlanRevision?>(new(plan.RevisionId, plan.JobId, plan.VariantId, "plan-hash", plan, 0));
         public Task<EditPlanRevision?> FindAsync(JobId id, VariantId variant, string hash, CancellationToken token) => throw new NotSupportedException();
         public Task<EditPlanRevision> SaveAsync(EditPlan value, string hash, decimal cost, CancellationToken token) => throw new NotSupportedException();
+        public Task<EditPlanRevision> CompletePlanningAsync(
+            EditPlan value, string hash, decimal cost, ReelsPresentationPlan? presentation,
+            EditPlanAudit? audit, PlanningAttemptRecord attempt, CancellationToken token) =>
+            throw new NotSupportedException();
     }
 
     private sealed class Store(ArtifactRecord render) : IArtifactStore

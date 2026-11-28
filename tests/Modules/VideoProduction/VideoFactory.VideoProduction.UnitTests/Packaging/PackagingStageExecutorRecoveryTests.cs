@@ -17,6 +17,179 @@ namespace VideoFactory.VideoProduction.UnitTests.Packaging;
 
 public sealed class PackagingStageExecutorRecoveryTests
 {
+    [Fact]
+    public async Task PassedV1ReportIsReverifiedAndPackagingUsesPublishedV2()
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"packaging-qa-v1-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ValidPlanFixture fixture = ValidPlanFixture.Create();
+            EditPlanRevision revision = new(
+                fixture.Plan.RevisionId,
+                fixture.Plan.JobId,
+                fixture.Plan.VariantId,
+                "plan-hash",
+                fixture.Plan,
+                0m);
+            JobCreationRecord job = new(
+                fixture.Plan.JobId,
+                fixture.Plan.VariantId,
+                new JobRequest(
+                    fixture.Analysis.OriginalAssetId,
+                    "comment",
+                    ProductionMode.Fast,
+                    new ProductionSettings(null, true, false)),
+                JobProgress.Restore(
+                    JobStatus.Running,
+                    ProductionStage.Packaging,
+                    ProductionMode.Fast,
+                    ProductionMode.Fast,
+                    null),
+                revision.RevisionId);
+            byte[] renderBytes = [1, 2, 3, 4, 5, 6];
+            await File.WriteAllBytesAsync(Path.Combine(root, "render.mp4"), renderBytes);
+            ArtifactRecord render = new(
+                ArtifactId.New(), "render-output", "render.mp4", Hash(renderBytes), renderBytes.Length,
+                null, null, "test", job.JobId, job.VariantId);
+            string v1Json = JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                jobId = job.JobId,
+                variantId = job.VariantId,
+                planRevisionId = revision.RevisionId,
+                planHash = revision.PlanHash,
+                status = "passed",
+                output = new { artifactId = render.ArtifactId, sha256 = render.Sha256, sizeBytes = render.SizeBytes }
+            }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            string v1Path = Path.Combine(root, "qa-v1.json");
+            await File.WriteAllTextAsync(v1Path, v1Json);
+            ArtifactRecord v1 = new(
+                ArtifactId.New(), "qa-report", "qa-v1.json", Hash(Encoding.UTF8.GetBytes(v1Json)), Encoding.UTF8.GetByteCount(v1Json),
+                v1Json, render.ArtifactId, "video-qa/1", job.JobId, job.VariantId);
+            MemoryArtifactStore artifacts = new(render, v1);
+            SequencedQa qa = new(existingEncodeIsValid: true);
+            PackagingStageExecutor executor = new(
+                artifacts,
+                root,
+                1_000,
+                null,
+                null,
+                new PlanStore(revision),
+                qa,
+                new OutputQualityOptionsProfile(1080, 1920, 1, true, null, 1_000),
+                0);
+
+            StageExecutionResult result = await executor.ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Completed, result.Kind);
+            Assert.Equal(1, qa.CallCount);
+            Assert.Equal(v1Json, await File.ReadAllTextAsync(v1Path));
+            ArtifactRecord v2 = Assert.Single(
+                artifacts.Records,
+                item => item.ArtifactType == "qa-report" && item.ArtifactId != v1.ArtifactId);
+            using JsonDocument v2Document = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(root, v2.RelativePath)));
+            Assert.Equal(2, v2Document.RootElement.GetProperty("schemaVersion").GetInt32());
+            Assert.Equal(render.ArtifactId.Value, v2.ParentArtifactId?.Value);
+            ArtifactRecord final = Assert.Single(artifacts.Records, item => item.ArtifactType == "final-mp4");
+            using JsonDocument finalMetadata = JsonDocument.Parse(final.MetadataJson!);
+            Assert.Equal(v2.ArtifactId.Value, finalMetadata.RootElement.GetProperty("qaArtifactId").GetProperty("Value").GetGuid());
+
+            StageExecutionResult repeated = await executor.ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Completed, repeated.Kind);
+            Assert.Equal(1, qa.CallCount);
+            Assert.Equal(2, artifacts.Records.Count(item => item.ArtifactType == "qa-report"));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("tampered")]
+    [InlineData("wrong-identity")]
+    [InlineData("failed")]
+    [InlineData("unknown-version")]
+    public async Task InvalidOrUnsupportedReportIsNeverUpgraded(string scenario)
+    {
+        string root = Path.Combine(Path.GetTempPath(), $"packaging-qa-v1-rejected-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            ValidPlanFixture fixture = ValidPlanFixture.Create();
+            EditPlanRevision revision = new(
+                fixture.Plan.RevisionId,
+                fixture.Plan.JobId,
+                fixture.Plan.VariantId,
+                "plan-hash",
+                fixture.Plan,
+                0m);
+            JobCreationRecord job = new(
+                fixture.Plan.JobId,
+                fixture.Plan.VariantId,
+                new JobRequest(
+                    fixture.Analysis.OriginalAssetId,
+                    "comment",
+                    ProductionMode.Fast,
+                    new ProductionSettings(null, true, false)),
+                JobProgress.Restore(
+                    JobStatus.Running,
+                    ProductionStage.Packaging,
+                    ProductionMode.Fast,
+                    ProductionMode.Fast,
+                    null),
+                revision.RevisionId);
+            byte[] renderBytes = [1, 2, 3, 4, 5, 6];
+            await File.WriteAllBytesAsync(Path.Combine(root, "render.mp4"), renderBytes);
+            ArtifactRecord render = new(
+                ArtifactId.New(), "render-output", "render.mp4", Hash(renderBytes), renderBytes.Length,
+                null, null, "test", job.JobId, job.VariantId);
+            string reportJson = scenario == "malformed"
+                ? "{"
+                : JsonSerializer.Serialize(new
+                {
+                    schemaVersion = scenario == "unknown-version" ? 3 : 1,
+                    jobId = scenario == "wrong-identity" ? JobId.New() : job.JobId,
+                    variantId = job.VariantId,
+                    planRevisionId = revision.RevisionId,
+                    planHash = revision.PlanHash,
+                    status = scenario == "failed" ? "failed" : "passed",
+                    output = new { artifactId = render.ArtifactId, sha256 = render.Sha256, sizeBytes = render.SizeBytes }
+                }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            await File.WriteAllTextAsync(Path.Combine(root, "qa.json"), reportJson);
+            byte[] registeredBytes = Encoding.UTF8.GetBytes(scenario == "tampered" ? reportJson + " " : reportJson);
+            ArtifactRecord report = new(
+                ArtifactId.New(), "qa-report", "qa.json", Hash(registeredBytes), Encoding.UTF8.GetByteCount(reportJson),
+                reportJson, render.ArtifactId, "video-qa/1", job.JobId, job.VariantId);
+            MemoryArtifactStore artifacts = new(render, report);
+            SequencedQa qa = new(existingEncodeIsValid: true);
+            PackagingStageExecutor executor = new(
+                artifacts,
+                root,
+                1_000,
+                null,
+                null,
+                new PlanStore(revision),
+                qa,
+                new OutputQualityOptionsProfile(1080, 1920, 1, true, null, 1_000),
+                0);
+
+            StageExecutionResult result = await executor.ExecuteAsync(job, CancellationToken.None);
+
+            Assert.Equal(StageExecutionKind.Permanent, result.Kind);
+            Assert.Equal(0, qa.CallCount);
+            Assert.Single(artifacts.Records, item => item.ArtifactType == "qa-report");
+            Assert.DoesNotContain(artifacts.Records, item => item.ArtifactType == "final-mp4");
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(true, true, 0)]
     [InlineData(false, true, 0)]
@@ -68,12 +241,18 @@ public sealed class PackagingStageExecutorRecoveryTests
                 null, render.ArtifactId, "test", job.JobId, job.VariantId);
             string qaJson = JsonSerializer.Serialize(new
             {
-                schemaVersion = 1,
+                schemaVersion = 2,
                 jobId = job.JobId,
                 variantId = job.VariantId,
                 planRevisionId = revision.RevisionId,
                 planHash = revision.PlanHash,
                 status = "passed",
+                checks = new
+                {
+                    ffprobePassed = true,
+                    fullDecodePassed = true,
+                    audioAssertionsPassed = true
+                },
                 output = new { artifactId = render.ArtifactId, sha256 = render.Sha256, sizeBytes = render.SizeBytes }
             }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             await File.WriteAllTextAsync(Path.Combine(root, "qa.json"), qaJson);
@@ -137,6 +316,11 @@ public sealed class PackagingStageExecutorRecoveryTests
         public Task<EditPlanRevision?> GetAsync(RevisionId revisionId, CancellationToken cancellationToken) => Task.FromResult<EditPlanRevision?>(revision);
         public Task<EditPlanRevision?> FindAsync(JobId jobId, VariantId variantId, string planHash, CancellationToken cancellationToken) => Task.FromResult<EditPlanRevision?>(revision);
         public Task<EditPlanRevision> SaveAsync(EditPlan plan, string planHash, decimal actualCostUsd, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<EditPlanRevision> CompletePlanningAsync(
+            EditPlan plan, string planHash, decimal actualCostUsd,
+            ReelsPresentationPlan? presentation, EditPlanAudit? audit,
+            PlanningAttemptRecord completedAttempt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class RecordingEncoder : IControlledVideoEncoder
@@ -153,6 +337,8 @@ public sealed class PackagingStageExecutorRecoveryTests
     private sealed class SequencedQa(bool existingEncodeIsValid) : IOutputQualityAssurance
     {
         private int callCount;
+
+        public int CallCount => callCount;
 
         public Task<OutputQualityResult> VerifyAsync(OutputQualityRequest request, CancellationToken cancellationToken)
         {

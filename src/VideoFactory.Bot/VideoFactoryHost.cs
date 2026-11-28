@@ -274,6 +274,16 @@ public static class VideoFactoryHost
              PlanningOptions options = services.GetRequiredService<IOptions<PlanningOptions>>().Value;
               return new PlanningCostPolicy(new PlanningCostPolicyOptions(options.JobLimitUsd));
           });
+         builder.Services.AddSingleton<IRenderOutputNormalizer>(services =>
+         {
+             FfmpegOptions options = services.GetRequiredService<IOptions<FfmpegOptions>>().Value;
+             ProcessTimeoutOptions timeouts = services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value;
+             return new FfmpegRenderOutputNormalizer(
+                 services.GetRequiredService<IProcessRunner>(),
+                 options.FfmpegPath,
+                 TimeSpan.FromSeconds(timeouts.NormalizeSeconds),
+                 timeouts.MaxOutputBytes);
+         });
           builder.Services.AddSingleton<EditPlanPlanner>(services =>
               new EditPlanPlanner(
                   services.GetRequiredService<IEditPlanProvider>(),
@@ -385,9 +395,10 @@ public static class VideoFactoryHost
             new RenderingStageExecutor(
                 services.GetRequiredService<IEditPlanRevisionStore>(),
                 services.GetRequiredService<IArtifactStore>(),
-                services.GetRequiredService<IRenderHostAdapter>(),
-                services.GetRequiredService<IAudioStemBuilder>(),
-                services.GetRequiredService<IMediaProbe>(),
+                 services.GetRequiredService<IRenderHostAdapter>(),
+                 services.GetRequiredService<IAudioStemBuilder>(),
+                 services.GetRequiredService<IRenderOutputNormalizer>(),
+                 services.GetRequiredService<IMediaProbe>(),
                  BuildWorkspaceRoot(services),
                  TimeSpan.FromSeconds(services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.RenderSeconds),
                  services.GetRequiredService<IOptions<ProcessTimeoutOptions>>().Value.MaxOutputBytes,
@@ -670,6 +681,10 @@ public static class VideoFactoryHost
                 skillIds = report.SkillIds,
                 sourceCount = report.SourceCount,
                 sourceMode = report.SourceMode == AcceptanceSourceMode.SingleSource ? "single-source" : "multi-source",
+                successfulDeliveryCount = report.SuccessfulDeliveryCount,
+                uploadedSha256 = report.UploadedSha256,
+                uploadedSizeBytes = report.UploadedSizeBytes,
+                actualCostUsd = report.ActualCostUsd,
                 artifacts = report.Artifacts.Select(artifact => new
                 {
                     artifact.ArtifactType,

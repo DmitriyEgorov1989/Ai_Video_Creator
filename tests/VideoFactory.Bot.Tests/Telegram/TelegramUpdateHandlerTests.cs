@@ -9,6 +9,7 @@ using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
 using Microsoft.Extensions.Logging;
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using VideoFactory.VideoProduction.Application.Variants;
 
 namespace VideoFactory.Bot.Tests.Telegram;
@@ -719,12 +720,19 @@ public sealed class TelegramUpdateHandlerTests
 
     private sealed class RepeatDelivery : IVideoDelivery
     {
-        public Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(VideoDeliveryResult.Succeeded("message-1"));
+        public Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken cancellationToken)
+        {
+            byte[] bytes = File.ReadAllBytes(request.FilePath);
+            return Task.FromResult(VideoDeliveryResult.Succeeded(
+                "message-1", Convert.ToHexStringLower(SHA256.HashData(bytes)), bytes.LongLength));
+        }
     }
 
     private sealed class RepeatRequestStore : IRepeatDeliveryRequestStore
     {
+        public Task<RepeatDeliveryRequestStart?> FindAsync(long telegramUpdateId, CancellationToken cancellationToken) =>
+            Task.FromResult<RepeatDeliveryRequestStart?>(null);
+
         public Task<RepeatDeliveryRequestStart> TryStartAsync(RepeatDeliveryCommand command, CancellationToken cancellationToken) =>
             Task.FromResult<RepeatDeliveryRequestStart>(new RepeatDeliveryRequestStart.Started());
 
@@ -733,6 +741,11 @@ public sealed class TelegramUpdateHandlerTests
 
     private sealed class RepeatReceiptStore : IDeliveryReceiptStore
     {
+        public Task<DeliveryIntentStart> TryStartAsync(DeliveryIntent intent, CancellationToken cancellationToken) =>
+            Task.FromResult<DeliveryIntentStart>(new DeliveryIntentStart.Started());
+
+        public Task CompleteAsync(DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
+
         public Task AppendAsync(DeliveryReceipt receipt, CancellationToken cancellationToken) => Task.CompletedTask;
 
         public Task<bool> HasSucceededAsync(JobId jobId, VariantId variantId, ArtifactId artifactId, long recipientId, CancellationToken cancellationToken) =>

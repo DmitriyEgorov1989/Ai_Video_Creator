@@ -33,6 +33,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
     private readonly IRenderHostAdapter renderHost;
     private readonly string workspaceRoot;
     private readonly IAudioStemBuilder audioStemBuilder;
+    private readonly IRenderOutputNormalizer outputNormalizer;
     private readonly IMediaProbe mediaProbe;
     private readonly TimeSpan renderTimeout;
     private readonly int maxOutputBytes;
@@ -46,6 +47,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         IArtifactStore artifactStore,
         IRenderHostAdapter renderHost,
         IAudioStemBuilder audioStemBuilder,
+        IRenderOutputNormalizer outputNormalizer,
         IMediaProbe mediaProbe,
         string workspaceRoot,
         TimeSpan renderTimeout,
@@ -62,6 +64,7 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
         this.artifactStore = artifactStore ?? throw new ArgumentNullException(nameof(artifactStore));
         this.renderHost = renderHost ?? throw new ArgumentNullException(nameof(renderHost));
         this.audioStemBuilder = audioStemBuilder ?? throw new ArgumentNullException(nameof(audioStemBuilder));
+        this.outputNormalizer = outputNormalizer ?? throw new ArgumentNullException(nameof(outputNormalizer));
         this.mediaProbe = mediaProbe ?? throw new ArgumentNullException(nameof(mediaProbe));
         this.workspaceRoot = Path.GetFullPath(workspaceRoot ?? throw new ArgumentNullException(nameof(workspaceRoot)));
         if (renderTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(renderTimeout));
@@ -300,6 +303,26 @@ public sealed class RenderingStageExecutor : IJobStageExecutor
                 ? StageExecutionResult.Cancelled(result.ErrorCode, message)
                 : StageExecutionResult.Retryable(result.ErrorCode ?? "render.failed", message);
         }
+
+        string normalizedPath = Path.Combine(attemptDirectory, "output.normalized.mp4");
+        AudioDirectorDecision? finalAudio = revision.Presentation?.Audio;
+        RenderOutputNormalizationResult normalization = await outputNormalizer.NormalizeAsync(
+            new RenderOutputNormalizationRequest(
+                outputPath,
+                normalizedPath,
+                finalAudio is null ? AudioLoudnessLufs : (double)finalAudio.TargetLoudnessLufs,
+                finalAudio is null ? AudioTruePeakDbtp : (double)finalAudio.TruePeakDbtp,
+                encodingProfile.AudioBitrateBitsPerSecond,
+                AudioSampleRate,
+                AudioChannelLayout),
+            cancellationToken);
+        if (!normalization.IsSuccess)
+        {
+            return StageExecutionResult.Retryable(
+                normalization.ErrorCode ?? "render.audio_normalization_failed",
+                normalization.ErrorMessage ?? "Rendered audio normalization failed.");
+        }
+        File.Move(normalizedPath, outputPath, overwrite: true);
 
         ArtifactId artifactId = ArtifactId.New();
         cancellationToken.ThrowIfCancellationRequested();

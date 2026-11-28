@@ -59,7 +59,7 @@ public sealed class StageFaultTests
             }
 
             Host host = new(null);
-            RenderingStageExecutor executor = new(plans, artifacts, host, new NoAudio(), new Probe(), root,
+            RenderingStageExecutor executor = new(plans, artifacts, host, new NoAudio(), new PassThroughNormalizer(), new Probe(), root,
                 TimeSpan.FromSeconds(5), 4096, 50_000_000, 48000, "stereo", -16, -1,
                 new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), new Budget(false));
 
@@ -110,7 +110,7 @@ public sealed class StageFaultTests
                     ProductionStage.Rendering, 1, StageAttemptStatus.Running, null, null, DateTimeOffset.UtcNow.AddHours(-1), null), CancellationToken.None);
             Host host = new(fault);
             Budget budget = new(fault == "storage.insufficient_space");
-            RenderingStageExecutor Executor() => new(plans, artifacts, host, new NoAudio(), new Probe(), root,
+            RenderingStageExecutor Executor() => new(plans, artifacts, host, new NoAudio(), new PassThroughNormalizer(), new Probe(), root,
                 TimeSpan.FromSeconds(5), 4096, 50_000_000, 48000, "stereo", -16, -1,
                 new OutputEncodingProfile(4_000_000, 128_000, 2_097_152), budget);
             SequentialJobProcessor Processor() => new(new SqliteJobWorkQueue(cs), new SqliteJobStateStore(cs), new SqliteStageAttemptStore(cs), Executor());
@@ -265,6 +265,18 @@ public sealed class StageFaultTests
     {
         public Task<AudioStemResult> BuildAsync(AudioStemRequest request, CancellationToken token) => throw new InvalidOperationException("No audio expected.");
     }
+    private sealed class PassThroughNormalizer : IRenderOutputNormalizer
+    {
+        public async Task<RenderOutputNormalizationResult> NormalizeAsync(
+            RenderOutputNormalizationRequest request,
+            CancellationToken token)
+        {
+            await using FileStream source = new(request.SourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            await using FileStream output = new(request.OutputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            await source.CopyToAsync(output, token);
+            return new(true, null, null);
+        }
+    }
     private sealed class NoDecode : IMediaDecodeVerifier
     {
         public Task<MediaDecodeResult> VerifyAsync(MediaDecodeRequest request, CancellationToken token) => throw new InvalidOperationException("Failed normalization must not decode.");
@@ -286,10 +298,12 @@ public sealed class StageFaultTests
     {
         public bool Fail { get; set; } = true;
         public int Calls { get; private set; }
-        public Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken token)
+        public async Task<VideoDeliveryResult> SendAsync(VideoDeliveryRequest request, CancellationToken token)
         {
             Calls++;
-            return Task.FromResult(Fail ? VideoDeliveryResult.Failed("telegram.network", "original network diagnostic") : VideoDeliveryResult.Succeeded("42"));
+            if (Fail) return VideoDeliveryResult.Failed("telegram.network", "original network diagnostic");
+            byte[] bytes = await File.ReadAllBytesAsync(request.FilePath, token);
+            return VideoDeliveryResult.Succeeded("42", Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(bytes)), bytes.LongLength);
         }
     }
 }

@@ -1,5 +1,7 @@
 using VideoFactory.Bot;
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using VideoFactory.VideoProduction.Infrastructure.Storage;
 
 namespace VideoFactory.Bot.Tests;
@@ -81,7 +83,14 @@ public sealed class StartupCommandTests
             Assert.Equal(1, code);
             Assert.True(File.Exists(report));
             Assert.False(Directory.Exists(Path.Combine(root, "data")));
-            Assert.DoesNotContain("recipient", await File.ReadAllTextAsync(report), StringComparison.OrdinalIgnoreCase);
+            string json = await File.ReadAllTextAsync(report);
+            Assert.Contains("\"schemaVersion\": 2", json, StringComparison.Ordinal);
+            Assert.Contains("\"successfulDeliveryCount\": 0", json, StringComparison.Ordinal);
+            Assert.DoesNotContain("recipient", json, StringComparison.OrdinalIgnoreCase);
+            Assert.True(await SatisfiesAcceptanceEvidenceV2SchemaAsync(json));
+            JsonObject invalid = JsonNode.Parse(json)!.AsObject();
+            invalid.Remove("uploadedSha256");
+            Assert.False(await SatisfiesAcceptanceEvidenceV2SchemaAsync(invalid.ToJsonString()));
         }
         finally { Directory.Delete(root, true); }
     }
@@ -155,5 +164,34 @@ public sealed class StartupCommandTests
         int exitCode = await VideoFactoryHost.RunAsync(["unknown"]);
 
         Assert.Equal(2, exitCode);
+    }
+
+    private static async Task<bool> SatisfiesAcceptanceEvidenceV2SchemaAsync(string json)
+    {
+        string schemaPath = Path.Combine(FindRepositoryRoot(), "contracts", "acceptance-evidence.v2.schema.json");
+        using JsonDocument schema = JsonDocument.Parse(await File.ReadAllTextAsync(schemaPath));
+        using JsonDocument document = JsonDocument.Parse(json);
+        JsonElement root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("schemaVersion", out JsonElement version)
+            || version.GetInt32() != schema.RootElement.GetProperty("properties").GetProperty("schemaVersion").GetProperty("const").GetInt32())
+            return false;
+        HashSet<string> required = schema.RootElement.GetProperty("required").EnumerateArray()
+            .Select(item => item.GetString()!).ToHashSet(StringComparer.Ordinal);
+        HashSet<string> allowed = schema.RootElement.GetProperty("properties").EnumerateObject()
+            .Select(property => property.Name).ToHashSet(StringComparer.Ordinal);
+        HashSet<string> actual = root.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.Ordinal);
+        return required.IsSubsetOf(actual) && actual.IsSubsetOf(allowed);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        DirectoryInfo? directory = new(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Ai_Video_Creator.slnx"))) return directory.FullName;
+            directory = directory.Parent;
+        }
+        throw new DirectoryNotFoundException("Repository root was not found from the test output directory.");
     }
 }

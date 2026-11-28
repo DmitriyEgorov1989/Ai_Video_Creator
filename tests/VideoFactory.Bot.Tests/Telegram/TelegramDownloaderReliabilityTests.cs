@@ -30,6 +30,10 @@ public sealed class TelegramDownloaderReliabilityTests
                 CancellationToken.None);
 
             Assert.True(result.IsSuccess);
+            Assert.Equal(expected.LongLength, result.UploadedSizeBytes);
+            Assert.Equal(
+                Convert.ToHexString(SHA256.HashData(expected)).ToLowerInvariant(),
+                result.UploadedSha256);
             Assert.NotNull(transport.Body);
             Assert.Equal(
                 Convert.ToHexString(SHA256.HashData(expected)).ToLowerInvariant(),

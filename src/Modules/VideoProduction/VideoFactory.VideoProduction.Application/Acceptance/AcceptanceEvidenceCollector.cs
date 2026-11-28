@@ -80,8 +80,30 @@ public sealed record AcceptanceEvidenceSnapshot
     public bool CriticChainValid { get; init; }
     /// <summary>Признак успешного QA.</summary>
     public bool QaPassed { get; init; }
+    /// <summary>Признак успешного FFprobe gate из QA report.</summary>
+    public bool MediaProbePassed { get; init; }
+    /// <summary>Признак успешного полного decode gate из QA report.</summary>
+    public bool FullDecodePassed { get; init; }
+    /// <summary>Признак успешных frame assertions из critic report.</summary>
+    public bool FrameAssertionsPassed { get; init; }
+    /// <summary>Признак успешных audio assertions из QA report.</summary>
+    public bool AudioAssertionsPassed { get; init; }
     /// <summary>Признак успешной доставки final artifact.</summary>
     public bool DeliverySucceeded { get; init; }
+    /// <summary>Количество подтверждённых доставок final artifact.</summary>
+    public int SuccessfulDeliveryCount { get; init; }
+    /// <summary>SHA-256 прочитанного upload-потока или <see langword="null"/>.</summary>
+    public string? UploadedSha256 { get; init; }
+    /// <summary>Размер прочитанного upload-потока в байтах или <see langword="null"/>.</summary>
+    public long? UploadedSizeBytes { get; init; }
+    /// <summary>Суммарная фактическая стоимость Job в USD или <see langword="null"/>, если она не записана.</summary>
+    public decimal? ActualCostUsd { get; init; }
+    /// <summary>Признак наличия непустой пользовательской инструкции без раскрытия текста.</summary>
+    public bool InstructionPresent { get; init; }
+    /// <summary>Признак непрерывного порядка исходников от нуля.</summary>
+    public bool SourceOrderValid { get; init; }
+    /// <summary>Признак допустимого сохранённого стиля.</summary>
+    public bool StyleValid { get; init; }
     /// <summary>Количество упорядоченных исходников.</summary>
     public int SourceCount { get; init; }
     /// <summary>Заявленный режим количества исходников.</summary>
@@ -110,6 +132,10 @@ public sealed record AcceptanceEvidenceSnapshot
 /// <param name="SkillIds">Точный список skill IDs без payload решений.</param>
 /// <param name="SourceCount">Количество исходников.</param>
 /// <param name="SourceMode">Режим количества исходников.</param>
+/// <param name="SuccessfulDeliveryCount">Количество подтверждённых доставок.</param>
+/// <param name="UploadedSha256">SHA-256 прочитанного upload-потока или <see langword="null"/>.</param>
+/// <param name="UploadedSizeBytes">Размер прочитанного upload-потока или <see langword="null"/>.</param>
+/// <param name="ActualCostUsd">Суммарная фактическая стоимость Job в USD или <see langword="null"/>.</param>
 /// <param name="Artifacts">Безопасные факты об обязательных артефактах без путей.</param>
 /// <param name="Checks">Результаты стабильных проверок.</param>
 public sealed record AcceptanceEvidenceReport(
@@ -125,6 +151,10 @@ public sealed record AcceptanceEvidenceReport(
     IReadOnlyList<string> SkillIds,
     int SourceCount,
     AcceptanceSourceMode SourceMode,
+    int SuccessfulDeliveryCount,
+    string? UploadedSha256,
+    long? UploadedSizeBytes,
+    decimal? ActualCostUsd,
     IReadOnlyList<AcceptanceArtifactEvidence> Artifacts,
     IReadOnlyList<AcceptanceEvidenceCheck> Checks);
 
@@ -182,7 +212,21 @@ public sealed class AcceptanceEvidenceCollector
         Add(checks, "manifest.links.match", snapshot.ManifestLinksMatch);
         Add(checks, "critic.chain.accepted", snapshot.CriticChainValid);
         Add(checks, "qa.passed", snapshot.QaPassed);
+        Add(checks, "media.ffprobe.passed", snapshot.MediaProbePassed);
+        Add(checks, "media.full_decode.passed", snapshot.FullDecodePassed);
+        Add(checks, "media.frame_assertions.passed", snapshot.FrameAssertionsPassed);
+        Add(checks, "media.audio_assertions.passed", snapshot.AudioAssertionsPassed);
         Add(checks, "delivery.succeeded", snapshot.DeliverySucceeded);
+        Add(checks, "delivery.succeeded.exactly_one", snapshot.SuccessfulDeliveryCount == 1);
+        AcceptanceArtifactEvidence? final = snapshot.Artifacts.LastOrDefault(a => a.ArtifactType == "final-mp4");
+        Add(checks, "delivery.upload.sha256.matches", final is not null
+            && HashesMatch(final.ActualSha256, snapshot.UploadedSha256));
+        Add(checks, "delivery.upload.size.matches", final is not null
+            && final.ActualSizeBytes > 0 && final.ActualSizeBytes == snapshot.UploadedSizeBytes);
+        Add(checks, "cost.actual.recorded", snapshot.ActualCostUsd >= 0m);
+        Add(checks, "intake.instruction.present", snapshot.InstructionPresent);
+        Add(checks, "sources.order.valid", snapshot.SourceOrderValid);
+        Add(checks, "intake.style.valid", snapshot.StyleValid);
         Add(checks, "sources.mode.matches", snapshot.SourceCount > 0 &&
             (snapshot.SourceMode == AcceptanceSourceMode.SingleSource && snapshot.SourceCount == 1
              || snapshot.SourceMode == AcceptanceSourceMode.MultiSource && snapshot.SourceCount >= 2));
@@ -213,7 +257,9 @@ public sealed class AcceptanceEvidenceCollector
         AcceptanceEvidenceSnapshot snapshot,
         AcceptanceEvidenceOutcome outcome,
         IReadOnlyList<AcceptanceEvidenceCheck> checks) => new(
-            1, snapshot.JobId, outcome, snapshot.VariantId, snapshot.ApprovedRevisionId,
+            2, snapshot.JobId, outcome, snapshot.VariantId, snapshot.ApprovedRevisionId,
             snapshot.PlanHash, snapshot.RecomputedPlanHash, snapshot.AuditHash, snapshot.RecomputedAuditHash,
-            snapshot.SkillIds, snapshot.SourceCount, snapshot.SourceMode, snapshot.Artifacts, checks);
+            snapshot.SkillIds, snapshot.SourceCount, snapshot.SourceMode,
+            snapshot.SuccessfulDeliveryCount, snapshot.UploadedSha256, snapshot.UploadedSizeBytes,
+            snapshot.ActualCostUsd, snapshot.Artifacts, checks);
 }

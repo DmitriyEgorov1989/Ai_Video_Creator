@@ -37,7 +37,7 @@ public sealed class SqlitePlanningApprovalStoreTests
 
             SqlitePlanningApprovalStore store = new(connectionString);
             PlanningApproval pending = await store.SavePendingAsync(
-                jobId, variantId, 123, 0.08m, 0m, 0.05m, CancellationToken.None);
+                jobId, variantId, 123, 0, 0.08m, 0m, 0.05m, CancellationToken.None);
             Assert.Equal(PlanningApprovalStatus.Pending,
                 (await store.FindAsync(jobId, variantId, CancellationToken.None))!.Status);
 

@@ -6,6 +6,85 @@ namespace VideoFactory.VideoProduction.IntegrationTests.Storage;
 public sealed class SqliteMigrationTests
 {
     [Fact]
+    public async Task VersionSeventeenBackfillsRepairAttemptForVersionTwoApprovals()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"planning-approval-upgrade-{Guid.NewGuid():N}.db");
+        string cs = $"Data Source={path};Pooling=False";
+        try
+        {
+            await using SqliteConnection connection = new(cs);
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                INSERT INTO schema_migrations
+                SELECT value, '2000' FROM json_each('[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]');
+                CREATE TABLE planning_approvals (
+                    approval_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, variant_id TEXT NOT NULL,
+                    telegram_user_id INTEGER NOT NULL, version INTEGER NOT NULL,
+                    estimated_cost_usd TEXT NOT NULL, accumulated_actual_cost_usd TEXT NOT NULL,
+                    limit_usd TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL,
+                    decided_at TEXT NULL, UNIQUE (job_id, variant_id, version));
+                INSERT INTO planning_approvals VALUES
+                    ('pending', 'job-pending', 'variant-pending', 123, 2, '0.10', '0.10', '0.05', 'Pending', '2000', NULL),
+                    ('approved', 'job-approved', 'variant-approved', 123, 2, '0.10', '0.10', '0.05', 'Approved', '2000', '2001');
+                """;
+            await command.ExecuteNonQueryAsync();
+
+            await new SqliteMigrationRunner(cs).InitializeAsync(CancellationToken.None);
+
+            command.CommandText = "SELECT status, repair_attempt FROM planning_approvals ORDER BY status;";
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Approved", reader.GetString(0));
+            Assert.Equal(1, reader.GetInt32(1));
+            Assert.True(await reader.ReadAsync());
+            Assert.Equal("Pending", reader.GetString(0));
+            Assert.Equal(1, reader.GetInt32(1));
+        }
+        finally
+        {
+            File.Delete(path); File.Delete(path + "-wal"); File.Delete(path + "-shm");
+        }
+    }
+
+    [Fact]
+    public async Task VersionFifteenReceiptIsPreservedAsLegacyIdempotencyBarrier()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"delivery-evidence-upgrade-{Guid.NewGuid():N}.db");
+        string cs = $"Data Source={path};Pooling=False";
+        try
+        {
+            await using SqliteConnection connection = new(cs);
+            await connection.OpenAsync();
+            await using SqliteCommand command = connection.CreateCommand();
+            command.CommandText = """
+                CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+                INSERT INTO schema_migrations SELECT value, '2000' FROM json_each('[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]');
+                CREATE TABLE delivery_receipts (
+                    receipt_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, variant_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL, recipient_id INTEGER NOT NULL, remote_message_id TEXT NULL,
+                    status TEXT NOT NULL, error_code TEXT NULL, error_message TEXT NULL, created_at TEXT NOT NULL);
+                INSERT INTO delivery_receipts VALUES ('receipt', 'job', 'variant', 'artifact', 42, 'message', 'succeeded', NULL, NULL, '2000');
+                """;
+            await command.ExecuteNonQueryAsync();
+
+            await new SqliteMigrationRunner(cs).InitializeAsync(CancellationToken.None);
+
+            command.CommandText = "SELECT uploaded_sha256, uploaded_size_bytes, receipt_format_version FROM delivery_receipts WHERE receipt_id = 'receipt';";
+            await using SqliteDataReader reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            Assert.True(reader.IsDBNull(0));
+            Assert.True(reader.IsDBNull(1));
+            Assert.Equal(1, reader.GetInt32(2));
+        }
+        finally
+        {
+            File.Delete(path); File.Delete(path + "-wal"); File.Delete(path + "-shm");
+        }
+    }
+
+    [Fact]
     public async Task VersionTenJobIsBackfilledIntoOrderedSources()
     {
         string path = Path.Combine(Path.GetTempPath(), $"multi-source-upgrade-{Guid.NewGuid():N}.db");
@@ -202,7 +281,37 @@ public sealed class SqliteMigrationTests
                 await using SqliteCommand journalCommand = connection.CreateCommand();
                 journalCommand.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
                 long migrationCount = (long)(await journalCommand.ExecuteScalarAsync())!;
-                 Assert.Equal(15, migrationCount);
+                 Assert.Equal(17, migrationCount);
+
+                 await using SqliteCommand planningColumnsCommand = connection.CreateCommand();
+                 planningColumnsCommand.CommandText = """
+                     SELECT
+                       (SELECT COUNT(*) FROM pragma_table_info('planning_attempts')
+                        WHERE name IN ('attempt_key', 'completed_at')),
+                       (SELECT COUNT(*) FROM pragma_table_info('planning_approvals')
+                        WHERE name = 'repair_attempt');
+                     """;
+                 await using (SqliteDataReader planningColumns = await planningColumnsCommand.ExecuteReaderAsync())
+                 {
+                     Assert.True(await planningColumns.ReadAsync());
+                     Assert.Equal(2, planningColumns.GetInt32(0));
+                     Assert.Equal(1, planningColumns.GetInt32(1));
+                 }
+
+                 await using SqliteCommand planningIndexCommand = connection.CreateCommand();
+                 planningIndexCommand.CommandText = """
+                     SELECT COUNT(*) FROM pragma_index_list('planning_attempts')
+                     WHERE name = 'ux_planning_attempts_intent_key' AND [unique] = 1;
+                     """;
+                 Assert.Equal(1L, (long)(await planningIndexCommand.ExecuteScalarAsync())!);
+
+                 await using SqliteCommand deliveryColumnsCommand = connection.CreateCommand();
+                 deliveryColumnsCommand.CommandText = """
+                     SELECT COUNT(*)
+                     FROM pragma_table_info('delivery_receipts')
+                     WHERE name IN ('uploaded_sha256', 'uploaded_size_bytes', 'receipt_format_version');
+                     """;
+                 Assert.Equal(3L, (long)(await deliveryColumnsCommand.ExecuteScalarAsync())!);
 
                  await using SqliteCommand critiqueIndexCommand = connection.CreateCommand();
                  critiqueIndexCommand.CommandText = """

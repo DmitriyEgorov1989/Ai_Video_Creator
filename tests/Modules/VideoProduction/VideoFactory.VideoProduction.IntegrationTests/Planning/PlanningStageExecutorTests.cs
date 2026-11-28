@@ -41,6 +41,10 @@ public sealed class PlanningStageExecutorTests
             CancellationToken.None);
         Assert.NotNull(revision);
         Assert.Equal(1, fixture.Provider.CreatePlanCount);
+        PlanningCostLedger ledger = await new SqlitePlanningAttemptStore(fixture.ConnectionString)
+            .GetLedgerAsync(fixture.Job.JobId, fixture.Job.VariantId, CancellationToken.None);
+        Assert.Equal(PlanningCostLedgerState.Known, ledger.State);
+        Assert.Equal(0.01m, ledger.ActualCostUsd);
 
         JobCreationRecord planningState = firstState with
         {
@@ -309,6 +313,12 @@ public sealed class PlanningStageExecutorTests
         public Task<EditPlanRevision?> GetAsync(RevisionId revisionId, CancellationToken cancellationToken) => inner.GetAsync(revisionId, cancellationToken);
         public Task<EditPlanRevision?> FindAsync(JobId jobId, VariantId variantId, string planHash, CancellationToken cancellationToken) => inner.FindAsync(jobId, variantId, planHash, cancellationToken);
         public Task<EditPlanRevision> SaveAsync(EditPlan plan, string planHash, decimal actualCostUsd, CancellationToken cancellationToken) => inner.SaveAsync(plan, planHash, actualCostUsd, cancellationToken);
+        public Task<EditPlanRevision> CompletePlanningAsync(
+            EditPlan plan, string planHash, decimal actualCostUsd,
+            ReelsPresentationPlan? presentation, EditPlanAudit? audit,
+            PlanningAttemptRecord completedAttempt, CancellationToken cancellationToken) =>
+            inner.CompletePlanningAsync(
+                plan, planHash, actualCostUsd, presentation, audit, completedAttempt, cancellationToken);
     }
 
     private sealed class UnexpectedStageExecutor : IJobStageExecutor

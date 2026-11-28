@@ -95,6 +95,26 @@ public sealed class AcceptanceEvidenceCollectorTests
         Assert.Contains(report.Checks, check => check.Code == failedCheck && !check.Passed);
     }
 
+    [Fact]
+    public async Task DuplicateOrMismatchedUploadEvidenceIsRejected()
+    {
+        JobId jobId = JobId.New();
+        AcceptanceEvidenceSnapshot valid = ValidCompleted(jobId);
+        AcceptanceEvidenceSnapshot snapshot = valid with
+        {
+            SuccessfulDeliveryCount = 2,
+            UploadedSha256 = new string('b', 64)
+        };
+
+        AcceptanceEvidenceReport report = await new AcceptanceEvidenceCollector(new StubSource(snapshot))
+            .CollectAsync(jobId, CancellationToken.None);
+
+        Assert.Equal(2, report.SchemaVersion);
+        Assert.Equal(AcceptanceEvidenceOutcome.Failed, report.Outcome);
+        Assert.Contains(report.Checks, check => check.Code == "delivery.succeeded.exactly_one" && !check.Passed);
+        Assert.Contains(report.Checks, check => check.Code == "delivery.upload.sha256.matches" && !check.Passed);
+    }
+
     private static AcceptanceEvidenceSnapshot ValidCompleted(JobId jobId)
     {
         string hash = new('a', 64);
@@ -118,7 +138,18 @@ public sealed class AcceptanceEvidenceCollectorTests
             ManifestLinksMatch = true,
             CriticChainValid = true,
             QaPassed = true,
+            MediaProbePassed = true,
+            FullDecodePassed = true,
+            FrameAssertionsPassed = true,
+            AudioAssertionsPassed = true,
             DeliverySucceeded = true,
+            SuccessfulDeliveryCount = 1,
+            UploadedSha256 = hash,
+            UploadedSizeBytes = 10,
+            ActualCostUsd = 0.01m,
+            InstructionPresent = true,
+            SourceOrderValid = true,
+            StyleValid = true,
             SourceCount = 1,
             SourceMode = AcceptanceSourceMode.SingleSource,
             Artifacts =

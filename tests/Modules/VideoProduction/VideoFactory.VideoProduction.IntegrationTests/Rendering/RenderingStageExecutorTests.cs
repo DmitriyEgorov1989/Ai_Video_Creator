@@ -154,11 +154,13 @@ public sealed class RenderingStageExecutorTests
 
             CapturingRenderHost host = new();
             CapturingAudio audioBuilder = new();
+            CapturingNormalizer normalizer = new();
             RenderingStageExecutor executor = new(
                 plans,
                 artifacts,
                 host,
                 audioBuilder,
+                normalizer,
                 new Probe(),
                 root,
                 TimeSpan.FromSeconds(5),
@@ -186,6 +188,7 @@ public sealed class RenderingStageExecutorTests
             }
 
             Assert.Equal(StageExecutionKind.Completed, result.Kind);
+            Assert.Equal(1, normalizer.Calls);
             using JsonDocument request = JsonDocument.Parse(Assert.IsType<string>(host.RequestJson));
             JsonElement serializedPlan = request.RootElement.GetProperty("plan");
             Assert.Equal(multiSource || fullAudit ? 2 : 1, request.RootElement.GetProperty("schemaVersion").GetInt32());
@@ -238,6 +241,7 @@ public sealed class RenderingStageExecutorTests
                 CancellationToken.None);
             Assert.Equal(StageExecutionKind.Completed, repeat.Kind);
             Assert.Equal(1, host.RenderCount);
+            Assert.Equal(1, normalizer.Calls);
             Assert.Single(audioBuilder.Requests);
         }
         finally
@@ -281,6 +285,22 @@ public sealed class RenderingStageExecutorTests
             Requests.Add(request);
             await File.WriteAllBytesAsync(request.OutputPath, [3], cancellationToken);
             return AudioStemResult.Created(request.OutputPath);
+        }
+    }
+
+    private sealed class CapturingNormalizer : IRenderOutputNormalizer
+    {
+        public int Calls { get; private set; }
+
+        public async Task<RenderOutputNormalizationResult> NormalizeAsync(
+            RenderOutputNormalizationRequest request,
+            CancellationToken cancellationToken)
+        {
+            Calls++;
+            Assert.Equal(-18, request.TargetLoudnessLufs);
+            Assert.Equal(-2, request.MaximumTruePeakDbtp);
+            await File.WriteAllBytesAsync(request.OutputPath, [2], cancellationToken);
+            return new(true, null, null);
         }
     }
 

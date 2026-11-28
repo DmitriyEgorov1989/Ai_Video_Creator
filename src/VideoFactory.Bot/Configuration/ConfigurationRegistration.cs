@@ -140,7 +140,9 @@ public static class ConfigurationRegistration
         OptionsBuilder<PlanningOptions> planning = services.AddOptions<PlanningOptions>()
             .Bind(configuration.GetSection(PlanningOptions.SectionName))
             .Validate(options => options.JobLimitUsd >= 0,
-                "Planning:JobLimitUsd must not be negative.");
+                "Planning:JobLimitUsd must not be negative.")
+            .Validate(options => options.JobLimitUsd <= 0.10m,
+                "Planning:JobLimitUsd must not exceed 0.10 USD.");
 
         OptionsBuilder<CriticOptions> critic = services.AddOptions<CriticOptions>()
             .Bind(configuration.GetSection(CriticOptions.SectionName))

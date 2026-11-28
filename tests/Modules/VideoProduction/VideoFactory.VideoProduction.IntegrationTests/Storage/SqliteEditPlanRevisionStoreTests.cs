@@ -139,6 +139,30 @@ public sealed class SqliteEditPlanRevisionStoreTests
     }
 
     [Fact]
+    public async Task PlanningCompletionFailureRollsBackRevisionAndPointers()
+    {
+        await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();
+        CreateJobResult.Succeeded job = await CreateJobAsync(database);
+        EditPlan plan = CreatePlan(job);
+        PlanningAttemptRecord missingIntent = new(
+            Guid.NewGuid(), job.JobId, job.VariantId, 1, 0, 0.03m, 0.02m,
+            "succeeded", null, null, DateTimeOffset.UtcNow);
+        SqliteEditPlanRevisionStore store = new(database.ConnectionString);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.CompletePlanningAsync(
+            plan, "atomic-hash", 0.02m, null, null, missingIntent, CancellationToken.None));
+
+        Assert.Null(await store.GetAsync(plan.RevisionId, CancellationToken.None));
+        Assert.Null(await store.FindApprovedAsync(job.JobId, job.VariantId, CancellationToken.None));
+        await using SqliteConnection connection = new(database.ConnectionString);
+        await connection.OpenAsync();
+        await using SqliteCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT current_approved_edit_plan_revision_id FROM variants WHERE variant_id = $variantId;";
+        command.Parameters.AddWithValue("$variantId", job.VariantId.ToString());
+        Assert.Equal(DBNull.Value, await command.ExecuteScalarAsync());
+    }
+
+    [Fact]
     public async Task ChildVariantFindsParentsApprovedRevision()
     {
         await using TemporarySqliteDatabase database = await TemporarySqliteDatabase.CreateAsync();

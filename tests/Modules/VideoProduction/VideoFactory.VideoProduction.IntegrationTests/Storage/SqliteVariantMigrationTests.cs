@@ -64,7 +64,7 @@ public sealed class SqliteVariantMigrationTests
                 """;
             Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
             command.CommandText = "SELECT COUNT(*) FROM schema_migrations;";
-            Assert.Equal(15L, (long)(await command.ExecuteScalarAsync())!);
+            Assert.Equal(17L, (long)(await command.ExecuteScalarAsync())!);
         }
         finally
         {

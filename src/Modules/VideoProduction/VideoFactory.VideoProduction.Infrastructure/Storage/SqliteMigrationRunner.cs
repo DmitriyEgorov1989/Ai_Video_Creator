@@ -229,6 +229,71 @@ public sealed class SqliteMigrationRunner
                 cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
         }
 
+        if (!await IsAppliedAsync(connection, transaction, 16, cancellationToken))
+        {
+            if (await TableExistsAsync(connection, transaction, "delivery_receipts", cancellationToken))
+            {
+                await EnsureColumnAsync(
+                    connection, transaction, "delivery_receipts", "uploaded_sha256", "TEXT NULL", cancellationToken);
+                await EnsureColumnAsync(
+                    connection, transaction, "delivery_receipts", "uploaded_size_bytes", "INTEGER NULL", cancellationToken);
+            }
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (16, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
+        if (!await IsAppliedAsync(connection, transaction, 17, cancellationToken))
+        {
+            if (await TableExistsAsync(connection, transaction, "delivery_receipts", cancellationToken))
+            {
+                await EnsureColumnAsync(
+                    connection, transaction, "delivery_receipts", "receipt_format_version", "INTEGER NULL", cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    UPDATE delivery_receipts
+                    SET receipt_format_version = CASE
+                        WHEN uploaded_sha256 IS NOT NULL AND uploaded_size_bytes > 0 THEN 2
+                        ELSE 1
+                    END
+                    WHERE receipt_format_version IS NULL;
+                    """, cancellationToken);
+            }
+            if (await TableExistsAsync(connection, transaction, "planning_attempts", cancellationToken))
+            {
+                await EnsureColumnAsync(
+                    connection, transaction, "planning_attempts", "attempt_key", "TEXT NULL", cancellationToken);
+                await EnsureColumnAsync(
+                    connection, transaction, "planning_attempts", "completed_at", "TEXT NULL", cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE UNIQUE INDEX IF NOT EXISTS ux_planning_attempts_intent_key
+                        ON planning_attempts (attempt_key) WHERE attempt_key IS NOT NULL;
+                    CREATE INDEX IF NOT EXISTS ix_planning_attempts_job_status
+                        ON planning_attempts (job_id, status);
+                    """, cancellationToken);
+            }
+            if (await TableExistsAsync(connection, transaction, "planning_approvals", cancellationToken))
+            {
+                await EnsureColumnAsync(
+                    connection, transaction, "planning_approvals", "repair_attempt", "INTEGER NOT NULL DEFAULT 0", cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    UPDATE planning_approvals
+                    SET repair_attempt = CASE
+                        WHEN version >= 1 THEN version - 1
+                        ELSE -1
+                    END;
+                    """, cancellationToken);
+                await ExecuteAsync(connection, transaction, """
+                    CREATE INDEX IF NOT EXISTS ix_planning_approvals_cost_snapshot
+                        ON planning_approvals (
+                            job_id, variant_id, repair_attempt,
+                            estimated_cost_usd, accumulated_actual_cost_usd, status);
+                    """, cancellationToken);
+            }
+            await ExecuteAsync(connection, transaction,
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (17, $appliedAt);",
+                cancellationToken, ("$appliedAt", DateTimeOffset.UtcNow.ToString("O")));
+        }
+
         await transaction.CommitAsync(cancellationToken);
         await ExecuteAsync(connection, transaction: null, "PRAGMA foreign_keys = ON;", cancellationToken);
     }
@@ -435,6 +500,8 @@ public sealed class SqliteMigrationRunner
             status TEXT NOT NULL,
             error_code TEXT NULL,
             error_message TEXT NULL,
+            uploaded_sha256 TEXT NULL,
+            uploaded_size_bytes INTEGER NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY (job_id) REFERENCES jobs (job_id) ON DELETE CASCADE,
             FOREIGN KEY (variant_id) REFERENCES variants (variant_id) ON DELETE CASCADE,

@@ -191,15 +191,30 @@ $env:Telegram__AllowedUserId = '123456789'
 $env:AiApi__ApiKey = '<local secret>'
 $env:AiApi__Provider = 'deepseek'
 $env:AiApi__Model = 'deepseek-chat'
+$env:Planning__JobLimitUsd = '0.10'
 $env:Whisper__PythonPath = (Resolve-Path .\.venv\Scripts\python.exe).Path
 $env:WHISPER_MODEL_PATH = (Resolve-Path .\data\models\whisper-small).Path
-.\scripts\Run-RealTelegramAcceptance.ps1 -SourceMode single-source
+.\scripts\Run-RealTelegramAcceptance.ps1 `
+  -SourceMode single-source `
+  -MaxBudgetUsd 0.10 `
+  -ReportPath .\data\acceptance\single\report.json
 ```
 
 После отправки инструкции и всех исходников завершите набор командой `/done`.
-Для нескольких исходников используйте `-SourceMode multi-source`. До реального
-запуска синтаксис и безопасный отчёт можно проверить через `-DryRun`; сеть,
-host и платные API при этом не запускаются.
+Для нескольких исходников используйте отдельный запуск и путь отчёта:
+
+```powershell
+.\scripts\Run-RealTelegramAcceptance.ps1 `
+  -SourceMode multi-source `
+  -MaxBudgetUsd 0.10 `
+  -ReportPath .\data\acceptance\multi\report.json
+```
+
+Значение `MaxBudgetUsd` задаёт максимальную стоимость одного Job в долларах США,
+передаётся Host как `Planning__JobLimitUsd` и сохраняется в безопасном отчёте.
+Если evidence не содержит фактическую стоимость или она превышает лимит, runner
+завершается неуспешно. До реального запуска синтаксис и безопасный отчёт можно
+проверить через `-DryRun`; сеть, host и платные API при этом не запускаются.
 
 Скрипт отслеживает единственный Job, созданный после старта, и опрашивает
 `acceptance-evidence` до успешной delivery receipt. Timeout, несогласованные
@@ -207,3 +222,15 @@ evidence и отсутствие Job завершаются ненулевым �
 `elapsedSeconds`, `cpuTimeSeconds`, `peakRamBytes` и `diskDeltaBytes`; отдельный
 evidence JSON содержит только технические ID, hashes, размеры и коды проверок,
 без token, recipient ID, комментария, media contents, Telegram message/file ID.
+Evidence V2 дополнительно требует ровно одну успешную delivery receipt, совпадение
+SHA-256 и размера прочитанного Telegram upload-потока с final MP4, непрерывный
+порядок sources, наличие instruction, допустимый style и записанную фактическую
+стоимость. `qa.passed` означает успешные FFprobe и полный decode; принятый critic
+chain является обязательным frame gate. Telegram подтверждает приём upload, но не
+возвращает checksum и может обрабатывать опубликованное видео на своей стороне.
+
+После Remotion этап Rendering выполняет двухпроходный FFmpeg `loudnorm` для
+собранной аудиодорожки: первый проход измеряет фактические параметры, второй
+копирует video stream без перекодирования и нормализует audio к целевым LUFS и
+true peak. В `render-output` регистрируется только нормализованный MP4, который
+затем проходит FFprobe, полный decode и измеряемые audio assertions.

@@ -42,7 +42,7 @@ public sealed class PackagingSafetyTests
 
     [Theory]
     [InlineData("{\"status\":\"failed\"}", "packaging.qa_not_passed")]
-    [InlineData("{\"status\":\"passed\"}", "packaging.qa_mismatch")]
+    [InlineData("{\"status\":\"passed\"}", "packaging.qa_not_passed")]
     public async Task UnverifiedQaNeverPublishesFinalVideo(string reportJson, string expectedCode)
     {
         string root = Path.Combine(Path.GetTempPath(), $"packaging-safety-{Guid.NewGuid():N}");
@@ -115,7 +115,14 @@ public sealed class PackagingSafetyTests
             ArtifactRecord render = new(ArtifactId.New(), "render-output", "render.mp4", hash, 3, null, null, "test", id, job.VariantId);
             string report = JsonSerializer.Serialize(new
             {
+                schemaVersion = 2,
                 status = "passed", jobId = id, variantId = job.VariantId, planRevisionId = revision,
+                checks = new
+                {
+                    ffprobePassed = true,
+                    fullDecodePassed = true,
+                    audioAssertionsPassed = true
+                },
                 output = new { artifactId = render.ArtifactId, sha256 = hash, sizeBytes = 3 }
             }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             await File.WriteAllTextAsync(Path.Combine(root, "qa.json"), report);
@@ -164,6 +171,11 @@ public sealed class PackagingSafetyTests
         public Task<EditPlanRevision?> FindAsync(JobId jobId, VariantId variantId, string planHash, CancellationToken cancellationToken) =>
             Task.FromResult<EditPlanRevision?>(null);
         public Task<EditPlanRevision> SaveAsync(VideoFactory.VideoProduction.Domain.Editing.EditPlan plan, string planHash, decimal actualCostUsd, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+        public Task<EditPlanRevision> CompletePlanningAsync(
+            VideoFactory.VideoProduction.Domain.Editing.EditPlan plan, string planHash, decimal actualCostUsd,
+            ReelsPresentationPlan? presentation, EditPlanAudit? audit,
+            PlanningAttemptRecord completedAttempt, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
     }
 }

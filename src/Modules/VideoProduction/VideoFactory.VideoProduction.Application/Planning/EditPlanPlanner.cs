@@ -131,9 +131,25 @@ public sealed class EditPlanPlanner
         ReelsPresentationPlan presentation = ReelsPresentationPlan.FromEvaluation(style, editingEvaluation);
         EditPlanAudit audit = EditPlanAudit.FromEvaluation(editingEvaluation);
         ProviderPlanningRequest providerRequest = CreateProviderRequest(request, editingEvaluation);
-        decimal accumulatedActualCostUsd = 0m;
+        PlanningCostLedger ledger = await attemptStore.GetLedgerAsync(
+            request.JobId,
+            request.VariantId,
+            cancellationToken);
+        if (ledger.State == PlanningCostLedgerState.Invalid)
+        {
+            return new PlanningResult.Rejected(
+                "planning.cost_ledger_invalid",
+                "The stored planning cost ledger is invalid.");
+        }
+        if (ledger.State == PlanningCostLedgerState.Unknown)
+        {
+            return new PlanningResult.Rejected(
+                "planning.cost_unknown",
+                "A previous planning provider call has an unknown actual cost or outcome.");
+        }
+        decimal accumulatedActualCostUsd = ledger.ActualCostUsd!.Value;
         PlanConstructionException? lastError = null;
-        for (int attempt = 0; attempt < 2; attempt++)
+        for (int attempt = ledger.NextRepairAttempt; attempt < 2; attempt++)
         {
             ProviderPlanningRequest attemptRequest = providerRequest with { RepairAttempt = attempt };
             PlanningCostEstimate estimate = await provider.EstimateCostAsync(
@@ -148,8 +164,10 @@ public sealed class EditPlanPlanner
             bool approvedForThisAttempt = approval is not null
                 && approval.Status == PlanningApprovalStatus.Approved
                 && approval.TelegramUserId == request.TelegramUserId
-                && approval.Version == attempt + 1
-                && approval.EstimatedCostUsd == estimate.EstimatedCostUsd;
+                && approval.RepairAttempt == attempt
+                && approval.EstimatedCostUsd == estimate.EstimatedCostUsd
+                && approval.AccumulatedActualCostUsd == accumulatedActualCostUsd
+                && approval.LimitUsd == request.JobLimitUsd;
 
             if (approval is { Status: PlanningApprovalStatus.Rejected })
             {
@@ -167,6 +185,7 @@ public sealed class EditPlanPlanner
                         request.JobId,
                         request.VariantId,
                         userId,
+                        attempt,
                         estimate.EstimatedCostUsd,
                         accumulatedActualCostUsd,
                         request.JobLimitUsd,
@@ -180,7 +199,7 @@ public sealed class EditPlanPlanner
                     approvalVersion);
             }
 
-            if (!decision.IsAllowed)
+            if (!decision.IsAllowed && !approvedForThisAttempt)
             {
                 return new PlanningResult.Rejected(
                     "planning.cost_limit_exceeded",
@@ -188,15 +207,44 @@ public sealed class EditPlanPlanner
             }
 
             ProviderPlanResponse response;
+            PlanningAttemptRecord attemptRecord = CreateAttemptRecord(
+                request, attempt, estimate, null, "started", null);
+            await attemptStore.SaveAsync(attemptRecord, cancellationToken);
             try
             {
                 response = await provider.CreatePlanAsync(attemptRequest, cancellationToken);
             }
             catch (PlanningProviderException exception)
             {
+                string status = exception.ActualCostUsd is null ? "failed" : "invalid";
                 await attemptStore.SaveAsync(
-                    CreateAttemptRecord(request, attempt, estimate, exception.ActualCostUsd, "failed", exception),
-                    cancellationToken);
+                    CompleteAttempt(attemptRecord, exception.ActualCostUsd, status, exception),
+                    CancellationToken.None);
+                if (exception.ActualCostUsd is not decimal actualCostUsd)
+                {
+                    throw;
+                }
+
+                accumulatedActualCostUsd += actualCostUsd;
+                lastError = new PlanConstructionException(
+                    "planning.provider_response_invalid",
+                    exception.Message);
+                continue;
+            }
+            catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+            {
+                await attemptStore.SaveAsync(
+                    CompleteAttempt(attemptRecord, null, "failed", exception),
+                    CancellationToken.None);
+                throw;
+            }
+            catch (Exception exception) when (
+                exception is HttpRequestException or TimeoutException
+                || exception is TaskCanceledException && !cancellationToken.IsCancellationRequested)
+            {
+                await attemptStore.SaveAsync(
+                    CompleteAttempt(attemptRecord, null, "failed", exception),
+                    CancellationToken.None);
                 throw;
             }
 
@@ -248,30 +296,36 @@ public sealed class EditPlanPlanner
                 if (existing is not null)
                 {
                     await attemptStore.SaveAsync(
-                        CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "existing", null),
-                        cancellationToken);
+                        CompleteAttempt(attemptRecord, response.ActualCostUsd, "existing", null),
+                        CancellationToken.None);
                     return new PlanningResult.Existing(existing);
                 }
 
-                EditPlanRevision revision = await revisionStore.SaveAsync(
+                PlanningAttemptRecord completedAttempt = CompleteAttempt(
+                    attemptRecord, response.ActualCostUsd, "succeeded", null);
+                EditPlanRevision revision = await revisionStore.CompletePlanningAsync(
                     plan,
                     planHash,
                     accumulatedActualCostUsd,
                     presentation,
                     audit,
-                    cancellationToken);
-
-                await attemptStore.SaveAsync(
-                    CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "succeeded", null),
+                    completedAttempt,
                     cancellationToken);
 
                 return new PlanningResult.Created(revision);
             }
+            catch (OperationCanceledException exception) when (cancellationToken.IsCancellationRequested)
+            {
+                await attemptStore.SaveAsync(
+                    CompleteAttempt(attemptRecord, response.ActualCostUsd, "failed", exception),
+                    CancellationToken.None);
+                throw;
+            }
             catch (PlanConstructionException exception)
             {
                 await attemptStore.SaveAsync(
-                    CreateAttemptRecord(request, attempt, estimate, response.ActualCostUsd, "invalid", exception),
-                    cancellationToken);
+                    CompleteAttempt(attemptRecord, response.ActualCostUsd, "invalid", exception),
+                    CancellationToken.None);
                 lastError = exception;
             }
         }
@@ -300,6 +354,21 @@ public sealed class EditPlanPlanner
             exception is PlanConstructionException construction ? construction.ErrorCode : exception?.GetType().Name,
             exception?.Message,
             DateTimeOffset.UtcNow);
+
+    private static PlanningAttemptRecord CompleteAttempt(
+        PlanningAttemptRecord intent,
+        decimal? actualCostUsd,
+        string status,
+        Exception? exception) => intent with
+        {
+            ActualCostUsd = actualCostUsd,
+            Status = status,
+            ErrorCode = exception is PlanConstructionException construction
+                ? construction.ErrorCode
+                : exception?.GetType().Name,
+            ErrorMessage = exception?.Message,
+            CompletedAt = DateTimeOffset.UtcNow
+        };
 
     private static PlanningResult.Rejected? ValidateInput(PlanningRequest request)
     {
@@ -444,6 +513,7 @@ public sealed class EditPlanPlanner
                 "Provider omitted a segment selected by the multi-clip director.");
         }
         List<VideoClip> clips = [];
+        int outputCursor = 0;
         foreach (ProviderVideoClip providerClip in response.VideoClips)
         {
             if (!segments.TryGetValue(providerClip.SegmentId, out AllowedSegment? segment))
@@ -453,12 +523,17 @@ public sealed class EditPlanPlanner
                     $"Provider referred to unknown segment '{providerClip.SegmentId}'.");
             }
 
+            OutputRange selectedOutput = pacingOutputs.TryGetValue(segment.Id, out OutputRange pacedOutput)
+                ? pacedOutput
+                : providerClip.Output;
+            OutputRange contiguousOutput = new(
+                outputCursor,
+                checked(outputCursor + selectedOutput.DurationFrames));
+            outputCursor = contiguousOutput.EndFrame;
             clips.Add(new VideoClip(
                 segment.Id,
                 segment.Mapping,
-                pacingOutputs.TryGetValue(segment.Id, out OutputRange pacedOutput)
-                    ? pacedOutput
-                    : providerClip.Output,
+                contiguousOutput,
                 providerClip.Crop));
         }
 

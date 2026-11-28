@@ -156,12 +156,12 @@ Telegram или платном API вызове.
 |---|---|---|---|
 | Preparation | изменённый Original; отмена FFmpeg; restart после регистрации Master | изменённый вход отклонён, process tree остановлен, готовый Master переиспользован | `PreparationStageExecutorTests`, `SystemProcessRunnerTests` |
 | Analysis | отсутствующий или изменённый Master; отмена Whisper с дочерним процессом | Analysis не запускается для изменённого Master; restart остаётся на Analysis | `AnalysisStageExecutorTests`, `WhisperProcessLifetimeTests` |
-| Planning | provider timeout, HTTP 429/500/503, malformed response, невалидный repair | временные ошибки повторяются; malformed/invalid repair не создают approved revision | `EditPlanPlannerTests`, `DeepSeekEditPlanProviderTests` |
+| Planning | provider timeout, HTTP 429/500/503, malformed response, невалидный repair | известная стоимость учитывается перед repair; неизвестный исход блокирует новый платный вызов; malformed/invalid repair не создают approved revision | `EditPlanPlannerTests`, `DeepSeekEditPlanProviderTests` |
 | Rendering | настоящий Remotion failure и timeout | output не публикуется; повтор с тем же request успешно создаёт один MP4 | `RenderHostProcessAdapterIntegrationTests.RealRemotionFailureAndTimeoutLeaveNoOutputAndRetrySucceeds` |
 | Critique | незавершённая attempt и restart | тот же Variant продолжает Critique, завершённая попытка переиспользуется | `RestartRecoversInterruptedAttemptAtEveryStage`, `CritiqueStageExecutorTests` |
 | Verification | изменённый render после регистрации | QA не запускается, QA report и final MP4 не создаются | `VerificationPrivacyTests.ChangedRenderIsRejectedBeforeQualityAssurance` |
 | Packaging | failed/tampered QA; остановка между публикацией файла и регистрацией artifact | непроверенный MP4 не публикуется; повтор регистрирует один final artifact | `PackagingSafetyTests` |
-| Delivery | временная ошибка отправки; restart до или после сохранённой receipt | существующий final используется без render; сохранённая успешная receipt исключает повтор | `StageFaultTests`, `TelegramToDeliveryAcceptanceTests` |
+| Delivery | временная ошибка отправки; restart до или после сохранённой receipt | существующий final используется без render; успешная receipt исключает повтор; незавершённое `sending` intent блокирует автоматический resend | `StageFaultTests`, `DeliveryStageExecutorTests`, `TelegramToDeliveryAcceptanceTests` |
 
 Для всех восьми стадий переход после незавершённой attempt проверяет
 `SequentialJobProcessorTests.RestartRecoversInterruptedAttemptAtEveryStage`.
@@ -177,12 +177,13 @@ V3 или V4; V4 дополнительно проходит полный audit 
 Ограничение Telegram остаётся прежним: если Telegram принял файл, но Host
 остановился до сохранения receipt, протокол Bot API не позволяет доказать
 exactly-once delivery. Эта неопределённость не создаёт второй Variant, approved
-plan или final MP4, но может потребовать операторской сверки доставки.
+plan или final MP4. Durable `sending` intent запрещает автоматическую повторную
+отправку и требует операторской сверки доставки.
 
 Итоговая локальная проверка: solution build прошёл без warnings и errors;
-`215` unit, `134` integration и `89` Bot тестов прошли, `18`
-environment-dependent тестов пропущены без acceptance media и Whisper;
-render-host typecheck, build, `18` тестов и smoke render прошли. Harness health
+`241` unit, `145` integration и `90` Bot тестов прошли, `21`
+environment-dependent тест пропущен без acceptance media и Whisper;
+render-host typecheck, build, `20` тестов и smoke render прошли. Harness health
 не прошёл из-за существующего `Pinned source license drift detected: agent-harness`;
 vendored harness в рамках задачи не изменялся.
 
@@ -226,3 +227,38 @@ Media/oracle набор прошёл 12 из 12 тестов. Render-host про
 модель `faster-whisper` отсутствовала, поэтому настоящий `WhisperAcceptanceTests` в
 этом запуске не выполнялся. Пик RAM отражает параллельный запуск строк xUnit. Реальный
 Telegram Bot API, пользовательские медиа и платный LLM не использовались.
+
+## Подготовка реальной Telegram-приёмки
+
+27 ноября 2026 года контур issue `#58` подготовлен к двум отдельным реальным
+запускам с лимитом `0,10 USD` на один Job, не более `0,20 USD` суммарно. SQLite
+migration 16 сохраняет SHA-256 и размер прочитанного Telegram upload-потока в
+delivery receipt. Acceptance Evidence V2 требует ровно одну успешную delivery,
+сопоставляет upload с final MP4 и включает суммарную фактическую стоимость без
+recipient ID, Telegram message/file ID, пользовательского текста и media contents.
+
+Runner передаёт согласованный лимит через `Planning__JobLimitUsd`, отклоняет V1
+evidence, отсутствие стоимости и превышение бюджета. Single-source и multi-source
+запуски должны использовать разные `ReportPath`.
+
+## Реальная Telegram-приёмка
+
+28 ноября 2026 года выполнены два отдельных запуска через настоящий Telegram Bot
+API, локальный Whisper и DeepSeek:
+
+| Сценарий | Источники | Время | Фактическая стоимость | Доставка | Evidence V2 |
+|---|---:|---:|---:|---:|---|
+| single-source | 1 | 152,522 с | 0,000523584 USD | 1 | passed |
+| multi-source | 2 | 264,867 с | 0,0011544 USD | 1 | passed |
+
+Для обоих Job подтверждены одинаковые SHA-256 и размеры `render-output`,
+`final-mp4` и прочитанного Telegram upload-потока. Все проверки plan/audit hash,
+Manifest V2, critic chain, FFprobe, полного decode, frame/audio assertions,
+порядка sources и ровно одной успешной доставки прошли. Итоговые файлы имели
+размер 6 054 465 байт и 9 934 803 байта соответственно.
+
+Реальный запуск выявил два дефекта, закрытых до зелёной приёмки: provider response
+с недопустимыми значениями теперь использует ограниченную repair-попытку, а C#
+детерминированно формирует непрерывный output timeline. После Remotion применяется
+двухпроходная нормализация итоговой аудиодорожки без перекодирования video stream;
+контрольный проход измерил `-16,01 LUFS` и `-1,18 dBTP`.

@@ -119,6 +119,27 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         decimal actualCostUsd,
         ReelsPresentationPlan? presentation,
         EditPlanAudit? audit,
+        CancellationToken cancellationToken) =>
+        await SaveCoreAsync(plan, planHash, actualCostUsd, presentation, audit, null, cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<EditPlanRevision> CompletePlanningAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        EditPlanAudit? audit,
+        PlanningAttemptRecord completedAttempt,
+        CancellationToken cancellationToken) =>
+        await SaveCoreAsync(plan, planHash, actualCostUsd, presentation, audit, completedAttempt, cancellationToken);
+
+    private async Task<EditPlanRevision> SaveCoreAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        EditPlanAudit? audit,
+        PlanningAttemptRecord? completedAttempt,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -166,6 +187,27 @@ public sealed class SqliteEditPlanRevisionStore : IEditPlanRevisionStore
         try
         {
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            if (completedAttempt is not null)
+            {
+                await using SqliteCommand attemptCommand = connection.CreateCommand();
+                attemptCommand.Transaction = transaction;
+                attemptCommand.CommandText = """
+                    UPDATE planning_attempts
+                    SET actual_cost_usd = $actualCostUsd, status = $status,
+                        error_code = $errorCode, error_message = $errorMessage,
+                        completed_at = $completedAt
+                    WHERE attempt_id = $attemptId AND status = 'started';
+                    """;
+                attemptCommand.Parameters.AddWithValue("$actualCostUsd", completedAttempt.ActualCostUsd?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? (object)DBNull.Value);
+                attemptCommand.Parameters.AddWithValue("$status", completedAttempt.Status);
+                attemptCommand.Parameters.AddWithValue("$errorCode", completedAttempt.ErrorCode ?? (object)DBNull.Value);
+                attemptCommand.Parameters.AddWithValue("$errorMessage", completedAttempt.ErrorMessage ?? (object)DBNull.Value);
+                attemptCommand.Parameters.AddWithValue("$completedAt", completedAttempt.CompletedAt?.ToString("O") ?? (object)DBNull.Value);
+                attemptCommand.Parameters.AddWithValue("$attemptId", completedAttempt.AttemptId.ToString());
+                if (await attemptCommand.ExecuteNonQueryAsync(cancellationToken) != 1)
+                    throw new InvalidOperationException("The planning attempt intent was not found or was already completed.");
+            }
 
             await using SqliteCommand approvalCommand = connection.CreateCommand();
             approvalCommand.Transaction = transaction;

@@ -162,29 +162,42 @@ public sealed class DeliveryStageExecutor : IJobStageExecutor
             return StageExecutionResult.Permanent("delivery.manifest_invalid", "The delivery manifest is invalid.");
         }
 
-        if (await receiptStore.HasSucceededAsync(
-                job.JobId,
-                job.VariantId,
-                finalArtifact.ArtifactId,
-                recipientId,
-                cancellationToken))
+        DeliveryIntent intent = new(
+            Guid.NewGuid(), job.JobId, job.VariantId, finalArtifact.ArtifactId, recipientId,
+            finalArtifact.Sha256, finalArtifact.SizeBytes!.Value);
+        DeliveryIntentStart start = await receiptStore.TryStartAsync(intent, cancellationToken);
+        if (start is DeliveryIntentStart.AlreadySucceeded)
             return StageExecutionResult.Success("delivery.already_succeeded", "The final artifact was already delivered.");
+        if (start is DeliveryIntentStart.Indeterminate)
+            return StageExecutionResult.Permanent(
+                "delivery.unknown_result",
+                "A previous delivery attempt has an unknown result and cannot be resent automatically.");
 
         VideoDeliveryResult result = await delivery.SendAsync(
             new VideoDeliveryRequest(job.JobId, job.VariantId, path, "Готовый ролик", recipientId),
             cancellationToken);
-        await receiptStore.AppendAsync(
+        bool uploadEvidenceMatches = result.IsSuccess
+            && string.Equals(result.UploadedSha256, finalArtifact.Sha256, StringComparison.OrdinalIgnoreCase)
+            && result.UploadedSizeBytes == finalArtifact.SizeBytes;
+        using CancellationTokenSource persistenceCts = new(TimeSpan.FromSeconds(5));
+        await receiptStore.CompleteAsync(
             new DeliveryReceipt(
-                Guid.NewGuid(),
+                intent.ReceiptId,
                 job.JobId,
                 job.VariantId,
                 finalArtifact.ArtifactId,
                 recipientId,
                 result.RemoteMessageId,
-                result.IsSuccess ? "succeeded" : "failed",
+                uploadEvidenceMatches ? "succeeded" : result.IsSuccess ? "evidence-mismatch" : "failed",
                 result.ErrorCode,
-                result.ErrorMessage),
-            cancellationToken);
+                result.ErrorMessage,
+                result.UploadedSha256,
+                result.UploadedSizeBytes),
+            persistenceCts.Token);
+        if (result.IsSuccess && !uploadEvidenceMatches)
+            return StageExecutionResult.Permanent(
+                "delivery.upload_evidence_mismatch",
+                "Telegram accepted a stream that does not match the final artifact.");
         return result.IsSuccess
             ? StageExecutionResult.Success()
             : StageExecutionResult.Retryable(result.ErrorCode ?? "delivery.failed", result.ErrorMessage ?? "Video delivery failed.");

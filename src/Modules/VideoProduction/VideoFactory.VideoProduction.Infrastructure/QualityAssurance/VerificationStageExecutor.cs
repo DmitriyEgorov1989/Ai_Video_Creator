@@ -101,7 +101,7 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
         string reportPath = Path.Combine(Path.GetDirectoryName(outputPath)!, $"qa-report-{reportId}.json");
         string reportJson = JsonSerializer.Serialize(new
         {
-            schemaVersion = 1,
+            schemaVersion = 2,
             jobId = job.JobId,
             variantId = job.VariantId,
             planRevisionId = revision.RevisionId,
@@ -109,6 +109,12 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
             status = result.IsSuccess ? "passed" : "failed",
             errorCode = result.IsSuccess ? null : "verification.failed",
             errorMessage = result.IsSuccess ? null : "Output verification failed. See the stored stage attempt for diagnostics.",
+            checks = new
+            {
+                ffprobePassed = result.IsSuccess,
+                fullDecodePassed = result.IsSuccess,
+                audioAssertionsPassed = result.IsSuccess
+            },
             output = new
             {
                 artifactId = render.ArtifactId,
@@ -146,7 +152,7 @@ public sealed class VerificationStageExecutor : IJobStageExecutor
             new FileInfo(reportPath).Length,
             reportJson,
             render.ArtifactId,
-            "video-qa/1",
+            "video-qa/2",
             job.JobId,
             job.VariantId);
         ArtifactRegistrationResult registration = await artifactStore.RegisterAsync(report, cancellationToken);

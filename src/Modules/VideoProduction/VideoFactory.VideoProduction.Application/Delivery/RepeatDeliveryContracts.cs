@@ -3,6 +3,7 @@ using VideoFactory.VideoProduction.Application.Jobs.State;
 using VideoFactory.VideoProduction.Application.Storage;
 using VideoFactory.VideoProduction.Domain.Identifiers;
 using VideoFactory.VideoProduction.Domain.Jobs;
+using System.Security.Cryptography;
 
 namespace VideoFactory.VideoProduction.Application.Delivery;
 
@@ -51,10 +52,19 @@ public abstract record RepeatDeliveryRequestStart
 /// <summary>Сохраняет ключи Telegram-команд для идемпотентной обработки.</summary>
 public interface IRepeatDeliveryRequestStore
 {
+    /// <summary>Возвращает сохранённое состояние команды без создания pending-записи.</summary>
+    /// <param name="telegramUpdateId">Идентификатор Telegram update.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Сохранённое состояние или <see langword="null"/>, если update ещё не встречался.</returns>
+    Task<RepeatDeliveryRequestStart?> FindAsync(long telegramUpdateId, CancellationToken cancellationToken);
+
     /// <summary>Атомарно резервирует команду или возвращает её предыдущий результат.</summary>
     Task<RepeatDeliveryRequestStart> TryStartAsync(RepeatDeliveryCommand command, CancellationToken cancellationToken);
 
-    /// <summary>Связывает команду с результатом доставки.</summary>
+    /// <summary>Атомарно сохраняет receipt и завершает связанную команду.</summary>
+    /// <param name="telegramUpdateId">Идентификатор Telegram update.</param>
+    /// <param name="receipt">Итоговая запись доставки.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
     Task CompleteAsync(long telegramUpdateId, DeliveryReceipt receipt, CancellationToken cancellationToken);
 }
 
@@ -78,7 +88,6 @@ public sealed class RepeatDeliveryUseCase
     private readonly IRepeatDeliveryArtifactSource artifactSource;
     private readonly IVideoDelivery delivery;
     private readonly IRepeatDeliveryRequestStore requestStore;
-    private readonly IDeliveryReceiptStore receiptStore;
 
     /// <summary>Создаёт use case повторной доставки.</summary>
     public RepeatDeliveryUseCase(
@@ -92,7 +101,7 @@ public sealed class RepeatDeliveryUseCase
         this.artifactSource = artifactSource ?? throw new ArgumentNullException(nameof(artifactSource));
         this.delivery = delivery ?? throw new ArgumentNullException(nameof(delivery));
         this.requestStore = requestStore ?? throw new ArgumentNullException(nameof(requestStore));
-        this.receiptStore = receiptStore ?? throw new ArgumentNullException(nameof(receiptStore));
+        ArgumentNullException.ThrowIfNull(receiptStore);
     }
 
     /// <summary>Повторно отправляет MP4, не изменяя состояние Job.</summary>
@@ -121,6 +130,44 @@ public sealed class RepeatDeliveryUseCase
             return new RepeatDeliveryResult.Rejected("delivery.job_not_completed", "The requested job is not completed yet.");
         }
 
+        RepeatDeliveryRequestStart? existing = await requestStore.FindAsync(
+            command.TelegramUpdateId, cancellationToken);
+        if (existing is RepeatDeliveryRequestStart.AlreadyProcessed processed)
+        {
+            return new RepeatDeliveryResult.AlreadyProcessed(
+                processed.Receipt.Status, processed.Receipt.RemoteMessageId);
+        }
+
+        if (existing is RepeatDeliveryRequestStart.Pending)
+        {
+            return new RepeatDeliveryResult.Rejected(
+                "delivery.unknown_result", "The previous delivery attempt has an unknown result.");
+        }
+
+        RepeatDeliveryArtifact artifact;
+        string expectedSha256;
+        long expectedSizeBytes;
+        try
+        {
+            RepeatDeliveryArtifactResult artifactResult = await artifactSource.GetVerifiedAsync(job, cancellationToken);
+            if (artifactResult is RepeatDeliveryArtifactResult.Rejected rejected)
+            {
+                return new RepeatDeliveryResult.Rejected(rejected.Code, rejected.Message);
+            }
+
+            artifact = ((RepeatDeliveryArtifactResult.Succeeded)artifactResult).Artifact;
+            await using FileStream uploadSource = new(
+                artifact.FilePath, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+            expectedSha256 = Convert.ToHexStringLower(
+                await SHA256.HashDataAsync(uploadSource, cancellationToken));
+            expectedSizeBytes = uploadSource.Length;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new RepeatDeliveryResult.Rejected(
+                "delivery.artifact_unavailable", "The verified video is unavailable for delivery.");
+        }
+
         RepeatDeliveryRequestStart start = await requestStore.TryStartAsync(command, cancellationToken);
         if (start is RepeatDeliveryRequestStart.AlreadyProcessed previous)
         {
@@ -132,16 +179,12 @@ public sealed class RepeatDeliveryUseCase
             return new RepeatDeliveryResult.Rejected("delivery.unknown_result", "The previous delivery attempt has an unknown result.");
         }
 
-        RepeatDeliveryArtifactResult artifactResult = await artifactSource.GetVerifiedAsync(job, cancellationToken);
-        if (artifactResult is RepeatDeliveryArtifactResult.Rejected rejected)
-        {
-            return new RepeatDeliveryResult.Rejected(rejected.Code, rejected.Message);
-        }
-
-        RepeatDeliveryArtifact artifact = ((RepeatDeliveryArtifactResult.Succeeded)artifactResult).Artifact;
         VideoDeliveryResult deliveryResult = await delivery.SendAsync(
             new VideoDeliveryRequest(job.JobId, job.VariantId, artifact.FilePath, "Готовый ролик", command.TelegramUserId),
             cancellationToken);
+        bool uploadMatches = deliveryResult.IsSuccess
+            && string.Equals(deliveryResult.UploadedSha256, expectedSha256, StringComparison.OrdinalIgnoreCase)
+            && deliveryResult.UploadedSizeBytes == expectedSizeBytes;
         DeliveryReceipt receipt = new(
             Guid.NewGuid(),
             job.JobId,
@@ -149,16 +192,20 @@ public sealed class RepeatDeliveryUseCase
             artifact.ArtifactId,
             command.TelegramUserId,
             deliveryResult.RemoteMessageId,
-            deliveryResult.IsSuccess ? "succeeded" : "failed",
-            deliveryResult.ErrorCode,
-            deliveryResult.ErrorMessage);
-        await receiptStore.AppendAsync(receipt, cancellationToken);
-        await requestStore.CompleteAsync(command.TelegramUpdateId, receipt, cancellationToken);
+            uploadMatches ? "succeeded" : "failed",
+            deliveryResult.IsSuccess && !uploadMatches ? "delivery.evidence_mismatch" : deliveryResult.ErrorCode,
+            deliveryResult.IsSuccess && !uploadMatches
+                ? "Uploaded bytes do not match the verified artifact."
+                : deliveryResult.ErrorMessage,
+            deliveryResult.UploadedSha256,
+            deliveryResult.UploadedSizeBytes);
+        using CancellationTokenSource persistenceCts = new(TimeSpan.FromSeconds(5));
+        await requestStore.CompleteAsync(command.TelegramUpdateId, receipt, persistenceCts.Token);
 
-        return deliveryResult.IsSuccess
+        return uploadMatches
             ? new RepeatDeliveryResult.Succeeded(deliveryResult.RemoteMessageId)
             : new RepeatDeliveryResult.Rejected(
-                deliveryResult.ErrorCode ?? "delivery.failed",
-                deliveryResult.ErrorMessage ?? "Video delivery failed.");
+                receipt.ErrorCode ?? "delivery.failed",
+                receipt.ErrorMessage ?? "Video delivery failed.");
     }
 }

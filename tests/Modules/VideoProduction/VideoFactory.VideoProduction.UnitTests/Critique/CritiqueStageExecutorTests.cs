@@ -284,6 +284,12 @@ public sealed class CritiqueStageExecutorTests
                 audit);
             return Task.FromResult(savedRevision);
         }
+
+        public Task<EditPlanRevision> CompletePlanningAsync(
+            EditPlan plan, string planHash, decimal actualCostUsd,
+            ReelsPresentationPlan? presentation, EditPlanAudit? audit,
+            PlanningAttemptRecord completedAttempt, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FakeCritiqueAttemptStore : ICritiqueAttemptStore

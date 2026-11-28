@@ -156,12 +156,14 @@ public enum PlanningApprovalStatus
 }
 
 /// <summary>Сохранённый запрос подтверждения стоимости.</summary>
+/// <param name="RepairAttempt">Конкретный номер repair, к которому относится cost snapshot.</param>
 public sealed record PlanningApproval(
     Guid ApprovalId,
     JobId JobId,
     VariantId VariantId,
     long TelegramUserId,
     int Version,
+    int RepairAttempt,
     decimal EstimatedCostUsd,
     decimal AccumulatedActualCostUsd,
     decimal LimitUsd,
@@ -203,6 +205,7 @@ public interface IPlanningApprovalStore
         JobId jobId,
         VariantId variantId,
         long telegramUserId,
+        int repairAttempt,
         decimal estimatedCostUsd,
         decimal accumulatedActualCostUsd,
         decimal limitUsd,
@@ -309,6 +312,7 @@ public sealed class PlanningApprovalUseCase
 }
 
 /// <summary>Результат одной платной попытки планирования.</summary>
+/// <param name="CompletedAt">Время завершения intent или <see langword="null"/>, пока исход платного вызова неизвестен.</param>
 public sealed record PlanningAttemptRecord(
     Guid AttemptId,
     JobId JobId,
@@ -320,11 +324,42 @@ public sealed record PlanningAttemptRecord(
     string Status,
     string? ErrorCode,
     string? ErrorMessage,
-    DateTimeOffset CreatedAt);
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? CompletedAt = null);
+
+/// <summary>Качество сведений о фактической стоимости в ledger планирования.</summary>
+public enum PlanningCostLedgerState
+{
+    /// <summary>Стоимость всех попыток известна и корректна.</summary>
+    Known,
+    /// <summary>Хотя бы один платный вызов имеет неизвестный результат или стоимость.</summary>
+    Unknown,
+    /// <summary>Ledger содержит недопустимые или повреждённые данные.</summary>
+    Invalid
+}
+
+/// <summary>Сводка сохранённых попыток планирования.</summary>
+/// <param name="State">Качество сведений ledger.</param>
+/// <param name="ActualCostUsd">Сумма в USD только для <see cref="PlanningCostLedgerState.Known"/>; иначе <see langword="null"/>.</param>
+/// <param name="NextRepairAttempt">Номер следующей допустимой repair-попытки.</param>
+public sealed record PlanningCostLedger(
+    PlanningCostLedgerState State,
+    decimal? ActualCostUsd,
+    int NextRepairAttempt);
 
 /// <summary>Хранилище аудита платных попыток планирования.</summary>
 public interface IPlanningAttemptStore
 {
+    /// <summary>Возвращает состояние и суммарную фактическую стоимость ledger.</summary>
+    /// <param name="jobId">Идентификатор задания.</param>
+    /// <param name="variantId">Идентификатор Variant для вычисления следующего repair.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Типизированная сводка, различающая известную, неизвестную и некорректную стоимость.</returns>
+    Task<PlanningCostLedger> GetLedgerAsync(
+        JobId jobId,
+        VariantId variantId,
+        CancellationToken cancellationToken);
+
     /// <summary>Сохраняет запись одной платной попытки.</summary>
     Task SaveAsync(PlanningAttemptRecord attempt, CancellationToken cancellationToken);
 }
@@ -475,6 +510,24 @@ public interface IEditPlanRevisionStore
         EditPlanAudit? audit,
         CancellationToken cancellationToken) =>
         SaveAsync(plan, planHash, actualCostUsd, presentation, cancellationToken);
+
+    /// <summary>Атомарно завершает attempt, сохраняет ревизию и обновляет указатели Job и Variant.</summary>
+    /// <param name="plan">Проверенный монтажный план.</param>
+    /// <param name="planHash">Hash полной идентичности ревизии.</param>
+    /// <param name="actualCostUsd">Накопленная фактическая стоимость планирования в USD.</param>
+    /// <param name="presentation">Presentation decisions либо <see langword="null"/>.</param>
+    /// <param name="audit">Полный аудит skills либо <see langword="null"/>.</param>
+    /// <param name="completedAttempt">Существующий intent в завершённом состоянии.</param>
+    /// <param name="cancellationToken">Токен отмены.</param>
+    /// <returns>Сохранённая утверждённая ревизия.</returns>
+    Task<EditPlanRevision> CompletePlanningAsync(
+        EditPlan plan,
+        string planHash,
+        decimal actualCostUsd,
+        ReelsPresentationPlan? presentation,
+        EditPlanAudit? audit,
+        PlanningAttemptRecord completedAttempt,
+        CancellationToken cancellationToken);
 }
 
 /// <summary>Результат построения монтажного плана.</summary>
